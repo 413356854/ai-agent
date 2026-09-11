@@ -1,0 +1,96 @@
+# ============================================================
+# 根目录 .gitignore
+# 项目：AI Agent 学习资料 + 抓取脚本（Node）/ ai-agent（Spring Boot）
+# 说明：ai-agent/ 子项目另有自己的 .gitignore，此处规则会递归生效
+# ============================================================
+
+# ---------- 依赖与构建产物 ----------
+node_modules/
+bower_components/
+
+# 编译输出（Java / Maven / Gradle / 前端通用）
+target/
+build/
+out/
+bin/
+*.class
+*.jar
+*.war
+
+# Maven Wrapper 的 jar 由 mvnw 自动下载，不入库
+.mvn/wrapper/maven-wrapper.jar
+
+# ---------- 包管理与工具缓存 ----------
+.npm/
+.yarn/
+.pnpm-store/
+.cache/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+
+# ---------- Playwright（scripts/ 下的抓取脚本依赖）----------
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+.playwright/
+
+# ---------- 密钥 / 环境变量 ----------
+.env
+.env.*
+!.env.example
+!*.env.example
+*.pem
+*.p12
+*.keystore
+*.jks
+
+# ---------- 日志与临时文件 ----------
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*~
+*.swp
+*.swo
+
+# ---------- IDE / 编辑器 ----------
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.settings/
+.classpath
+.project
+.apt_generated
+.factorypath
+.sts4-cache/
+nbproject/private/
+nbbuild/
+nbdist/
+/.nb-gradle/
+
+# ---------- 操作系统 ----------
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+scripts/
+*.cmd
+ai-agent/.mvn/
+ai-agent/.gitattributes
+ai-agent/mvnw
+
