@@ -24,6 +24,15 @@ export default defineConfig(({ mode }) => ({
       '/api': {
         target: mode === 'mock' ? 'http://127.0.0.1:8081' : (process.env.VITE_API_TARGET ?? 'http://localhost:8080'),
         changeOrigin: true,
+        // 下面两个 0 = 关闭代理层的超时，别删。
+        // 开发和联调时 Vite 的 dev server 就是这条链路上的"反向代理"，
+        // 它的默认超时远短于一次长回答（SSE 是长连接，几十秒不结束很正常），
+        // 到点会直接掐掉流，现象是"回答说到一半就断了"——而且只在开发环境复现，
+        // 上线后又好了，极难排查。（这和 Nginx 的 proxy_buffering / proxy_read_timeout
+        // 是同一类坑，属于"本地正常、线上不正常"的镜像版本：
+        // 这里是"开发不正常、直连后端却正常"。）
+        proxyTimeout: 0,
+        timeout: 0,
       },
     },
   },

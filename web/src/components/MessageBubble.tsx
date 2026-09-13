@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Alert, Tag, Typography } from 'antd'
+import { Alert, Button, Flex, Tag, Typography } from 'antd'
 import DOMPurify from 'dompurify'
 import MarkdownIt from 'markdown-it'
 // 只引 common 子集（约 40 种常用语言）：引默认入口 'highlight.js' 会把 190+ 种语言
@@ -33,7 +33,15 @@ function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, c => map[c] ?? c)
 }
 
-export function MessageBubble({ message }: { message: ChatMessage }) {
+export function MessageBubble({
+  message,
+  onRetry,
+  retryDisabled,
+}: {
+  message: ChatMessage
+  onRetry: () => void
+  retryDisabled: boolean
+}) {
   const isUser = message.role === 'user'
 
   // 模型输出是 Markdown，渲染前统一过一遍 DOMPurify：
@@ -65,8 +73,22 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
             type="error"
             showIcon
             // antd 6 起 Alert 的 message 改名 title，用旧名会打 deprecation 警告
-            title="本轮失败"
-            description={message.error}
+            title={message.errorKind === 'timeout' ? '本轮超时' : '本轮失败'}
+            description={
+              // 超时是"没结论"而不是"结论是失败"，所以给一键重试；
+              // HTTP 4xx/业务错误重试没用（同样的请求再来一遍结果一样），
+              // 给按钮反而误导用户 —— 该改的是配置或提问方式
+              message.errorKind === 'timeout' ? (
+                <Flex vertical gap={8}>
+                  <span>{message.error}</span>
+                  <Button size="small" type="primary" ghost disabled={retryDisabled} onClick={onRetry}>
+                    重试本轮
+                  </Button>
+                </Flex>
+              ) : (
+                <span>{message.error}</span>
+              )
+            }
           />
         )}
 

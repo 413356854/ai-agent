@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import { streamChat } from '../api/chat'
+import { isStreamTimeoutError } from '../api/sse'
 import type { TokenUsage } from '../types'
 
 export interface ChatMessage {
@@ -12,6 +13,8 @@ export interface ChatMessage {
   stopped?: boolean
   /** 后端 event:error 或网络层错误 */
   error?: string
+  /** 失败类别：决定界面上要不要给「重试」按钮 */
+  errorKind?: 'timeout' | 'http' | 'business'
   /** done 事件里的 token 用量 */
   usage?: TokenUsage
 }
@@ -22,7 +25,14 @@ export interface UseChatStreamResult {
   conversationId: string
   send: (text: string, temperature: number) => void
   stop: () => void
+  /** 一键重试最后一轮（重新提问，而不是"让模型接着说"） */
+  retry: () => void
   newConversation: () => void
+}
+
+/** 是否值得给用户一个「重试」按钮 */
+export function isRetryable(kind: ChatMessage['errorKind']): boolean {
+  return kind === 'timeout'
 }
 
 /**
@@ -43,6 +53,8 @@ export function useChatStream(): UseChatStreamResult {
   const assistantIdRef = useRef<string | null>(null)
   const bufferRef = useRef('')
   const rafRef = useRef<number | null>(null)
+  /** 记住最后一次用的 temperature，重试时沿用（否则重试会偷偷换一套采样参数） */
+  const lastTemperatureRef = useRef(0.3)
 
   /** 立即把 buffer 里的增量写进当前气泡（取消待执行的 rAF） */
   const commit = useCallback(() => {
@@ -81,6 +93,7 @@ export function useChatStream(): UseChatStreamResult {
       const assistantId = newId()
       assistantIdRef.current = assistantId
       bufferRef.current = ''
+      lastTemperatureRef.current = temperature
 
       setMessages(prev => [
         ...prev,
@@ -106,19 +119,26 @@ export function useChatStream(): UseChatStreamResult {
             },
             onError: message => {
               commit()
-              patch(assistantId, { error: message })
+              patch(assistantId, { error: message, errorKind: 'business' })
             },
           },
           controller.signal,
         )
       } catch (e) {
-        // 主动停止会让 fetch 抛 AbortError —— 这是预期行为，不是故障
+        commit()
+        // 主动停止会让 fetch 抛 AbortError —— 这是预期行为，不是故障。
+        // 注意判断的是"外层 controller 被 abort"，而不是"任意 AbortError"：
+        // 超时在 api 层用的是内部 controller，外层信号没被 abort，
+        // 所以超时不会被误判成"用户点了停止"
         if (controller.signal.aborted) {
-          commit()
           patch(assistantId, { stopped: true })
+        } else if (isStreamTimeoutError(e)) {
+          patch(assistantId, { error: e.message, errorKind: 'timeout' })
         } else {
-          commit()
-          patch(assistantId, { error: e instanceof Error ? e.message : String(e) })
+          patch(assistantId, {
+            error: e instanceof Error ? e.message : String(e),
+            errorKind: 'http',
+          })
         }
       } finally {
         commit()
@@ -130,6 +150,34 @@ export function useChatStream(): UseChatStreamResult {
     },
     [commit, conversationId, patch, scheduleCommit, streaming],
   )
+
+  /**
+   * 重试最后一轮。
+   *
+   * 语义是<b>重新提问</b>，不是"让模型接着说"：先把上一轮的用户消息和那个失败的
+   * assistant 气泡一起摘掉，再用同样的文本、同样的 conversationId 重发。
+   *
+   * 为什么必须换掉气泡而不是往里面追加：超时意味着这一轮<b>没有任何有效产出</b>
+   * （一个字都没回来）或产出已被判定为不完整，把它留在页面上会让用户以为
+   * "模型说过这些"，而重试成功后新旧两段内容并排显示更没法看。
+   * conversationId 保持不变是刻意的：失败的那次调用没有写入后端记忆
+   * （超时是取消而非完成），所以沿用同一个会话不会污染上下文。
+   */
+  const retry = useCallback(() => {
+    if (streaming) return
+
+    const lastUser = [...messages].reverse().find(m => m.role === 'user')
+    if (!lastUser) return
+
+    // 摘掉尾部这一轮（用户消息 + 它的回答），让 send 重新建一对气泡
+    setMessages(prev => {
+      const cut = prev.lastIndexOf(lastUser)
+      return cut === -1 ? prev : prev.slice(0, cut)
+    })
+
+    // 不复用 send 的 streaming 守卫：上面已经判过，且此时 setStreaming 还没生效
+    void send(lastUser.content, lastTemperatureRef.current)
+  }, [messages, send, streaming])
 
   const stop = useCallback(() => {
     abortRef.current?.abort()
@@ -150,6 +198,7 @@ export function useChatStream(): UseChatStreamResult {
     conversationId,
     send: (text: string, temperature: number) => void send(text, temperature),
     stop,
+    retry,
     newConversation,
   }
 }

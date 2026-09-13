@@ -2,7 +2,14 @@ package ai.agent.chat.controller;
 
 import ai.agent.chat.dto.ChatRequest;
 import ai.agent.chat.service.ChatService;
+import ai.agent.chat.support.ChatRetryPolicy;
+import ai.agent.config.ChatCallProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.memory.ChatMemoryRepository;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
@@ -12,11 +19,19 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.server.ResponseStatusException;
+import reactor.core.Exceptions;
 import reactor.core.publisher.Flux;
+import reactor.util.retry.Retry;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -58,15 +73,38 @@ import java.util.concurrent.atomic.AtomicReference;
  *       {@code Flux<ChatResponse> chatResponse()} 或 {@code Flux<ChatClientResponse> chatClientResponse()}。</li>
  *   <li>流式只能跑在 <b>Reactive 栈</b>上；非流式只能跑在 Servlet 栈上。因此两种栈都要在 classpath 中。</li>
  * </ul>
+ *
+ * <p><b>超时与重试（本类承担，不在 Service 里做）</b>
+ * <ul>
+ *   <li>两条超时：<b>首字超时</b>（等第一个增量最多多久）与<b>空闲超时</b>
+ *       （相邻两个增量之间最多间隔多久）。用"多久没动静"而不是"总共花了多久"，
+ *       是因为流式回答的正常耗时本来就长，用总耗时会杀掉正常但话多的回答。</li>
+ *   <li>重试只发生在<b>首个增量到达之前</b>。理由见 {@link #withRetryAndTimeout} 的注释 ——
+ *       已经吐了半句再重发，用户会看到两段拼接的回答。</li>
+ *   <li>超时/重试的<b>数字全部来自 {@link ChatCallProperties}</b>，排障时不用改代码。
+ *       重试"该不该退"的判定逻辑在 {@link ChatRetryPolicy}（纯函数，可单测）。</li>
+ * </ul>
  */
 @RestController
 @RequestMapping("/api/chat")
 public class ChatController {
 
+	private static final Logger log = LoggerFactory.getLogger(ChatController.class);
+
 	private final ChatService chatService;
 
-	public ChatController(ChatService chatService) {
+	private final ChatRetryPolicy retryPolicy;
+
+	private final ChatCallProperties properties;
+
+	private final ChatMemoryRepository chatMemoryRepository;
+
+	public ChatController(ChatService chatService, ChatRetryPolicy retryPolicy, ChatCallProperties properties,
+			ChatMemoryRepository chatMemoryRepository) {
 		this.chatService = chatService;
+		this.retryPolicy = retryPolicy;
+		this.properties = properties;
+		this.chatMemoryRepository = chatMemoryRepository;
 	}
 
 	/**
@@ -112,13 +150,20 @@ public class ChatController {
 		// 用于在流结束时读取最后一个非空的 token 用量
 		AtomicReference<Map<String, Object>> lastUsage = new AtomicReference<>(Map.of());
 
-		return chatService.stream(conversationId, message, temperature)
+		// 记录"这次对话有没有等到过首字"，只用于把失败原因说清楚（见 safeMessage）
+		AtomicBoolean sawFirstToken = new AtomicBoolean(false);
+
+		return withRetryAndTimeout(conversationId, message, temperature, sawFirstToken)
 				.doOnNext(r -> lastUsage.set(chatService.usageOf(r)))
 				.mapNotNull(r -> {
 					String delta = chatService.deltaOf(r);
 					if (!chatService.hasDelta(delta)) {
 						return null; // 空 chunk 不推给前端
 					}
+					// 以"真正推出了正文"为准，而不是"模型吐了任意一个 chunk"：
+					// 有些模型会先发一个只含用量/元数据的 chunk，那种情况下用户屏幕上还是空的，
+					// 报"回答中断、内容不完整"会让用户去找根本不存在的半截回答
+					sawFirstToken.set(true);
 					return ServerSentEvent.builder()
 							.event("content")
 							.data((Object) Map.of("delta", delta))
@@ -129,12 +174,217 @@ public class ChatController {
 						.data((Object) lastUsage.get())
 						.build())))
 				.onErrorResume(e -> {
-					chatService.logError(conversationId, e);
+					chatService.logError(conversationId, e, isExpectedFailure(e));
 					return Flux.just(ServerSentEvent.builder()
 							.event("error")
-							.data((Object) Map.of("message", safeMessage(e)))
+							.data((Object) Map.of("message", safeMessage(e, sawFirstToken.get())))
 							.build());
 				});
+	}
+
+	/**
+	 * 这个失败是不是"计划内"的。
+	 *
+	 * <p>用途是决定日志级别。超时和 4xx/5xx 属于<b>正常业务预期</b>：模型供应商会限流、
+	 * 网络会抖，这些都是运行时的常态，用 ERROR 记录会让日志监控里堆满"看起来像系统故障"
+	 * 的噪声（真出事时反而淹没在噪声里）。真正的意外（空指针、状态异常）才该是 ERROR。
+	 */
+	private boolean isExpectedFailure(Throwable e) {
+		Throwable cause = ChatRetryPolicy.rootCause(e);
+		return cause instanceof TimeoutException || cause instanceof RestClientResponseException;
+	}
+
+	/**
+	 * 给模型调用套上<b>首字超时 + 空闲超时 + 首字前重试</b>。
+	 *
+	 * <p><b>为什么重试必须限定在"首字之前"</b>（这是本次实现的核心决策）：
+	 * SSE 的响应头一旦发出就无法撤回。若模型已经吐了半句再失败，重发请求会导致
+	 * <ol>
+	 *   <li>用户看到两段拼接的回答（前端已经在气泡里拼过第一段了）；</li>
+	 *   <li>对话记忆里留下半截 assistant 消息，下一轮模型会基于这段残缺上下文继续，行为变得难以解释。</li>
+	 * </ol>
+	 * 所以这里的规则很硬：<b>没吐过字就整体重来，吐过字就认账并明确报错</b>。
+	 * 用户看到"回答到一半断了"远比看到"两段矛盾的回答"好排查 —— 前者是故障，后者像灵异事件。
+	 *
+	 * <p><b>重试的代价与边界</b>：
+	 * <ul>
+	 *   <li>失败尝试不会在对话记忆里留下"半截回答"：{@code MessageChatMemoryAdvisor} 只在流
+	 *       <b>正常完成</b>时才把回答写进记忆（{@code ChatClientMessageAggregator} 的
+	 *       onComplete 回调），超时走的是取消路径，所以不会有半个 assistant 消息进上下文。</li>
+	 *   <li>但失败尝试<b>会</b>留下一条"没有回答的用户消息"——它在发起调用前就写好了。
+	 *       所以每次重试前必须把它摘掉，见 {@link #dropOrphanedUserMessage}。</li>
+	 *   <li>退避等待期间用户看不到任何东西，所以退避时长必须小
+	 *       （默认 0.5s/1s，上限 5s）—— 重试是"悄悄补救"，不是让用户干等。</li>
+	 * </ul>
+	 *
+	 * <p><b>超时算子的一个坑（实测踩到，不是推演出来的）</b>：
+	 * 直觉上"一个 {@code timeout(Duration)} 配合 switchOnFirst 就能同时覆盖首字等待和空闲检测"，
+	 * 但 {@code timeout} 的计时器<b>只在第一个信号到达后才开始工作</b>，
+	 * 所以 {@code flux.timeout(idle)} 这种写法对"一个信号都没有"的挂起状态完全无效 ——
+	 * 实测表现是测试直接挂到测试框架的 5 秒上限，而配置的超时（150ms）根本没触发。
+	 * 正确做法是 {@code switchOnFirst} 的两个分支都必须带上超时：
+	 * 无首字的分支（含空信号 / 错误信号 / 什么都还没来）用 firstToken 兜住，
+	 * 有首字的分支才换成 idle。这样"模型一直不响应"和"回答到一半不动了"才都有上限。
+	 */
+	private Flux<ChatClientResponse> withRetryAndTimeout(String conversationId, String message, double temperature,
+			AtomicBoolean sawFirstToken) {
+		ChatCallProperties.Retry retryCfg = properties.getRetry();
+
+		// 每个订阅（= 每次尝试）独立计数：用局部变量，天然随重订阅重置
+		AtomicInteger attempt = new AtomicInteger(0);
+
+		// 是否已经产出过真实增量 —— 重试的闸门。
+		// 跨订阅共享是刻意的：只要历史上有过一次增量，就永远不许再重发。
+		AtomicBoolean hasContent = new AtomicBoolean(false);
+
+		return Flux.defer(() -> {
+					int n = attempt.incrementAndGet();
+					long startedAt = System.nanoTime();
+					log.info("模型调用开始 conversationId={} attempt={}/{}", conversationId, n, retryCfg.getMaxAttempts() + 1);
+
+					return chatService.stream(conversationId, message, temperature)
+							// 首个 chunk 到达 → 关闭重试闸门。
+							// 注意这里用"任意 chunk"而不是"有正文"：一旦模型的流已经开始产出，
+							// 重发请求就会让模型侧上下文错乱，所以闸门要尽早关上；
+							// 而给用户看的文案用的是另一套判断（真的推出正文才算"收到内容"）
+							.doOnNext(r -> {
+								if (hasContent.compareAndSet(false, true)) {
+									log.debug("首个 chunk 已到达 conversationId={} attempt={} elapsedMs={}",
+											conversationId, n, (System.nanoTime() - startedAt) / 1_000_000);
+								}
+							})
+							// 超时组合（这里有三个坑，都是实测撞出来的，别凭直觉改）：
+							//
+							// 坑 1：超时不能只放在 switchOnFirst 的分支里。分支只在"源发出第一个信号"
+							//   时才执行，而我们要防的正是"源什么都不发"（模型挂起）—— 那种情况下
+							//   超时永远不触发，页面永远停在「正在思考…」。
+							//   实测：配了 100ms 超时，流却一直挂到测试框架的 5 秒上限。
+							//   回归测试：#timeoutMustWrapSourceNotSwitchOnFirst
+							//
+							// 坑 2：分支里不能把首字再拼回去。switchOnFirst 传给转换函数的第二个参数
+							//   <b>已经包含首元素</b>，写成 Flux.concat(Flux.just(signal.get()), flux)
+							//   会把第一个增量发两遍（实测输出"第一段第一段"）。
+							//   回归测试：#switchOnFirstSecondArgumentAlreadyIncludesFirstElement
+							//
+							// 坑 3：两个阈值各管一段，别合并成一个。曾经把"两者较小值"传给单个
+							//   timeout，结果是 idle 配小时连带把首字等待也掐短（idle=1ms 时
+							//   10s 的首字超时形同虚设）。现在的写法：源上 firstToken 只管
+							//   "等第一个信号"，进分支后 idle 只管"等下一个信号"。
+							//   回归测试：#workingTimeoutComposition（覆盖"首字慢于 idle 也不误杀"与
+							//   "首字后永久静默必须被抓"两个场景）；真实模型侧用 idle=400ms 实测过
+							//   一次 5.5 秒的完整回答（首字约 1.6s）不再被误判
+							.timeout(properties.getTimeout().getFirstToken())
+							.switchOnFirst((signal, flux) -> signal.hasValue()
+									? flux.timeout(properties.getTimeout().getIdle())
+									: flux);
+				})
+				.retryWhen(Retry.backoff(retryCfg.getMaxAttempts(), retryCfg.getInitialBackoff())
+						// 退避参数与 ChatRetryPolicy.delayForAttempt 是同一套语义
+						//（首间隔 × 倍数^n，上限截断，再叠抖动），配置只有一个来源：
+						// ai.chat.retry.*。改配置时策略与算子会一起变，不会漂移。
+						.maxBackoff(retryCfg.getMaxBackoff())
+						.jitter(retryCfg.getJitter())
+						// 双重闸门：① 已经吐过字就不许重试（见方法注释）
+						//           ② 只有"等一会儿可能成功"的失败才值得重试
+						.filter(error -> !hasContent.get() && retryPolicy.isRetryable(error))
+						.doBeforeRetry(signal -> {
+							log.warn("模型调用失败，准备第 {} 次重试（共 {} 次）conversationId={} reason={}",
+									signal.totalRetries() + 1, retryCfg.getMaxAttempts(), conversationId,
+									ChatRetryPolicy.rootCause(signal.failure()).toString());
+							dropOrphanedUserMessage(conversationId, message);
+						}))
+				// 重试耗尽后把真实原因抬出来：Retry.backoff 默认抛 RetryExhaustedException，
+				// 它自己的 message 信息量极少（"Retries exhausted: N/N"），
+				// 而我们要让日志和前端看到"到底是 503、超时还是 401" —— 这才有排障价值
+				.onErrorMap(Throwable.class, ChatController::unwrapExhausted);
+	}
+
+	/**
+	 * 拆掉 Reactor 的重试包装，露出真实失败原因。
+	 *
+	 * <p>要处理两层包装，缺一层都看不出真因：
+	 * <ol>
+	 *   <li><b>重试耗尽</b> —— {@code retryWhen} 用完次数后自己包的一层，
+	 *       它自己的 message 是 {@code "Retries exhausted: N/N"}，
+	 *       不含"到底是 503、超时还是 401"，对排障毫无价值；</li>
+	 *   <li><b>受检异常外壳</b> —— Reactor 在 {@code Flux} 里传递受检异常
+	 *       （如 {@code java.util.concurrent.TimeoutException}）时套的壳，
+	 *       真实原因藏在它的 cause 里。</li>
+	 * </ol>
+	 *
+	 * <p>为什么用 {@link Exceptions#isRetryExhausted} / {@link Exceptions#unwrap}
+	 * 而不是 {@code instanceof} 自己判：Reactor 这两个异常类是<b>包级私有</b>的
+	 * （{@code final class Exceptions$RetryExhaustedException}，没有 public 修饰符），
+	 * 业务代码 import 不到，编译期就会报"不是公共的，无法从外部程序包中对其进行访问"。
+	 * Reactor 因此专门提供了这两个 public 静态方法作为判断入口 —— 这是它留给外部的唯一正门。
+	 *
+	 * <p>两层都不匹配时原样返回，绝不吞异常。
+	 */
+	private static Throwable unwrapExhausted(Throwable error) {
+		if (Exceptions.isRetryExhausted(error) && error.getCause() != null) {
+			return error.getCause();
+		}
+		// unwrap 会剥掉 ReactiveException 外壳；对没有外壳的异常原样返回，是安全的空操作
+		return Exceptions.unwrap(error);
+	}
+
+	/**
+	 * 重试前把上一次失败尝试留在对话记忆里的孤儿用户消息摘掉。
+	 *
+	 * <p><b>为什么需要这一步（实测发现，不是推理出来的）</b>：
+	 * {@code MessageChatMemoryAdvisor} 在流式链路里的写记忆时机是两段式的——
+	 * <ul>
+	 *   <li><b>发起调用之前</b>：把本轮用户消息写进记忆（{@code before()} 阶段）；</li>
+	 *   <li><b>流正常结束之后</b>：把聚合好的整段回答写进记忆
+	 *       （{@code ChatClientMessageAggregator} 只在 onComplete 时回调）。</li>
+	 * </ul>
+	 * 于是"请求已经发出去、但第一个增量迟迟不来"这种超时，会在记忆里留下一条<b>没有回答的
+	 * 用户消息</b>（孤儿消息）；重试再走一遍同样的 advisor 链，就再写一条。实测日志
+	 * （首字超时 1ms、重试 2 次）里第 3 次尝试的 prompt 是：
+	 * <pre>
+	 * UserMessage{'你好'}, UserMessage{'你好'}, UserMessage{'你好'}
+	 * </pre>
+	 * 白烧 token 之外，还会让模型看到一个把同一句话问了三遍的奇怪对话。
+	 *
+	 * <p><b>清理时机是"每次重试前"，而不是"发现重复时才清"</b>（这里踩过一次坑）：
+	 * 一开始写的是"只有末尾两条内容相同才删"。结果第一次失败后记忆里只有一条"你好"、
+	 * 判不出重复，于是不清理；等第 2 次尝试再写一条，重复才出现，而那时已经没有下一次
+	 * 重试来触发清理了 —— 重复项就永久留在了上下文里。正确的做法是：
+	 * <b>失败的那次尝试留下的用户消息本身就是垃圾，重试前一律摘掉</b>，
+	 * 由下一次尝试重新写入，这样每次尝试看到的上下文都是干净的。
+	 *
+	 * <p><b>为什么用 {@code saveAll} 而不是 {@code chatMemory.add(...)}</b>（第二个坑）：
+	 * {@code ChatMemory.add()} 是<b>追加合并</b>语义 —— 内部先
+	 * {@code findByConversationId()} 读出旧消息、和新消息合并后再存回。
+	 * 拿"裁剪后的列表"去调 {@code add()}，等于把裁剪前的历史又加了一遍：
+	 * 实测"清理前 1 条、清理后 2 条"，越清越多。真正"整段替换"的入口只有仓储层的
+	 * {@link ChatMemoryRepository#saveAll}。
+	 *
+	 * <p>清理失败只记警告、不影响重试：让 prompt 稍微变长，远好过放弃一次重试机会。
+	 */
+	private void dropOrphanedUserMessage(String conversationId, String message) {
+		try {
+			List<Message> history = new ArrayList<>(chatMemoryRepository.findByConversationId(conversationId));
+
+			// 只处理"末尾恰好是本次提问的那条用户消息"这一种确定无害的情形：
+			// 内容对不上就说明记忆里是别的轮次，动它会破坏正常上下文。宁可少清，也不误删。
+			if (history.isEmpty()) {
+				return;
+			}
+			Message last = history.get(history.size() - 1);
+			if (last.getMessageType() != MessageType.USER || !message.equals(last.getText())) {
+				return;
+			}
+
+			history.remove(history.size() - 1);
+			// 整段替换（saveAll），不是追加：ChatMemory.add 会把旧消息重新合并一遍，删不掉东西
+			chatMemoryRepository.saveAll(conversationId, history);
+			log.info("重试前摘掉本次失败尝试留下的孤儿用户消息 conversationId={} remaining={}",
+					conversationId, history.size());
+		} catch (RuntimeException e) {
+			// 记忆清理是"锦上添花"，绝不能因为它失败而让本该发生的重试流产
+			log.warn("重试前清理对话记忆失败（不影响重试）conversationId={} cause={}", conversationId, e.toString());
+		}
 	}
 
 	/**
@@ -166,13 +416,74 @@ public class ChatController {
 		}
 	}
 
-	private static String safeMessage(Throwable e) {
-		String m = e.getMessage();
-		if (m == null) {
-			return e.getClass().getSimpleName();
+	/**
+	 * 把异常翻译成"用户能看懂、且不泄露内部信息"的一句话。
+	 *
+	 * <p>超时是这里最需要翻译准的一类：{@code Flux.timeout(...)} 抛出的
+	 * {@code TimeoutException} 默认 message 是 {@code null}，直接用会退化成一个干巴巴的类名。
+	 * 而"卡在哪一段"决定了用户下一步该做什么，所以必须分开说：
+	 * <ul>
+	 *   <li>已经收到正文 → 「回答中断」，而且<b>不能再重试</b>（重发会让页面上出现两段
+	 *       拼接的回答），所以文案里不能写"已重试"，只能说明已收到的内容不完整；</li>
+	 *   <li>一个字都没收到 → 「没有返回任何内容」，这时重试是有效的，文案里带上重试次数。</li>
+	 * </ul>
+	 * 判断依据是 {@code sawFirstToken}，含义是"<b>真正推出了正文</b>"，
+	 * 而不是"模型吐了任意一个 chunk"（后者可能只是用量元数据，用户屏幕上还是空的）。
+	 */
+	private String safeMessage(Throwable e, boolean sawFirstToken) {
+		Throwable cause = ChatRetryPolicy.rootCause(e);
+
+		if (cause instanceof TimeoutException) {
+			ChatCallProperties.Timeout t = properties.getTimeout();
+			if (sawFirstToken) {
+				return "回答中断：模型超过 %s 没有继续输出（空闲超时），已收到的内容不完整。"
+						.formatted(humanDuration(t.getIdle()));
+			}
+			return "模型超过 %s 没有返回任何内容（首字超时），已重试 %d 次仍失败，请稍后重试。"
+					.formatted(humanDuration(t.getFirstToken()), properties.getRetry().getMaxAttempts());
 		}
-		// 避免把可能含密钥/内部地址的完整信息透出
-		return m.length() > 300 ? m.substring(0, 300) + "..." : m;
+		if (cause instanceof RestClientResponseException httpError) {
+			// 上游返回的 body 可能带内部信息，但"状态码 + 前 200 字"对排障价值远大于泄露风险
+			// （模型供应商的 4xx/5xx body 里就是错误原因本身，不是我们的内部实现）
+			String body = httpError.getResponseBodyAsString();
+			String tail = body == null || body.isBlank() ? "" : " body=" + truncate(body, 200);
+			return "模型接口返回 HTTP %d%s".formatted(httpError.getStatusCode().value(), tail);
+		}
+
+		String m = cause.getMessage();
+		if (m == null || m.isBlank()) {
+			return cause.getClass().getSimpleName();
+		}
+		return truncate(m, 300);
+	}
+
+	private static String truncate(String text, int max) {
+		return text.length() > max ? text.substring(0, max) + "..." : text;
+	}
+
+	/**
+	 * 把 {@link Duration} 转成人话。
+	 *
+	 * <p>为什么不直接拼 {@code Duration}：它的 {@code toString()} 是 ISO-8601 格式，
+	 * 实测会把用户看到的报错变成「模型超过 <b>PT0.001S</b> 没有返回任何内容」——
+	 * 这行字对使用者毫无意义（对人来说那不是"1 毫秒"）。配置项允许多种写法
+	 * （{@code 20s} / {@code 500ms}），所以这里统一按毫秒判断，
+	 * 不足 1 秒的按毫秒说、够 1 秒的按秒说。
+	 */
+	private static String humanDuration(Duration duration) {
+		if (duration == null) {
+			return "未知时长";
+		}
+		long ms = duration.toMillis();
+		if (ms < 1000) {
+			// 不写 "1 毫秒"：和后面的中文连读会变成「超过 1 毫秒 没有返回」，多个空格很别扭
+			return ms + "毫秒";
+		}
+		// 整秒就别显示 .0；否则保留一位小数（1.5 秒这种配置也能如实表达）
+		if (ms % 1000 == 0) {
+			return (ms / 1000) + " 秒";
+		}
+		return "%.1f 秒".formatted(ms / 1000.0);
 	}
 
 }

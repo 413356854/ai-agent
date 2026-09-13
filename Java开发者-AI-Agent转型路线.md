@@ -210,23 +210,28 @@ Agent 编排层 →  LangChain4j（灵活）或 Spring AI Alibaba（国内/国�
 
 ### 阶段一（1–2 周）大模型对接层 —— 把 LLM 调用做成基础设施组件
 
-> **进度：🟡 4/8 ｜ 详细记录见 `学习进度台账.md`**
-> 已完成：概念基础、Spring AI 跑通、SSE 流式（部分）、骨架搭建
-> 待完成：Nginx 流式实测、Function Calling、结构化输出、异步改造、异常注入测试
+> **进度：🟡 5/8 ｜ 详细记录见 `学习进度台账.md`**
+> 已完成：概念基础、Spring AI 跑通、SSE 流式（Nginx 实测验延后到上线）、骨架搭建、**超时与重试**
+> 待完成：Function Calling、结构化输出、异步改造、异常注入测试（JSON 截断）、Token 预算
 
 - [x] Token / 上下文窗口 / Temperature / Top-p / Max Tokens 概念（能口算 Token 预算）
 - [ ] `window >= input_tokens + max_output_tokens`，**预留 10%–20% 安全边际**
 - [x] Spring AI / LangChain4j 跑通 Hello World，**然后自己做一遍底层调用**
-- [~] **SSE 流式输出**（含 Nginx `proxy_buffering` 关闭 + 换行转义）
-      → 端点已跑通（100+ 增量事件、737 tokens 实测）；**Nginx 与换行转义未实测**
+- [x] **SSE 流式输出**（含 Nginx `proxy_buffering` 关闭 + 换行转义）
+      → 端点已跑通（100+ 增量事件、737 tokens 实测）；**换行转义已实测并修掉真 bug**
+      → ⏭️ **Nginx `proxy_buffering` 实测已决定延后到上正式环境时做**（本地无代理环境，不阻塞阶段一验收；上线动作清单见 `学习进度台账.md` 第五节）
 - [ ] Function Calling：**明确「模型只输出调用意图，Java 端负责校验 + 执行 + 回填」的边界**
 - [ ] 结构化输出三方案：JSON Schema / Function Calling / Structured Outputs (Strict)
       → `EntityParamSpec` 的 `validateSchema()` / `useProviderStructuredOutput()` 已知 API，未编码
+- [x] **异步调用改造前置**：超时与重试已完成（首字超时 20s + 空闲超时 30s + 指数退避重试 2 次；前端三道超时 + 一键重试）
+      → 配置在 `ai.chat.*`，策略在 `ChatRetryPolicy`，21 个自动化测试覆盖失败路径
+      → ⚠️ **只重试"首个增量之前"的失败**：已吐内容再重发会让用户看到两段拼接的回答
 - [ ] **异步调用改造**（WebClient / 虚拟线程）—— 别让线程池被打满
 - [ ] 异常注入测试：主动模拟 API 超时、JSON 截断、网络阻断
+      → 超时 / 5xx 已覆盖（21 个自动化测试）；**JSON 截断、网络阻断未做**
 
 > **验收**：一个流式对话接口，能正确处理超时、重试、JSON 校验失败。
-> **当前差距**：超时 / 重试 / JSON 校验**三条都未实现**，故**阶段一尚未验收**。
+> **当前差距**：超时 ✅、重试 ✅，但 **JSON 校验失败未做**（依赖结构化输出），故**阶段一尚未验收**。
 
 ### 阶段二（2–4 周）RAG —— 重点在「定位问题」而非「跑通 Demo」
 

@@ -103,8 +103,14 @@ public class ChatServiceImpl implements ChatService {
 	}
 
 	@Override
-	public void logError(String conversationId, Throwable e) {
-		log.error("流式对话失败 conversationId={}", conversationId, e);
+	public void logError(String conversationId, Throwable e, boolean expected) {
+		// 可预期的失败（超时 / 上游 4xx-5xx）用 WARN：它们会经常发生，
+		// 打成 ERROR 会让日志监控里堆满"看着像系统炸了"的噪声
+		if (expected) {
+			log.warn("流式对话失败（可预期）conversationId={} cause={}", conversationId, e.toString());
+		} else {
+			log.error("流式对话失败 conversationId={}", conversationId, e);
+		}
 	}
 
 }

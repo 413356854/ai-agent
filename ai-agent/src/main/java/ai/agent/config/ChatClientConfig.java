@@ -4,6 +4,8 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.chat.memory.ChatMemoryRepository;
+import org.springframework.ai.chat.memory.InMemoryChatMemoryRepository;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -27,14 +29,34 @@ public class ChatClientConfig {
 	/** Advisor 执行顺序：小的先执行。 */
 	private static final int ORDER_LOGGING = 0;
 
+	/**
+	 * 对话记忆的存储层。
+	 *
+	 * <p><b>为什么把仓储也暴露成 bean</b>：{@code ChatMemory.add(...)} 是<b>追加合并</b>语义
+	 * （读旧 + 合并新 + 保存），要真正"删掉一条"必须走仓储的
+	 * {@link ChatMemoryRepository#saveAll} —— 它是<b>整段替换</b>语义。重试前清理重复的
+	 * 用户消息只能用后者。
+	 */
 	@Bean
-	ChatClient chatClient(ChatClient.Builder builder) {
+	ChatMemoryRepository chatMemoryRepository() {
+		return new InMemoryChatMemoryRepository();
+	}
 
-		// 对话记忆：默认窗口 20 条，超出后淘汰旧消息，但 system 消息会被保留
-		ChatMemory chatMemory = MessageWindowChatMemory.builder()
+	/**
+	 * 对话记忆。
+	 *
+	 * <p>窗口默认 20 条，超出后淘汰旧消息，但 system 消息会被保留。
+	 */
+	@Bean
+	ChatMemory chatMemory(ChatMemoryRepository repository) {
+		return MessageWindowChatMemory.builder()
+				.chatMemoryRepository(repository)
 				.maxMessages(20)
 				.build();
+	}
 
+	@Bean
+	ChatClient chatClient(ChatClient.Builder builder, ChatMemory chatMemory) {
 		return builder
 				// 系统提示词：从 classpath 读取，与代码解耦（阶段一的 prompt 版本化基础）
 				.defaultSystem(new ClassPathResource("prompts/system-agent.st"))

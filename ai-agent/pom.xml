@@ -53,6 +53,21 @@
 			<artifactId>spring-boot-starter-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+
+		<!--
+		  reactor-test：StepVerifier。
+		  为什么必须显式加：spring-boot-starter-test 里<b>不含</b> Reactor 的测试支持，
+		  而本项目最需要钉死的恰恰是"时间维度"的行为（超时到底有没有触发、
+		  什么时候换用空闲超时）。这类断言用 Flux.block(...) 只能得到
+		  "5 秒后超时"这种没信息量的失败，StepVerifier 才能表达
+		  "期望在 X 毫秒内以 TimeoutException 失败"。
+		  版本由 Spring Boot 的依赖管理统一决定，不要写死版本号。
+		-->
+		<dependency>
+			<groupId>io.projectreactor</groupId>
+			<artifactId>reactor-test</artifactId>
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
 	<dependencyManagement>
 		<dependencies>

@@ -43,7 +43,13 @@ public interface ChatService {
 	/** 判断这个 chunk 是否带来真实增量，避免把空 chunk 推给前端。 */
 	boolean hasDelta(String delta);
 
-	/** 记录对话失败日志（堆栈只进日志，不出接口）。 */
-	void logError(String conversationId, Throwable e);
+	/**
+	 * 记录对话失败日志（堆栈只进日志，不出接口）。
+	 *
+	 * @param expected true 表示这是可预期的失败（超时 / 上游 4xx-5xx），按 WARN 记录；
+	 *                 false 表示意外故障（如空指针），按 ERROR 记录。
+	 *                 区分的目的：让"模型限流"这类常态不污染 ERROR 级别的告警。
+	 */
+	void logError(String conversationId, Throwable e, boolean expected);
 
 }

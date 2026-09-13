@@ -5,7 +5,7 @@ import { MessageBubble } from './components/MessageBubble'
 import { useChatStream } from './hooks/useChatStream'
 
 export default function App() {
-  const { messages, streaming, conversationId, send, stop, newConversation } = useChatStream()
+  const { messages, streaming, conversationId, send, stop, retry, newConversation } = useChatStream()
   const listRef = useRef<HTMLElement>(null)
 
   // 新内容到达就贴到底部。messages 每帧最多变一次（hook 里做了 rAF 合并），
@@ -38,7 +38,16 @@ export default function App() {
         {messages.length === 0 ? (
           <Empty description="还没有消息。发一条试试——同一次会话内后端会记住上下文。" />
         ) : (
-          messages.map(m => <MessageBubble key={m.id} message={m} />)
+          messages.map(m => (
+            <MessageBubble
+              key={m.id}
+              message={m}
+              onRetry={retry}
+              // 只有最后一条消息才允许重试：多条历史都挂着重试按钮，
+              // 用户点哪一个是"重试哪一轮"就说不清了
+              retryDisabled={streaming || m.id !== messages[messages.length - 1]?.id}
+            />
+          ))
         )}
       </main>
 
