@@ -6,6 +6,23 @@
 
 ---
 
+## 📍 当前进度（2026-09-12）
+
+| 阶段 | 状态 | 完成度 |
+|---|---|---|
+| 阶段一 · 大模型对接层 | 🟡 **进行中** | 4/8 学习点 |
+| 阶段二 · RAG | ⬜ 未开始 | 0% |
+| 阶段三 · Agent + MCP | ⬜ 未开始 | 0% |
+| 阶段四 · 工程化 | ⬜ 未开始 | 0% |
+
+**已产出**：`ai-agent` 项目 —— Spring Boot 4.1.1 + Spring AI 2.0.1 + Java 21，**SSE 流式对话与对话记忆已实测跑通**（100+ 增量事件、737 tokens、记忆使 promptTokens 从 242→299）。
+
+**下一步**：异常注入测试 → Nginx 流式实测 → `EntityParamSpec` 结构化输出 → 异步改造。
+
+> 📄 **详细进度、踩坑记录、待办清单、面试素材 → 见 `学习进度台账.md`**
+
+---
+
 ## 一、先回答那个最关键的问题：要不要放弃 Java 去学 Python？
 
 **不要。** 三个理由，都有实测依据：
@@ -193,16 +210,23 @@ Agent 编排层 →  LangChain4j（灵活）或 Spring AI Alibaba（国内/国�
 
 ### 阶段一（1–2 周）大模型对接层 —— 把 LLM 调用做成基础设施组件
 
-- [ ] Token / 上下文窗口 / Temperature / Top-p / Max Tokens 概念（能口算 Token 预算）
+> **进度：🟡 4/8 ｜ 详细记录见 `学习进度台账.md`**
+> 已完成：概念基础、Spring AI 跑通、SSE 流式（部分）、骨架搭建
+> 待完成：Nginx 流式实测、Function Calling、结构化输出、异步改造、异常注入测试
+
+- [x] Token / 上下文窗口 / Temperature / Top-p / Max Tokens 概念（能口算 Token 预算）
 - [ ] `window >= input_tokens + max_output_tokens`，**预留 10%–20% 安全边际**
-- [ ] Spring AI / LangChain4j 跑通 Hello World，**然后自己做一遍底层调用**
-- [ ] **SSE 流式输出**（含 Nginx `proxy_buffering` 关闭 + 换行转义）
+- [x] Spring AI / LangChain4j 跑通 Hello World，**然后自己做一遍底层调用**
+- [~] **SSE 流式输出**（含 Nginx `proxy_buffering` 关闭 + 换行转义）
+      → 端点已跑通（100+ 增量事件、737 tokens 实测）；**Nginx 与换行转义未实测**
 - [ ] Function Calling：**明确「模型只输出调用意图，Java 端负责校验 + 执行 + 回填」的边界**
 - [ ] 结构化输出三方案：JSON Schema / Function Calling / Structured Outputs (Strict)
+      → `EntityParamSpec` 的 `validateSchema()` / `useProviderStructuredOutput()` 已知 API，未编码
 - [ ] **异步调用改造**（WebClient / 虚拟线程）—— 别让线程池被打满
 - [ ] 异常注入测试：主动模拟 API 超时、JSON 截断、网络阻断
 
 > **验收**：一个流式对话接口，能正确处理超时、重试、JSON 校验失败。
+> **当前差距**：超时 / 重试 / JSON 校验**三条都未实现**，故**阶段一尚未验收**。
 
 ### 阶段二（2–4 周）RAG —— 重点在「定位问题」而非「跑通 Demo」
 
