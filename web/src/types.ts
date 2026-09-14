@@ -4,7 +4,7 @@
  * 唯一事实来源是后端代码，改后端时同步改这里：
  *   - 流式请求体：ai.agent.chat.dto.ChatRequest
  *   - done 事件：ai.agent.chat.service.impl.ChatServiceImpl#usageOf
- *   - error 事件：ai.agent.chat.controller.ChatController#safeMessage
+ *   - error 事件：ai.agent.controller.ChatController#safeMessage
  *   - 结构化请求体：ai.agent.chat.structured.dto.StructuredChatRequest
  *   - 结构化响应：ai.agent.chat.structured.StructuredResult / StructuredAnswer
  */

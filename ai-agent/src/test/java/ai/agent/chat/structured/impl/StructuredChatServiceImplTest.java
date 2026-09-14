@@ -3,6 +3,8 @@ package ai.agent.chat.structured.impl;
 import ai.agent.chat.structured.StructuredResult;
 import ai.agent.chat.structured.support.MinConfidenceValidator;
 import ai.agent.config.ChatCallProperties;
+import ai.agent.token.TokenBudgetGuard;
+import ai.agent.token.impl.CharacterClassTokenEstimator;
 import jakarta.validation.ConstraintValidator;
 import jakarta.validation.ConstraintValidatorFactory;
 import jakarta.validation.Validation;
@@ -15,6 +17,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.mockito.stubbing.OngoingStubbing;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.memory.InMemoryChatMemoryRepository;
 
 import java.util.List;
 
@@ -51,11 +54,17 @@ class StructuredChatServiceImplTest {
 
 	private StructuredChatServiceImpl service;
 
+	private TokenBudgetGuard budgetGuard;
+
 	@BeforeEach
 	void setUp() {
 		validator = buildValidator(properties);
 		chatClient = mock(ChatClient.class);
-		service = new StructuredChatServiceImpl(chatClient, validator, properties);
+		// 预算守卫用真实实现（配一份足够大的窗口）：这样"预算校验 + 回灌循环"的组合行为
+		// 是被真实验证过的，而不是"测试里把它 mock 掉了所以永远通过"
+		budgetGuard = new TokenBudgetGuard(properties, new CharacterClassTokenEstimator(properties),
+				new InMemoryChatMemoryRepository(), TokenBudgetGuard.DEFAULT_SYSTEM_PROMPT_LOCATION);
+		service = new StructuredChatServiceImpl(chatClient, validator, properties, budgetGuard);
 	}
 
 	/**

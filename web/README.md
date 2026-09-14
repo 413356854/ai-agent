@@ -1,6 +1,6 @@
 # AI Agent 对话台（前端）
 
-对接 Spring Boot 后端的对话页面，**两种模式**：SSE 流式对话 / 结构化输出。
+对接 Spring Boot 后端的对话页面，**三种模式**：SSE 流式对话 / 结构化输出 / 线程与预算（诊断取证）。
 技术栈：**React 19 + Vite 8 + TypeScript + Ant Design 6**。
 
 ## 跑起来
@@ -58,16 +58,19 @@ src/
 ├── api/
 │   ├── sse.ts               # SSE 帧解析器 + 帧级超时看门狗（本项目最容易出 bug 的地方，注释最密）
 │   ├── chat.ts              # POST /api/chat/stream + 三道超时策略
-│   └── structured.ts        # POST /api/chat/structured + 一刀切超时（无流可切帧）
+│   ├── structured.ts        # POST /api/chat/structured + 一刀切超时（无流可切帧）
+│   └── diag.ts              # /api/diag/threads/* 与 /api/chat/async：诊断 + 非流式对话
 ├── hooks/
 │   ├── useChatStream.ts     # 流式状态机：rAF 合并增量、停止、新会话、一键重试
-│   └── useStructuredChat.ts # 结构化状态机：一问一答成对留痕、无停止按钮
+│   ├── useStructuredChat.ts # 结构化状态机：一问一答成对留痕、无停止按钮
+│   └── useThreadDiag.ts     # 诊断状态机：每组实验一个 Remote 态 + 一把"实验锁"
 ├── components/
 │   ├── MessageBubble.tsx    # 流式气泡：Markdown + 代码高亮 + token 用量 + 超时重试按钮
 │   ├── StructuredResultCard.tsx # 结构化结果卡：答案 + 置信度 + 关键词 + 回灌过程时间线
-│   └── Composer.tsx         # 输入区（两种模式共用，按模式开关停止按钮与 temperature）
-├── types.ts                 # 与后端 DTO 一一对应的类型（两种模式都在这里）
-└── App.tsx                  # 模式切换 + 两套视图
+│   ├── ThreadBudgetPanel.tsx    # 线程与预算面板：当前线程 / 线程账目 / 载体复用 / 钉住对照 / 预算切分
+│   └── Composer.tsx         # 输入区（两种对话模式共用，按模式开关停止按钮与 temperature）
+├── types.ts                 # 与后端 DTO 一一对应的类型（对话两种模式的类型在这里）
+└── App.tsx                  # 模式切换 + 三套视图
 ```
 
 ## 两种模式的差别（这就是要对照的东西）
@@ -87,6 +90,33 @@ src/
 同样一次模型调用，一个逐字推自由文本，一个同步等结构化结果。放一起才能直接对比
 "同样的提问，两种契约下拿到的东西有什么不同"。
 两个 hook 都挂在 `App` 上（不是按模式条件挂载），所以来回切模式**不会丢掉已有记录**。
+
+## 第三种模式：线程与预算（运行时取证）
+
+这一页不放"回答"，放的是**只有改造真的生效才成立的运行时事实**。它对应后端的两个学习点：
+
+| 部件 | 端点 | 它证的是什么 |
+|---|---|---|
+| 当前线程 | `GET /api/diag/threads` | `virtual` 是**容器层是否换上虚拟线程**的唯一直接证据（来自 `Thread.isVirtual()`，不是读配置）。配置写错了 Boot 会静默忽略，所以这里把"配置意图"和"运行时事实"并排显示 |
+| 线程账目 | `GET /api/diag/threads/stats`、`POST .../stats/reset` | 平台线程数（`ThreadMXBean`，**不含虚拟线程**）与业务口径的并发峰值。重置按钮是为连续做对照实验准备的：peak 是单调递增的，上一组会把这一组顶住 |
+| 载体复用 | `GET /api/diag/threads/carriers` | 16 个虚拟线程只落到少数几个 `ForkJoinPool-1-worker-*` 上 —— "并发数 ≫ 线程数"长什么样 |
+| **钉住对照** | `GET /api/diag/threads/pin` | 本页最值钱的一块：两组实验除阻塞方式外完全相同，`synchronized` 会把载体线程钉住导致探针延迟冲到秒级，`ReentrantLock` 则是毫秒级 |
+| 预算切分 | `GET /api/diag/threads/config` | `窗口 × (1-安全边际) = 可用预算`，再切出一块给输出，剩下的才是输入上限；三段按真实 token 数按比例画成一条色带 |
+| 非流式对话 | `GET /api/chat/async`（+ `/sync` 对照） | 预算校验在这条链路上真的跑过；同时把非流式端点的回答和耗时摆出来 |
+
+两个实测坑（都体现在代码里）：
+
+- **`carriers` 的 `virtualThread` 字段实测是空字符串**：`Executors.newVirtualThreadPerTaskExecutor()`
+  不给线程起名。所以它既不能当 React key（16 条样本会撞成同一个 key，控制台直接吐重复 key 警告），
+  也不一定有内容可显示——面板上虚拟线程那一栏只计数，复用的证据靠"每个载体背了几个任务"表达。
+- **`pin` 的字段名是 `probeLatencyWith*`，不是 `queueLatencyWith*`**：这个实验返工过一次，
+  第一版"先启动占位任务、睡一会儿再量延迟"两组都量到 0ms（`runAsync` 在提交时就选好了载体，
+  而"载体刚好被占满"是个很窄的时间窗口）。现在改成"分批投放 + 每批连测多次探针取最大值"，
+  指标名也跟着换了。对照组的 0ms 是正常结果，不是数据缺失。
+
+面板和两个对话 hook 一样挂在 `App` 上，所以来回切模式**实验数据不会丢**（钉住实验一次要跑两秒以上，
+重跑代价太大）。它自己有一条 defer 规则：**第一次切到这个模式才发请求** ——
+虚拟线程计数要遍历所有线程抓栈，用户一直待在流式模式时不该白打。
 
 ## 与后端的契约
 

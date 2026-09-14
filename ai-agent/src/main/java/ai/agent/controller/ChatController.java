@@ -1,9 +1,10 @@
-package ai.agent.chat.controller;
+package ai.agent.controller;
 
 import ai.agent.chat.dto.ChatRequest;
 import ai.agent.chat.service.ChatService;
 import ai.agent.chat.support.ChatRetryPolicy;
 import ai.agent.config.ChatCallProperties;
+import ai.agent.token.TokenBudgetGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClientResponse;
@@ -99,12 +100,15 @@ public class ChatController {
 
 	private final ChatMemoryRepository chatMemoryRepository;
 
+	private final TokenBudgetGuard budgetGuard;
+
 	public ChatController(ChatService chatService, ChatRetryPolicy retryPolicy, ChatCallProperties properties,
-			ChatMemoryRepository chatMemoryRepository) {
+			ChatMemoryRepository chatMemoryRepository, TokenBudgetGuard budgetGuard) {
 		this.chatService = chatService;
 		this.retryPolicy = retryPolicy;
 		this.properties = properties;
 		this.chatMemoryRepository = chatMemoryRepository;
+		this.budgetGuard = budgetGuard;
 	}
 
 	/**
@@ -146,6 +150,26 @@ public class ChatController {
 	private Flux<ServerSentEvent<Object>> sseStream(String conversationId, String message, double temperature) {
 		requireText(conversationId, "conversationId");
 		requireText(message, "message");
+
+		// Token 预算校验（学习点 2）：必须在流开始之前做。
+		//
+		// 为什么不能等流跑到一半再说：SSE 的响应头一旦发出就收不回来，
+		// 超预算只能表现为"流中途报错"——用户已经看到半句话了。
+		// 放在这里则是一个普通的 400 响应，前端能给出准确提示（差多少、该怎么办）。
+		// 顺带一个好处：这一步在 Controller 的构造阶段之外、在返回 Flux 之前执行，
+		// 所以它是"发请求之前"的本地计算，不花任何模型调用成本。
+		TokenBudgetGuard.BudgetCheck budget = budgetGuard.prepare(conversationId, message);
+		if (budget.enabled()) {
+			if (budget.truncated()) {
+				log.warn("上下文超预算，已裁掉最旧的 {} 条历史 conversationId={} 需要={} 可用={}",
+						budget.droppedMessages(), conversationId, budget.neededTokens(), budget.allowedTokens());
+			}
+			else {
+				log.info("预算账目 conversationId={} 需要={} 可用={} 历史条数={} 系统提示词={}",
+						conversationId, budget.neededTokens(), budget.allowedTokens(),
+						budget.historyMessages(), budget.systemPromptTokens());
+			}
+		}
 
 		// 用于在流结束时读取最后一个非空的 token 用量
 		AtomicReference<Map<String, Object>> lastUsage = new AtomicReference<>(Map.of());

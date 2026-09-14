@@ -4,6 +4,7 @@ import ai.agent.chat.structured.StructuredAnswer;
 import ai.agent.chat.structured.StructuredChatService;
 import ai.agent.chat.structured.StructuredResult;
 import ai.agent.config.ChatCallProperties;
+import ai.agent.token.TokenBudgetGuard;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
 import org.slf4j.Logger;
@@ -56,6 +57,8 @@ public class StructuredChatServiceImpl implements StructuredChatService {
 
 	private final ChatCallProperties properties;
 
+	private final TokenBudgetGuard budgetGuard;
+
 	/**
 	 * 生成 JSON Schema 并与字符串互转。
 	 *
@@ -66,10 +69,12 @@ public class StructuredChatServiceImpl implements StructuredChatService {
 	 */
 	private final BeanOutputConverter<StructuredAnswer> converter = new BeanOutputConverter<>(StructuredAnswer.class);
 
-	public StructuredChatServiceImpl(ChatClient chatClient, Validator validator, ChatCallProperties properties) {
+	public StructuredChatServiceImpl(ChatClient chatClient, Validator validator, ChatCallProperties properties,
+			TokenBudgetGuard budgetGuard) {
 		this.chatClient = chatClient;
 		this.validator = validator;
 		this.properties = properties;
+		this.budgetGuard = budgetGuard;
 	}
 
 	@Override
@@ -86,6 +91,18 @@ public class StructuredChatServiceImpl implements StructuredChatService {
 			String raw = null;
 			List<String> issues;
 			StructuredAnswer parsed = null;
+
+			// Token 预算校验（学习点 2）在这里的价值最大：结构化输出是"最多 3 轮"的循环，
+			// 而<b>每一轮的提示词都比上一轮长</b>（带上了上次的原始输出 + 错误清单 + schema）。
+			// 实测第 1 轮 prompt 474 tokens、第 2 轮 845 —— 接近翻倍。
+			// 不在这里拦，就会出现"前几轮烧掉几千 token，最后一轮才因为超窗失败"，
+			// 那是最亏的一种失败：钱花了、时间花了、什么也没拿到。
+			//
+			// 【位置很讲究】必须放在 try 之外。这个 try 的 catch 会把任何 RuntimeException
+			// 都当成"模型输出有问题"→ 转成 issues 去回灌。超预算不是模型的问题，
+			// 回灌也解决不了（下一轮的提示词只会更长），被 catch 住就会变成
+			// "反复回灌一个注定失败的请求"——比直接失败糟得多。
+			budgetGuard.check("结构化输出第 " + index + " 轮", prompt, 0);
 
 			try {
 				raw = callModel(conversationId, prompt);

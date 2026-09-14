@@ -1,4 +1,4 @@
-package ai.agent.chat.structured.controller;
+package ai.agent.controller;
 
 import ai.agent.chat.structured.StructuredChatService;
 import ai.agent.chat.structured.StructuredResult;

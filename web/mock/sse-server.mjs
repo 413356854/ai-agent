@@ -6,19 +6,31 @@
  *   终端 B：VITE_API_TARGET=http://localhost:8081 pnpm dev
  * 或直接跑：pnpm dev:mock（见 package.json）
  *
- * 它按真后端的契约实现三个端点：
+ * 它按真后端的契约实现这些端点：
  *   - POST /api/chat/stream      SSE：content（JSON {"delta":"..."}）/ done（JSON 用量）/ error（JSON 消息），
  *                                且和 Spring 一样写成 `data:xxx`（冒号后不加分隔空格）—— 这正是需要被验证的形态
  *   - POST /api/chat/structured  结构化输出：返回 { answer, attempts[], degraded }
+ *   - GET  /api/chat/async       非流式对话（虚拟线程端点），返回纯文本
+ *   - GET  /api/diag/threads*    线程与预算诊断：当前线程 / 统计 / 配置 / 载体复用 / 钉住对照
  *   - GET  /api/chat/ping        连通性
  *
  * 流式部分故意把一段中文和一个 emoji 拆成多个 chunk 发，用来验证「多字节字符被分包切断」不会乱码。
  * 结构化部分故意造一个"回灌过一轮"的结果（第 1 轮 confidence 写成百分制被拦），
  * 因为那才是这个功能真正值得看的样子；提问里带「降级」二字则返回 degraded 结果。
+ *
+ * 诊断端点的数字是**写死的**，但字段形状、嵌套结构、单位都和真后端一致 ——
+ * 因为真后端那些值依赖运行时事实（每次都不一样），拿它做自检就只能写出很松的断言。
+ * 假后端在这里扮演的是"契约样本"，验证的是界面能不能正确处理这份契约。
  */
 import { createServer } from 'node:http'
 
 const PORT = Number(process.env.MOCK_PORT ?? 8081)
+
+/** 统一的 JSON 响应（诊断端点用）。 */
+function json(res, payload, status = 200) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify(payload))
+}
 
 const PARAGRAPHS = [
   '这是**假后端**返回的流式文本，用来在没配 API Key 的情况下验证前端。\n\n',
@@ -154,10 +166,120 @@ const server = createServer((req, res) => {
     return
   }
 
+  // ---------------------------------------------------------------
+  //  线程与预算诊断端点（学习点 7 + 2）
+  //
+  //  为什么假后端也要实现这几个：真后端那几个端点的返回依赖**运行时事实**
+  //  （当前线程是不是虚拟线程、JVM 里有多少个平台线程、synchronized 有没有钉住载体），
+  //  也就是说它们的**数值每次都不一样**。而界面自检需要确定性 ——
+  //  拿真后端跑，"钉住延迟 6405ms vs 0ms"这种数字每次都在变，断言只能写得很松，
+  //  松到失去意义。
+  //
+  //  所以这里返回**一组固定但形态完整**的数据：数字是假的，但只要界面
+  //  依赖的字段形状、嵌套结构、单位（毫秒字符串）都和真后端一致，
+  //  界面逻辑就能被真实验证。这正是假后端存在的意义 ——
+  //  它验证的是"界面能不能正确处理这份契约"，不是"后端算得对不对"。
+  // ---------------------------------------------------------------
+  if (req.method === 'GET' && req.url.startsWith('/api/diag/threads/config')) {
+    json(res, {
+      containerVirtualThreads: true,
+      asyncExecutor: 'virtual',
+      platformPoolSize: 8,
+      samplingLatency: 'PT0.4S',
+      standInActive: true,
+      budgetEnabled: true,
+      contextWindow: 128000,
+      maxOutputTokens: 2048,
+      safetyMargin: 0.15,
+      usableBudget: 108800,
+      inputAllowance: 106752,
+    })
+    return
+  }
+
+  if (req.method === 'GET' && req.url === '/api/diag/threads') {
+    json(res, {
+      currentThread: {
+        virtual: true,
+        name: 'tomcat-vt-42',
+        threadId: 128,
+        daemon: true,
+        priority: 5,
+        configuredMode: 'virtual',
+        containerVirtualThreadsEnabled: true,
+      },
+      note: 'virtual=true 的含义：本次请求跑在虚拟线程上，并发上限不再等于容器线程池大小',
+    })
+    return
+  }
+
+  if (req.method === 'GET' && req.url.startsWith('/api/diag/threads/stats')) {
+    json(res, {
+      livePlatformThreads: 31,
+      peakPlatformThreads: 34,
+      daemonThreads: 27,
+      liveVirtualThreads: 3,
+      inFlight: 2,
+      peakInFlight: 400,
+      totalRequests: 812,
+      availableProcessors: 8,
+      platformPoolSize: 8,
+      containerVirtualThreadsEnabled: true,
+      configuredMode: 'virtual',
+    })
+    return
+  }
+
+  if (req.method === 'POST' && req.url.startsWith('/api/diag/threads/stats/reset')) {
+    json(res, { peakInFlight: 0, totalRequests: 0 })
+    return
+  }
+
+  if (req.method === 'GET' && req.url.startsWith('/api/diag/threads/carriers')) {
+    // 16 个虚拟线程只用 4 个载体 —— 这个"远小于"正是要展示的复用关系
+    const carriers = ['ForkJoinPool-1-worker-1', 'ForkJoinPool-1-worker-2', 'ForkJoinPool-1-worker-3', 'ForkJoinPool-1-worker-4']
+    json(res, {
+      virtualThreads: 16,
+      sleepMs: 300,
+      distinctCarriers: carriers.length,
+      carrierParallelism: 8,
+      samples: Array.from({ length: 16 }, (_, i) => ({
+        virtualThread: '',
+        carrier: carriers[i % carriers.length],
+      })),
+      note: 'virtualThreads 远大于 distinctCarriers 即为正常：虚拟线程复用了少量载体线程',
+    })
+    return
+  }
+
+  if (req.method === 'GET' && req.url.startsWith('/api/diag/threads/pin')) {
+    json(res, {
+      holders: 16,
+      holdMsEach: 800,
+      carrierParallelism: 8,
+      probeLatencyWithSynchronized: '6405ms',
+      probeLatencyWithReentrantLock: '0ms',
+      verdict: '确认钉住：synchronized 占住载体线程后，新任务必须排队等载体空出来',
+      note: 'probeLatency = 『提交一个空任务 → 它真正开始执行』的最坏延迟，等价于用户感知到的排队时间。两组实验除阻塞方式外完全相同',
+      fix: '把包着阻塞 IO 的 synchronized 换成 ReentrantLock，或缩小临界区、把 IO 移到锁外',
+    })
+    return
+  }
+
+  if (req.method === 'GET' && req.url.startsWith('/api/chat/async')) {
+    // 非流式对话（异步端点与 /sync 对照组共用）：返回纯文本，带一点延迟以模拟模型
+    setTimeout(() => {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
+      res.end('[mock] 这是非流式对话的响应，由假后端返回。')
+    }, 300)
+    return
+  }
+
   res.writeHead(404, { 'Content-Type': 'application/json' })
   res.end(
     JSON.stringify({
-      message: 'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping',
+      message:
+        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/chat/async',
     }),
   )
 })

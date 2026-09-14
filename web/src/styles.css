@@ -279,3 +279,455 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ---------- 线程与预算面板 ---------- */
+
+/*
+ * 面板自己是一个滚动容器（而不是复用 .message-list）：
+ * 诊断内容比对话长得多，而且是"卡片陈列"而不是"消息流"，没有"新内容贴到底部"这个语义。
+ * 用 flex 列拿到剩余高度（.app-shell 是 100% 高的 flex 列），min-height: 0 不能省 ——
+ * 少了它 flex 子项的最小高度是内容高度，overflow 永远不会生效，整页会被卡片撑成一条长页面。
+ */
+.diag-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/*
+ * 卡片宽度：一律"能铺满就铺满、不够就换行"，而不是固定宽度。
+ * 里面的数字网格（stat-grid）本身会自适应列数，所以窄屏下先收缩再换行，不会横向撑破页面
+ * （verify-ui.mjs 会在 documentElement 上断言 scrollWidth - clientWidth === 0）。
+ */
+.diag-card {
+  min-width: 0;
+}
+
+/*
+ * 两个实验卡片先并排再换行：flex-wrap + flex-basis 就是"宽屏两列、窄屏一列"的自动版，
+ * 不写媒体查询也能保证不横向溢出 —— 300px 的 basis 比任何常见窄屏都窄。
+ */
+.diag-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.diag-pair > .diag-card {
+  flex: 1 1 300px;
+}
+
+/* 另起一行的整宽卡片：独占一行，否则会被 flex 挤成窄条 */
+.diag-card-wide {
+  flex: 1 1 100%;
+}
+
+.diag-card .ant-card-body {
+  padding: 14px 16px;
+}
+
+.diag-note {
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.diag-loading {
+  padding: 6px 0;
+}
+
+/* ---------- 当前线程：整页唯一的"直接证据" ---------- */
+
+/*
+ * virtual: true 和 false 要用两种视觉语言，不能只差一个词。
+ * 这是整个改造的验收点 —— 扫一眼颜色就知道有没有生效，不必去读那行布尔值。
+ */
+.vt-hero {
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid;
+}
+
+.vt-hero.is-virtual {
+  background: #f2fbf4;
+  border-color: #b7ebc6;
+}
+
+.vt-hero.is-platform {
+  background: #fff5f0;
+  border-color: #ffd8bf;
+}
+
+.vt-hero-flag {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.vt-hero.is-virtual .vt-hero-flag {
+  color: #237804;
+}
+
+.vt-hero.is-platform .vt-hero-flag {
+  color: #ad2102;
+}
+
+.vt-hero-raw {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 13px;
+  opacity: 0.75;
+}
+
+.vt-hero-hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* 键值对网格：线程名、线程 ID 这类值要能和后端日志逐字符对上，所以用等宽字体 */
+.kv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.kv-item {
+  min-width: 0;
+}
+
+.kv-label {
+  font-size: 12px;
+  color: #8c8c8c;
+}
+
+.kv-value {
+  margin: 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.kv-value.is-mono {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 13px;
+}
+
+/* ---------- 数字网格（线程账目 / 预算 / 实验参数共用） ---------- */
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.stat-cell {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fafbfc;
+  border: 1px solid #eceef1;
+  min-width: 0;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: #8c8c8c;
+  line-height: 1.5;
+}
+
+.stat-value {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 20px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* 关键数字（虚拟线程数、输入上限）单独着色，让"该看哪几个"一眼可辨 */
+.stat-cell.is-accent {
+  background: #f0f7ff;
+  border-color: #bae0ff;
+}
+
+.stat-cell.is-accent .stat-value {
+  color: #0958d9;
+}
+
+/* ---------- 载体线程复用图 ---------- */
+
+.vt-mux {
+  padding: 12px;
+  border-radius: 10px;
+  background: #fafbfc;
+  border: 1px dashed #d9d9d9;
+}
+
+.vt-mux-group {
+  min-width: 0;
+}
+
+.vt-mux-label {
+  font-size: 12px;
+  color: #8c8c8c;
+  margin-bottom: 6px;
+}
+
+.vt-mux-arrow {
+  font-size: 12px;
+  color: #8c8c8c;
+  margin: 8px 0;
+  text-align: center;
+}
+
+.vt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.vt-chip {
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.vt-chip.is-virtual {
+  background: #f0f7ff;
+  border-color: #bae0ff;
+  color: #0958d9;
+}
+
+.vt-chip.is-carrier {
+  background: #f7f4ff;
+  border-color: #d3c7ff;
+  color: #391085;
+}
+
+/* 说明性标签：不是数据，只用来解释旁边那个数字为什么长这样 */
+.vt-chip.is-plain {
+  background: #fafafa;
+  border-color: #eceef1;
+  color: #8c8c8c;
+}
+
+/* 样本明细：N 行 × 两列，多了要能滚，不能把卡片撑成一条长柱 */
+.sample-list {
+  margin-top: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid #eceef1;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.sample-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* 载体线程名的 toString() 可能很长，允许换行，否则会把卡片顶宽 */
+  flex-wrap: wrap;
+  padding: 5px 10px;
+  border-bottom: 1px solid #f3f4f6;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}
+
+.sample-row:last-child {
+  border-bottom: none;
+}
+
+.sample-cell {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sample-cell.is-virtual {
+  flex: 0 1 auto;
+  color: #0958d9;
+}
+
+.sample-cell.is-carrier {
+  flex: 1 1 auto;
+  color: #391085;
+}
+
+.sample-arrow {
+  flex: none;
+  color: #bfbfbf;
+}
+
+/* ---------- 钉住实验：两个并排的数字就是全部结论 ---------- */
+
+.pin-lane {
+  height: 100%;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid;
+}
+
+.pin-lane.is-bad {
+  background: #fff5f0;
+  border-color: #ffd8bf;
+}
+
+.pin-lane.is-good {
+  background: #f2fbf4;
+  border-color: #b7ebc6;
+}
+
+.pin-lane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pin-lane-title {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-weight: 700;
+}
+
+/*
+ * 延迟数字要足够大才能"一眼比出来"。这是本页最值钱的一个对比，
+ * 字号和别的数字不一样是刻意的：两组实验条件完全相同，只有阻塞方式不同，
+ * 结论全靠这两个数字的落差表达。
+ */
+.pin-latency {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 30px;
+  line-height: 1.3;
+  margin: 4px 0 8px;
+}
+
+.pin-lane.is-bad .pin-latency {
+  color: #ad2102;
+}
+
+.pin-lane.is-good .pin-latency {
+  color: #237804;
+}
+
+.pin-bar-track {
+  height: 8px;
+  border-radius: 4px;
+  background: #f0f0f0;
+  overflow: hidden;
+}
+
+.pin-bar {
+  height: 100%;
+  border-radius: 4px;
+}
+
+.pin-bar.is-bad {
+  background: #ff7875;
+}
+
+.pin-bar.is-good {
+  background: #95de64;
+}
+
+.pin-lane-note {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* ---------- Token 预算：把窗口切成几块画出来 ---------- */
+
+.budget-bar {
+  display: flex;
+  height: 34px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #eceef1;
+}
+
+/* 段按真实 token 数按比例铺开。跟"三个数字并排"相比，这样能看出"输出预留占了窗口多大一块" */
+.budget-seg {
+  height: 100%;
+}
+
+.budget-seg.is-input {
+  background: #91caff;
+}
+
+.budget-seg.is-output {
+  background: #ffd591;
+}
+
+.budget-seg.is-margin {
+  background: #d9d9d9;
+}
+
+.budget-legend {
+  font-size: 12px;
+}
+
+/* 非流式对话卡片里的那行预算摘要：等宽字体，让数字能上下对齐着读 */
+.budget-strip {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #f0f7ff;
+  border: 1px solid #bae0ff;
+  color: #0958d9;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.budget-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex: none;
+}
+
+.budget-dot.is-input {
+  background: #91caff;
+}
+
+.budget-dot.is-output {
+  background: #ffd591;
+}
+
+.budget-dot.is-margin {
+  background: #d9d9d9;
+}
+
+/* ---------- 非流式对话记录 ---------- */
+
+.async-turn {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #eceef1;
+  background: #fafbfc;
+}
+
+.async-question {
+  overflow-wrap: anywhere;
+}
+
+.async-elapsed {
+  font-size: 12px;
+}
+
+.async-answer {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #eceef1;
+  line-height: 1.7;
+  max-height: 320px;
+  overflow-y: auto;
+}

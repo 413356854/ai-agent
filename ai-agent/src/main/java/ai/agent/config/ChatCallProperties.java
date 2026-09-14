@@ -38,6 +38,18 @@ public class ChatCallProperties {
 	@NestedConfigurationProperty
 	private Structured structured = new Structured();
 
+	@NestedConfigurationProperty
+	private Budget budget = new Budget();
+
+	@NestedConfigurationProperty
+	private Estimation estimation = new Estimation();
+
+	@NestedConfigurationProperty
+	private VirtualThreads virtualThreads = new VirtualThreads();
+
+	@NestedConfigurationProperty
+	private Sampling sampling = new Sampling();
+
 	public Retry getRetry() {
 		return retry;
 	}
@@ -60,6 +72,38 @@ public class ChatCallProperties {
 
 	public void setStructured(Structured structured) {
 		this.structured = structured;
+	}
+
+	public Budget getBudget() {
+		return budget;
+	}
+
+	public void setBudget(Budget budget) {
+		this.budget = budget;
+	}
+
+	public Estimation getEstimation() {
+		return estimation;
+	}
+
+	public void setEstimation(Estimation estimation) {
+		this.estimation = estimation;
+	}
+
+	public VirtualThreads getVirtualThreads() {
+		return virtualThreads;
+	}
+
+	public void setVirtualThreads(VirtualThreads virtualThreads) {
+		this.virtualThreads = virtualThreads;
+	}
+
+	public Sampling getSampling() {
+		return sampling;
+	}
+
+	public void setSampling(Sampling sampling) {
+		this.sampling = sampling;
 	}
 
 	/**
@@ -281,6 +325,376 @@ public class ChatCallProperties {
 
 		public void setIdle(Duration idle) {
 			this.idle = idle;
+		}
+	}
+
+	/**
+	 * Token 预算（学习点 2）。
+	 *
+	 * <p><b>要回答的问题只有一个</b>：这次请求发出去，会不会超窗口？
+	 * <pre>
+	 *   contextWindow × (1 - safetyMargin)  ≥  estimatedInputTokens + maxOutputTokens
+	 * </pre>
+	 * 左边是"这次真正能用的预算"，右边是"这次要花的额度"。
+	 *
+	 * <p><b>为什么必须在发请求之前算</b>：超窗口这件事的失败成本极不对称 ——
+	 * 自己算出来只需一次本地计算（微秒级、0 成本）；等模型报错则要
+	 * <b>先花一次往返的钱和几秒钟</b>，而且那时候提示词已经拼好、时间已经花掉。
+	 * 更糟的是：有些供应商不报错，而是<b>静默截断</b>输入 ——
+	 * 你会在"答案为什么变差了"上排查半天，根本想不到是上下文被悄悄砍掉了。
+	 *
+	 * <p><b>安全边际留多少</b>：默认 15%（资料给的经验区间是 10%–20%）。为什么不能是 0：
+	 * <ul>
+	 *   <li>Token 估算永远是<b>估算</b>——不同模型的分词器不同，没有一个通用算法能算准；</li>
+	 *   <li>脚手架要额外占额度：system 提示词、消息角色包装、工具（function）定义、
+	 *       多模态占位符，这些都不在你的正文里，但都要计费、都要占窗口；</li>
+	 *   <li>供应商可能悄悄改默认值（例如给输出留的余量）。</li>
+	 * </ul>
+	 * 边际留小了会"偶发超窗"，留大了会"早早拒绝本来能过的请求"。
+	 * 15% 是在本项目的实测数据上选的（见台账「Token 预算实测」一节）。
+	 */
+	public static class Budget {
+
+		/**
+		 * 是否启用预算校验。默认开。
+		 *
+		 * <p>做成开关有两个实际用途：一是排查"是不是预算校验把请求拦了"时可以一键排除；
+		 * 二是老系统接入时先观察、后启用（先只记日志不拒绝）。
+		 */
+		private boolean enabled = true;
+
+		/**
+		 * 模型上下文窗口（输入 + 输出共享这一个窗口）。
+		 *
+		 * <p>DeepSeek 的窗口是 128K。这个值是<b>供应商能力</b>，不是我们能调的参数，
+		 * 所以换模型必须跟着改 —— 也是把它放在配置里的原因。
+		 */
+		private int contextWindow = 128_000;
+
+		/**
+		 * 我们希望为「模型输出」预留的最大 token 数。
+		 *
+		 * <p><b>为什么必须显式留</b>：输入 + 输出共享同一个窗口。如果不给输出留位置，
+		 * 一个刚好塞满窗口的输入会让模型没有空间回答 —— 表现为回答被从中间切断
+		 * （对应踩坑库里"JSON 截断"那条：解析失败不是因为模型笨，是因为它没地方写了）。
+		 *
+		 * <p>默认 2048 比实测最长回答（494 tokens）大得多，是刻意留的余量：
+		 * 结构化输出要吐完整 JSON、代码类回答会很长。
+		 */
+		private int maxOutputTokens = 2048;
+
+		/**
+		 * 安全边际比例，0~1。默认 0.15（即 15%）。
+		 *
+		 * <p>作用是从窗口里先"扣掉"一块，剩下的才是可用预算。理由见类注释：
+		 * 估算必然有误差、脚手架要占额度、供应商行为可能变。资料给的经验区间就是 10%–20%。
+		 */
+		private double safetyMargin = 0.15;
+
+		/**
+		 * 是否允许在超预算时自动裁剪最旧的对话历史（而不是直接拒绝）。
+		 *
+		 * <p>默认允许：对话越聊越长是<b>常态</b>，一超限就报错会让用户体验很差
+		 * （"聊到第 20 轮突然不能用"）。裁剪旧历史是"丢掉最不重要的部分、保住这次能答"，
+		 * 比拒绝更合理。
+		 *
+		 * <p>但裁剪<b>不能</b>裁到"这一句提问本身都放不下"——那种情况必须拒绝，
+		 * 因为再裁也没用（见 {@code TokenBudgetGuard}）。
+		 */
+		private boolean truncateHistory = true;
+
+		/**
+		 * 裁剪后至少要保留的历史消息条数。
+		 *
+		 * <p>为什么不裁到 0：对话记忆是"能用"的前提。把历史全丢掉虽然一定不超预算，
+		 * 但模型会失忆 —— 用户会觉得"聊着聊着它就不认识我了"，
+		 * 这比报一个明确的"上下文过长"错误更难排查。
+		 */
+		private int minHistoryMessages = 2;
+
+		public boolean isEnabled() {
+			return enabled;
+		}
+
+		public void setEnabled(boolean enabled) {
+			this.enabled = enabled;
+		}
+
+		public int getContextWindow() {
+			return contextWindow;
+		}
+
+		public void setContextWindow(int contextWindow) {
+			this.contextWindow = contextWindow;
+		}
+
+		public int getMaxOutputTokens() {
+			return maxOutputTokens;
+		}
+
+		public void setMaxOutputTokens(int maxOutputTokens) {
+			this.maxOutputTokens = maxOutputTokens;
+		}
+
+		public double getSafetyMargin() {
+			return safetyMargin;
+		}
+
+		public void setSafetyMargin(double safetyMargin) {
+			this.safetyMargin = safetyMargin;
+		}
+
+		public boolean isTruncateHistory() {
+			return truncateHistory;
+		}
+
+		public void setTruncateHistory(boolean truncateHistory) {
+			this.truncateHistory = truncateHistory;
+		}
+
+		public int getMinHistoryMessages() {
+			return minHistoryMessages;
+		}
+
+		public void setMinHistoryMessages(int minHistoryMessages) {
+			this.minHistoryMessages = minHistoryMessages;
+		}
+
+		/** 扣掉安全边际后真正可用的 token 预算。 */
+		public int usableBudget() {
+			double usable = contextWindow * (1.0 - clampMargin(safetyMargin));
+			return Math.max(0, (int) usable);
+		}
+
+		/** 预留给输出的额度：既不能超过可用预算，也不能为负。 */
+		public int reservedForOutput() {
+			return Math.max(0, Math.min(maxOutputTokens, usableBudget()));
+		}
+
+		/** 留给输入的上限。允许为 0 —— 那说明配置本身矛盾（窗口比输出预留还小），由调用方报错。 */
+		public int inputAllowance() {
+			return usableBudget() - reservedForOutput();
+		}
+
+		private static double clampMargin(double margin) {
+			if (Double.isNaN(margin) || margin < 0) {
+				return 0;
+			}
+			return Math.min(margin, 0.9);
+		}
+	}
+
+	/**
+	 * Token 估算系数（学习点 2 的"怎么算"部分）。
+	 *
+	 * <p><b>为什么要有系数、而不是"字符数 ÷ 4"一个公式走天下</b>：
+	 * 分词器（BPE）对字符的切分密度和字符集强相关。以本项目实测的 DeepSeek 为例：
+	 * <ul>
+	 *   <li><b>中文/日文等 CJK</b>：约 <b>0.61 token/字</b>（常用词被合并成整块，
+	 *       所以一个字往往连一个 token 都不到）；</li>
+	 *   <li><b>英文与代码</b>：约 <b>6.6 字符/token</b>（缩进、标点、常见词合并得很凶）。</li>
+	 * </ul>
+	 * 一个"字符 ÷ 4"的通式在英文上看着很准，但它有两个问题：混进中文会<b>低估近 2 倍</b>，
+	 * 而在英文上又<b>高估 1.6 倍</b>。所以必须按字符类别分开算。
+	 *
+	 * <p><b>这里的系数是实测校准出来的，不是拍脑袋定的</b>。
+	 * 校准方法（可复现）：对同一段文本做不同长度的扫描，用真实 usage 拟合出边际密度 ——
+	 * 详见台账「Token 预算实测」一节，代码见 {@code TokenCalibrationController}。
+	 *
+	 * <p><b>为什么最终取值略高于实测值</b>：估算宁可偏保守一侧。
+	 * 低估的后果是超窗没被拦住（钱花了、可能被静默截断）；
+	 * 高估的后果只是"历史被多裁掉一点"。两者代价不对称，所以留了约 15%~20% 的余量。
+	 * 注意这只是<b>第二道</b>余量：{@link Budget#safetyMargin} 那里还有一道 15% 的窗口级边际。
+	 */
+	public static class Estimation {
+
+		/**
+		 * 每多少个 ASCII 字符算 1 个 token。
+		 *
+		 * <p>注意是"字符 / token"（越大越省），不是"token / 字符"。
+		 *
+		 * <p><b>实测值 6.6，这里取 5.5</b>（约留 20% 余量）。
+		 * 换供应商必须重新校准 —— 这个数跟着分词器走，换个模型就可能完全不同。
+		 */
+		private double asciiCharsPerToken = 5.5;
+
+		/**
+		 * 每个 CJK 字符算几个 token。
+		 *
+		 * <p><b>实测值 0.609，这里取 0.75</b>（约留 23% 余量）。
+		 */
+		private double cjkTokensPerChar = 0.75;
+
+		/**
+		 * 其他字符（Emoji、俄文、阿拉伯文等）每个算几个 token。
+		 *
+		 * <p><b>这一项没有实测数据支撑</b>，保留 1.5 —— 因为校准样本里没有这类字符。
+		 * 取 1.5 的理由是它们几乎必然被拆成多个 BPE 片段（一个 Emoji 常见 3 个 token 起步）。
+		 * 换句话说：这是一个<b>明确标注为"未校准"</b>的系数，而不是假装算准了。
+		 * 真要用到多语言场景，应当补一组样本再调。
+		 */
+		private double otherTokensPerChar = 1.5;
+
+		/**
+		 * 每条消息的固定开销（角色包装等）。
+		 *
+		 * <p>对话协议的每条消息都要包一层角色结构
+		 * （形如 {@code <|im_start|>user ... <|im_end|>}），这部分不来自正文却占 token。
+		 * 每条 4 是业内常用的经验值（OpenAI 的 token 计数指南就这么算）。
+		 */
+		private int tokensPerMessage = 4;
+
+		/** 整个请求的固定开销（回复引导符等）。 */
+		private int tokensPerRequest = 3;
+
+		public double getAsciiCharsPerToken() {
+			return asciiCharsPerToken;
+		}
+
+		public void setAsciiCharsPerToken(double asciiCharsPerToken) {
+			this.asciiCharsPerToken = asciiCharsPerToken;
+		}
+
+		public double getCjkTokensPerChar() {
+			return cjkTokensPerChar;
+		}
+
+		public void setCjkTokensPerChar(double cjkTokensPerChar) {
+			this.cjkTokensPerChar = cjkTokensPerChar;
+		}
+
+		public double getOtherTokensPerChar() {
+			return otherTokensPerChar;
+		}
+
+		public void setOtherTokensPerChar(double otherTokensPerChar) {
+			this.otherTokensPerChar = otherTokensPerChar;
+		}
+
+		public int getTokensPerMessage() {
+			return tokensPerMessage;
+		}
+
+		public void setTokensPerMessage(int tokensPerMessage) {
+			this.tokensPerMessage = tokensPerMessage;
+		}
+
+		public int getTokensPerRequest() {
+			return tokensPerRequest;
+		}
+
+		public void setTokensPerRequest(int tokensPerRequest) {
+			this.tokensPerRequest = tokensPerRequest;
+		}
+	}
+
+	/**
+	 * 虚拟线程与异步执行（学习点 7）。
+	 *
+	 * <p>这一节要回答的问题：<b>非流式端点为什么必须改造，改造到哪一层才算数</b>。
+	 * 见 {@code ai.agent.config.VirtualThreadConfig} 的类注释（那里写了完整的推理链）。
+	 */
+	public static class VirtualThreads {
+
+		/**
+		 * 是否给 Tomcat 的连接器换上虚拟线程执行器。
+		 *
+		 * <p>关掉它就回到"一个请求一个平台线程"，可以用来做同步 vs 虚拟线程的对照压测 ——
+		 * 这个开关的全部价值就是让两种模式能在<b>同一个二进制、同一台机器</b>上对比，
+		 * 否则对比数字会被"不同版本/不同机器"污染。
+		 */
+		private boolean enabled = true;
+
+		/**
+		 * 非流式调用的执行模式：{@code virtual} / {@code platform} / {@code auto}。
+		 *
+		 * <ul>
+		 *   <li>{@code virtual} —— 交给 {@code Executors.newVirtualThreadPerTaskExecutor()} 执行（默认）；</li>
+		 *   <li>{@code platform} —— 交给固定大小的平台线程池执行，用于对照；</li>
+		 *   <li>{@code auto} —— 不切换线程，直接在容器线程上跑（保持改造前的行为）。</li>
+		 * </ul>
+		 */
+		private String asyncExecutor = "virtual";
+
+		/**
+		 * {@code platform} 模式下的线程池大小。
+		 *
+		 * <p>默认 8 是刻意取的<b>小值</b>：它把"线程池大小 = 上游并发上限"这个约束
+		 * 从"要 500 个并发才撞得到"变成"8 个并发就撞得到"，
+		 * 于是阻塞式设计的问题在压测里几秒钟就能复现，而不用打满 200 个线程。
+		 */
+		private int platformPoolSize = 8;
+
+		public boolean isEnabled() {
+			return enabled;
+		}
+
+		public void setEnabled(boolean enabled) {
+			this.enabled = enabled;
+		}
+
+		public String getAsyncExecutor() {
+			return asyncExecutor;
+		}
+
+		public void setAsyncExecutor(String asyncExecutor) {
+			this.asyncExecutor = asyncExecutor;
+		}
+
+		public int getPlatformPoolSize() {
+			return platformPoolSize;
+		}
+
+		public void setPlatformPoolSize(int platformPoolSize) {
+			this.platformPoolSize = platformPoolSize;
+		}
+	}
+
+	/**
+	 * 压测替身配置：让"模型调用"变成一段可控的固定延迟。
+	 *
+	 * <p><b>为什么压测必须用替身，不能直接打真实模型</b>：
+	 * <ol>
+	 *   <li>真实模型每次调用要几秒、要花钱，做 200 并发的对比实验既慢又贵；</li>
+	 *   <li>更致命的是<b>不可重复</b>——上游抖动会污染对比数字，
+	 *       而"同步 vs 虚拟线程"这种对比最需要的恰恰是"两次实验除了线程模型之外完全一样"。</li>
+	 * </ol>
+	 *
+	 * <p>让替身纯粹睡同样长的时间，就把变量收敛到只剩一个：<b>等待期间那个线程还能不能干别的活</b>。
+	 * 这正是虚拟线程要证明的东西 —— 而且它证明的不是"虚拟线程更快"，
+	 * 是"虚拟线程让等待不再占用宝贵资源"（见台账里的结论）。
+	 */
+	public static class Sampling {
+
+		/**
+		 * 替身延迟。大于 0 时启用替身（不调用真实模型）。
+		 *
+		 * <p>默认 0 = 关闭，所以正常启动、正常对话完全不受影响 ——
+		 * 替身只在压测时通过启动参数打开。
+		 */
+		private Duration latency = Duration.ZERO;
+
+		/** 替身返回的固定文本，避免压测时产生大响应体干扰网络测量。 */
+		private String response = "采样响应";
+
+		public Duration getLatency() {
+			return latency;
+		}
+
+		public void setLatency(Duration latency) {
+			this.latency = latency;
+		}
+
+		public String getResponse() {
+			return response;
+		}
+
+		public void setResponse(String response) {
+			this.response = response;
+		}
+
+		public boolean isStandInActive() {
+			return latency != null && !latency.isZero() && !latency.isNegative();
 		}
 	}
 
