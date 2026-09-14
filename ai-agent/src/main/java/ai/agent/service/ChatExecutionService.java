@@ -1,6 +1,5 @@
-package ai.agent.chat.async;
+package ai.agent.service;
 
-import ai.agent.chat.service.ChatService;
 import ai.agent.config.ChatCallProperties;
 import ai.agent.diag.ThreadDiagnostics;
 import org.slf4j.Logger;

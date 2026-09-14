@@ -1,4 +1,4 @@
-package ai.agent.chat.structured.impl;
+package ai.agent.service.impl;
 
 import ai.agent.chat.structured.StructuredResult;
 import ai.agent.chat.structured.support.MinConfidenceValidator;

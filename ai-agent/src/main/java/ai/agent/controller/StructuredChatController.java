@@ -1,6 +1,6 @@
 package ai.agent.controller;
 
-import ai.agent.chat.structured.StructuredChatService;
+import ai.agent.service.StructuredChatService;
 import ai.agent.chat.structured.StructuredResult;
 import ai.agent.chat.structured.dto.StructuredChatRequest;
 import org.slf4j.Logger;

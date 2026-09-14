@@ -1,9 +1,9 @@
-package ai.agent.chat.structured.impl;
+package ai.agent.service.impl;
 
 import ai.agent.chat.structured.StructuredAnswer;
-import ai.agent.chat.structured.StructuredChatService;
 import ai.agent.chat.structured.StructuredResult;
 import ai.agent.config.ChatCallProperties;
+import ai.agent.service.StructuredChatService;
 import ai.agent.token.TokenBudgetGuard;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;

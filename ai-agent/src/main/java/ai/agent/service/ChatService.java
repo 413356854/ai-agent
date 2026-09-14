@@ -1,4 +1,4 @@
-package ai.agent.chat.service;
+package ai.agent.service;
 
 import org.springframework.ai.chat.client.ChatClientResponse;
 import reactor.core.publisher.Flux;
@@ -8,7 +8,7 @@ import java.util.Map;
 /**
  * 对话服务<b>契约</b>（接口）。
  *
- * <p>为什么拆成接口 + 实现（{@code service} / {@code service.impl} 两个包）：
+ * <p>为什么拆成接口（{@code ai.agent.service}） + 实现（{@code ai.agent.service.impl}）两个包：
  * <ul>
  *   <li>上层（{@code ChatController}）只依赖契约，不依赖 Spring AI 的装配细节，
  *       将来换实现（加缓存、换模型、加拦截）不必改调用方；</li>

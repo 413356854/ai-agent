@@ -99,7 +99,7 @@ curl -X POST http://localhost:8080/api/chat/structured ^
 | 输出被 `max_tokens` 截断 | 失败 | 解析器 |
 
 所以：**解析成功 ≠ 数据可用**。供应商没法从协议层保证正确性，正确性只能靠应用侧兜 ——
-这就是 `ai.agent.chat.structured` 模块存在的全部理由。
+这就是 `ai.agent.service.impl.StructuredChatServiceImpl`（契约在 `ai.agent.service.StructuredChatService`）存在的全部理由。
 
 ### 回灌重试（Retry & Reflection Loop）
 

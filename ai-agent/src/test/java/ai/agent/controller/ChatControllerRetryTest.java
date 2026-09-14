@@ -1,9 +1,9 @@
 package ai.agent.controller;
 
 import ai.agent.chat.dto.ChatRequest;
-import ai.agent.chat.service.ChatService;
 import ai.agent.chat.support.ChatRetryPolicy;
 import ai.agent.config.ChatCallProperties;
+import ai.agent.service.ChatService;
 import ai.agent.token.TokenBudgetGuard;
 import ai.agent.token.impl.CharacterClassTokenEstimator;
 import org.junit.jupiter.api.DisplayName;

@@ -1,7 +1,7 @@
 package ai.agent.controller;
 
-import ai.agent.chat.async.ChatExecutionService;
-import ai.agent.chat.service.ChatService;
+import ai.agent.service.ChatExecutionService;
+import ai.agent.service.ChatService;
 import ai.agent.token.TokenBudgetGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

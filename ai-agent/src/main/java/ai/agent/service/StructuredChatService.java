@@ -1,9 +1,12 @@
-package ai.agent.chat.structured;
+package ai.agent.service;
+
+import ai.agent.chat.structured.StructuredAnswer;
+import ai.agent.chat.structured.StructuredResult;
 
 /**
  * 结构化输出的<b>契约</b>。
  *
- * <p>与 {@code ChatService}（流式对话）分开定义是刻意的：两者的失败语义完全不同。
+ * <p>与 {@link ai.agent.service.ChatService}（流式对话）分开定义是刻意的：两者的失败语义完全不同。
  * 流式对话"吐出多少算多少"，失败了给 error 事件；结构化输出是<b>全有或全无</b>——
  * 要么拿到一个通过校验的对象，要么拿到明确标记的降级结果，不存在"半成品"。
  * 契约不同就不该塞进同一个接口。
