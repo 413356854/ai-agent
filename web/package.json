@@ -9,6 +9,7 @@
     "mock": "node mock/sse-server.mjs",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
+    "check:ui": "node verify-ui.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -23,6 +24,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^6.1.1",
+    "playwright": "^1.63.0",
     "typescript": "^5.9.0",
     "vite": "^8.3.0"
   }

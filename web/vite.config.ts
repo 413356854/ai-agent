@@ -20,6 +20,15 @@ export default defineConfig(({ mode }) => ({
     port: 5173,
     // 端口被占用时直接报错，而不是悄悄换成 5174（否则联调时你会怀疑为什么代理没生效）
     strictPort: true,
+    // 关掉文件监听对「原子替换临时目录」的遍历。
+    // 为什么必须写这个：编辑工具/编辑器落盘时是"写临时文件 → 原子重命名"，
+    // 而在 Windows 上那个瞬间创建又删除的 `.xxx.tmpdir` 会让 chokidar 抛
+    //   Error: EBUSY: resource busy or locked, watch '...tmpdir\xxx.tmp'
+    // 而 Vite **没有捕获它** —— 直接进程退出，dev server 整个挂掉。
+    // 表现是"改一个文件，前端服务就没了"，很容易被误判成代码写崩了。
+    watch: {
+      ignored: ['**/.*.tmpdir/**', '**/*.tmp'],
+    },
     proxy: {
       '/api': {
         target: mode === 'mock' ? 'http://127.0.0.1:8081' : (process.env.VITE_API_TARGET ?? 'http://localhost:8080'),

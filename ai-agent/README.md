@@ -1,12 +1,13 @@
 # ai-agent（后端）
 
-Spring Boot 4.1.1 + Spring AI 2.0.1 + Java 21。当前能力：SSE 流式对话、对话记忆、**超时与重试**。
+Spring Boot 4.1.1 + Spring AI 2.0.1 + Java 21。当前能力：SSE 流式对话、对话记忆、
+超时与重试、**结构化输出 + JSON 校验 + 回灌重试**。
 
 ## 跑起来
 
 ```cmd
 run.cmd              :: 启动应用（自动切 JDK 21 + Maven）
-run.cmd test         :: 跑测试（21 个）
+run.cmd test         :: 跑测试（30 个）
 run.cmd compile      :: 只编译
 run.cmd tree         :: 依赖树
 ```
@@ -68,6 +69,76 @@ run.cmd tree         :: 依赖树
 
 前端这三个值在 `web/src/api/chat.ts`。改一边必须回头看另一边。
 
+## 结构化输出与 JSON 校验
+
+`POST /api/chat/structured`，请求体 `{"conversationId":"s1","question":"..."}`。
+
+```cmd
+curl -X POST http://localhost:8080/api/chat/structured ^
+  -H "Content-Type: application/json" ^
+  -d "{\"conversationId\":\"s1\",\"question\":\"SSE 是什么？\"}"
+```
+
+响应是 `{ answer, attempts[], degraded }`：最终对象 + **每一轮尝试的原始输出与错误清单**。
+
+### 为什么需要这一整套（实测结论，不是设计臆想）
+
+**DeepSeek 不支持 `response_format=json_schema`（strict 模式）**，发过去直接返回：
+
+```json
+{"error":{"message":"This response_format type is unavailable now"}}
+```
+
+只有 `json_object` 可用，而它的保证**只有一条**："输出是合法 JSON"。它**不保证**：
+
+| 模型可能犯的错 | JSON 解析会怎样 | 谁能发现 |
+|---|---|---|
+| 漏掉 `confidence` 字段 | **成功** | 只有 JSR-380 校验 |
+| `confidence` 给成 `95`（百分制） | **成功** | 只有 JSR-380 校验 |
+| `keywords` 给成空数组 | **成功** | 只有 JSR-380 校验 |
+| 输出被 `max_tokens` 截断 | 失败 | 解析器 |
+
+所以：**解析成功 ≠ 数据可用**。供应商没法从协议层保证正确性，正确性只能靠应用侧兜 ——
+这就是 `ai.agent.chat.structured` 模块存在的全部理由。
+
+### 回灌重试（Retry & Reflection Loop）
+
+校验失败时不是直接报错，而是把三样东西回灌给模型让它自己改：
+
+1. **具体哪个字段错了**（反馈不含字段名模型无从下手）
+2. **为什么错**（例：`confidence 不能大于 1（注意：要用 0~1 的小数，不是百分制）`）
+3. **它上一次的原始输出**（模型能对照着改，不必整段重写）
+
+最多 `ai.chat.structured.max-attempts` 轮（默认 3），仍不合格 → 返回 `degraded=true` 的**兜底答案**，不抛异常。
+
+**实测证据**：把 `min-confidence` 临时调到 0.99 强制触发失败，第 2 轮模型的推理链里写着
+*"The issue: confidence below configured lower bound. I need to raise confidence... Raise confidence to like 0.99."* ——
+反馈闭环在起作用是有据可查的，不是"我觉得它在起作用"。
+
+### 与"网络层重试"的区别（别混为一谈）
+
+| | 网络层重试（`ai.chat.retry.*`） | 回灌重试（`ai.chat.structured.*`） |
+|---|---|---|
+| 重试的是什么 | **同一次请求** | **同一个问题，但请求内容变了** |
+| 触发判据 | 异常类型（超时 / 429 / 5xx） | 校验结果（字段缺失 / 越界） |
+| 期望 | "这次网络能通" | "这次模型能改对" |
+
+两者可以同时生效：一次模型调用可能先经历 2 次网络重试，再经历 2 轮回灌重试。
+
+### 关键实现选择
+
+- **字段用包装类型**（`Double` 而非 `double`）：基本类型在字段缺失时会反序列化成 `0.0`，
+  一个看着完全合法的值 —— 校验器再也发现不了"模型根本没给"。
+- **置信度下界可配**（`min-confidence`）：默认 0.0 不设门槛；调到 0.6 则"我不确定"会被要求重答，
+  适合字段抽取这类"必须给确定答案"的场景。顺带：设成 0.99 可**确定性复现校验失败**，
+  这是验证回灌链路的唯一可靠手段。
+- **同步（阻塞）调用**：JSON 必须完整才能反序列化，边流边解析没有意义，所以这里不用 SSE。
+  代价是模型调用期间占着 Tomcat 工作线程 —— 一轮最多 3 次调用，**这是学习点 7（虚拟线程）要解决的**
+  ⚠️ 未做。
+- **没用 `responseEntity(StructuredOutputConverter)`**：那个 API 能一步完成"调用 + 转对象"，
+  但它**不做 JSR-380 校验**，也不给回灌所需的原始输出。所以这里手动
+  `converter.convert(raw)` + `validator.validate(...)`，把中间结果留在手里。
+
 ## SSE 事件契约
 
 `POST /api/chat/stream`，请求体 `{"conversationId":"...","message":"...","temperature":0.3}`：
@@ -80,16 +151,22 @@ run.cmd tree         :: 依赖树
 
 ## 测试
 
-21 个，其中 20 个是失败路径（这是本次的重点：之前所有验证都跑在 happy path 上）：
+30 个，其中 29 个是失败路径 / 边界（这是重点：以前所有验证都跑在 happy path 上）：
 
 - `ChatControllerRetryTest`（13）—— 重试次数、不重复内容、超时文案、有增量后不重试、
-  记忆不被污染、以及上面那三个 Reactor 陷阱的回归测试
+  记忆不被污染、以及三个 Reactor 陷阱的回归测试
 - `ChatRetryPolicyTest`（7）—— 退避与抖动包络、上限截断、"4xx 绝不重试"红线
+- `StructuredChatServiceImplTest`（9）—— **注入脏 JSON**：截断（未闭合）/ 字段缺失 /
+  取值越界（95 这种百分制）/ 空数组 / 兜底 / 受配置控制 / markdown 围栏容错
 
 ## 已知未验证项
 
 - **空闲超时在真实模型上没能自然复现**：DeepSeek 的 chunk 间隔实测远小于 400ms，把 idle 压到
   1ms 又会让首个 chunk 就超时。该路径目前只有替身测试覆盖（`#workingTimeoutComposition` 场景二）。
+- **兜底（degraded）路径没能在真实模型上触发**：把 `min-confidence` 设成 0.99 时，模型第 2 轮就
+  把置信度改成了 0.99 并过关；设成 1.1 时它又拒绝服从（JSON Schema 里 confidence 无上界）。
+  **模型总能自我修正，这本身是好消息**，但意味着"3 轮全废 → 走兜底"这条路只有替身测试覆盖。
 - **Nginx `proxy_buffering` 未实测**：本地没有代理环境，已决定延后到上正式环境时做
   （清单见根目录 `学习进度台账.md`）。
 - **开发期 Vite 代理的超时**：已在 `vite.config.ts` 显式设为 0，但没跑到那个时长去验证。
+- **结构化输出还没接前端**：目前只能用 curl 调，页面上看不到 JSON 结构 / 置信度 / 回灌轮次。

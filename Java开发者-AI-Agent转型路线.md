@@ -210,9 +210,11 @@ Agent 编排层 →  LangChain4j（灵活）或 Spring AI Alibaba（国内/国�
 
 ### 阶段一（1–2 周）大模型对接层 —— 把 LLM 调用做成基础设施组件
 
-> **进度：🟡 5/8 ｜ 详细记录见 `学习进度台账.md`**
-> 已完成：概念基础、Spring AI 跑通、SSE 流式（Nginx 实测验延后到上线）、骨架搭建、**超时与重试**
-> 待完成：Function Calling、结构化输出、异步改造、异常注入测试（JSON 截断）、Token 预算
+> **进度：🟢 6/8 · 验收三条已达成 ｜ 详细记录见 `学习进度台账.md`**
+> 已完成：概念基础、Spring AI 跑通、SSE 流式（Nginx 实测验延后到上线）、骨架搭建、超时与重试、**结构化输出与 JSON 校验**
+> 待完成：**异步调用改造**（头号坑）、Token 预算校验、Function Calling（学习点 5）
+> **2026-09-14 人工实测**：浏览器里跑通 8 项功能（多轮记忆 / 逐字流式 / Markdown+高亮 / token 用量 /
+> 停止生成 / 新会话 / temperature / 超时重试按钮）
 
 - [x] Token / 上下文窗口 / Temperature / Top-p / Max Tokens 概念（能口算 Token 预算）
 - [ ] `window >= input_tokens + max_output_tokens`，**预留 10%–20% 安全边际**
@@ -221,17 +223,21 @@ Agent 编排层 →  LangChain4j（灵活）或 Spring AI Alibaba（国内/国�
       → 端点已跑通（100+ 增量事件、737 tokens 实测）；**换行转义已实测并修掉真 bug**
       → ⏭️ **Nginx `proxy_buffering` 实测已决定延后到上正式环境时做**（本地无代理环境，不阻塞阶段一验收；上线动作清单见 `学习进度台账.md` 第五节）
 - [ ] Function Calling：**明确「模型只输出调用意图，Java 端负责校验 + 执行 + 回填」的边界**
-- [ ] 结构化输出三方案：JSON Schema / Function Calling / Structured Outputs (Strict)
-      → `EntityParamSpec` 的 `validateSchema()` / `useProviderStructuredOutput()` 已知 API，未编码
-- [x] **异步调用改造前置**：超时与重试已完成（首字超时 20s + 空闲超时 30s + 指数退避重试 2 次；前端三道超时 + 一键重试）
+- [x] 结构化输出三方案：JSON Schema / Function Calling / Structured Outputs (Strict)
+      → **已完成**：`json_object` + JSON Schema 提示词 + JSR-380 校验 + 回灌重试（最多 3 轮）+ 兜底
+      → 关键实测：**DeepSeek 不支持 `json_schema`（strict）**，只有 `json_object`，
+        所以正确性只能靠应用侧校验兜 —— 这恰恰是"校验"这件事的价值所在
+      → 端点 `POST /api/chat/structured`；30 个测试里 9 个专测脏 JSON 注入
+- [x] **超时与重试**（学习点 9）—— 首字超时 20s + 空闲超时 30s + 指数退避重试 2 次；前端三道超时 + 一键重试
       → 配置在 `ai.chat.*`，策略在 `ChatRetryPolicy`，21 个自动化测试覆盖失败路径
       → ⚠️ **只重试"首个增量之前"的失败**：已吐内容再重发会让用户看到两段拼接的回答
 - [ ] **异步调用改造**（WebClient / 虚拟线程）—— 别让线程池被打满
 - [ ] 异常注入测试：主动模拟 API 超时、JSON 截断、网络阻断
-      → 超时 / 5xx 已覆盖（21 个自动化测试）；**JSON 截断、网络阻断未做**
+      → 超时 / 5xx / **JSON 截断 / 字段缺失 / 取值越界** 已覆盖（30 个测试）；**网络阻断未做**
 
 > **验收**：一个流式对话接口，能正确处理超时、重试、JSON 校验失败。
-> **当前差距**：超时 ✅、重试 ✅，但 **JSON 校验失败未做**（依赖结构化输出），故**阶段一尚未验收**。
+> **当前状态：✅ 三条已全部达成**（流式接口已人工实测 8 项；结构化输出 + 回灌 + 兜底，30 个测试覆盖）。
+> ⚠️ 但阶段一还剩两个学习点未做：**异步调用改造**（阻塞端点会打满线程池，头号坑）与 **Token 预算校验**。
 
 ### 阶段二（2–4 周）RAG —— 重点在「定位问题」而非「跑通 Demo」
 

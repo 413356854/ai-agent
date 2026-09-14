@@ -35,6 +35,9 @@ public class ChatCallProperties {
 	@NestedConfigurationProperty
 	private Timeout timeout = new Timeout();
 
+	@NestedConfigurationProperty
+	private Structured structured = new Structured();
+
 	public Retry getRetry() {
 		return retry;
 	}
@@ -49,6 +52,86 @@ public class ChatCallProperties {
 
 	public void setTimeout(Timeout timeout) {
 		this.timeout = timeout;
+	}
+
+	public Structured getStructured() {
+		return structured;
+	}
+
+	public void setStructured(Structured structured) {
+		this.structured = structured;
+	}
+
+	/**
+	 * 结构化输出的回灌重试策略（Retry &amp; Reflection Loop）。
+	 *
+	 * <p><b>与 {@link Retry}（网络层重试）的区别必须拎清</b>，这是两件不同的事：
+	 * <ul>
+	 *   <li>{@link Retry} 重试的是<b>同一次请求</b>——网络抖了、限流了，重发一遍期望"这次能通"。
+	 *       判定依据是异常类型（超时 / 429 / 5xx）。</li>
+	 *   <li>这里的重试重试的是<b>同一个问题</b>，但<b>请求内容变了</b>——
+	 *       把"你上次输出哪里不合格"告诉模型，期望"这次能改对"。
+	 *       判定依据是校验结果（字段缺失 / 类型错 / 取值越界）。</li>
+	 * </ul>
+	 * 所以它们可以同时生效：一次对模型的调用可能先经历 2 次网络重试，再经历 2 轮回灌重试。
+	 */
+	public static class Structured {
+
+		/**
+		 * 回灌重试的最大轮数（含首次调用）。
+		 *
+		 * <p>默认 3 的含义是：初次 1 次 + 最多回灌 2 次。为什么不更大：
+		 * 实测模型改不对的原因几乎都是"它压根没理解要什么"，这种理解性问题再灌 10 次也一样；
+		 * 而每多一轮就多烧一次 token、多等几秒。3 轮之后走兜底比继续纠缠更划算。
+		 */
+		private int maxAttempts = 3;
+
+		/**
+		 * 是否要求模型走 JSON 模式（{@code response_format=json_object}）。
+		 *
+		 * <p>留成开关是因为不同供应商支持度不同：DeepSeek 支持 {@code json_object}
+		 * 但<b>不支持</b> {@code json_schema}（实测返回 "This response_format type is unavailable now"）。
+		 * 换成只认提示词、不认 response_format 的供应商时，把它关掉即可 ——
+		 * 校验与回灌逻辑不受影响，因为真正的兜底本来就在应用侧。
+		 */
+		private boolean jsonMode = true;
+
+		/**
+		 * 可接受的最低自评置信度。
+		 *
+		 * <p>默认 0.0 = 不设门槛（任何 0~1 的值都算合格）。设成大于 0 的值时，
+		 * 模型说"我不确定"（低 confidence）会被判为不合格并被要求重答 ——
+		 * 这对"必须给出确定答案"的场景是必要的（例如给业务系统做字段抽取，
+		 * 拿一个 0.2 置信度的结果还不如让人来处理）。
+		 *
+		 * <p>还有一个调试用途：把它设成 0.99 可以<b>确定性地触发校验失败</b>，
+		 * 用来验证回灌重试链路是否真的在工作 —— 否则很难让线上模型恰好输出一个越界值。
+		 */
+		private double minConfidence = 0.0;
+
+		public int getMaxAttempts() {
+			return maxAttempts;
+		}
+
+		public void setMaxAttempts(int maxAttempts) {
+			this.maxAttempts = maxAttempts;
+		}
+
+		public boolean isJsonMode() {
+			return jsonMode;
+		}
+
+		public void setJsonMode(boolean jsonMode) {
+			this.jsonMode = jsonMode;
+		}
+
+		public double getMinConfidence() {
+			return minConfidence;
+		}
+
+		public void setMinConfidence(double minConfidence) {
+			this.minConfidence = minConfidence;
+		}
 	}
 
 	/**

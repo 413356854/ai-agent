@@ -94,3 +94,8 @@ ai-agent/.mvn/
 ai-agent/.gitattributes
 ai-agent/mvnw
 
+# ---------- 界面自检产物 ----------
+# 注意不能叫 out/：上面已有一条全局 `out/` 规则，而这条更要紧的是**目录名不复用**，
+# 否则后人看到 web/out/ 被忽略会以为规则是这里生效的，排查半天
+web/ui-check-out/
+

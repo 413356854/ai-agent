@@ -191,3 +191,91 @@ body {
 .temperature-slider {
   width: 160px;
 }
+
+.composer-hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ---------- 结构化输出结果卡片 ---------- */
+
+.structured-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 卡片要和气泡一样有固定宽度上限，否则长答案会把行拉满，与左侧气泡视觉不成体系 */
+.structured-card {
+  width: min(860px, 92%);
+}
+
+.structured-card .ant-card-head {
+  min-height: 40px;
+}
+
+.structured-meta {
+  padding-top: 4px;
+  border-top: 1px dashed #eceef1;
+}
+
+.confidence-label {
+  flex: none;
+  font-size: 12px;
+}
+
+/* 置信度条要够长才看得出差别，60px 那种长度 0.7 和 0.9 看起来一样 */
+.confidence-bar {
+  width: 200px;
+  margin: 0;
+}
+
+.confidence-bar .ant-progress-text {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}
+
+.confidence-hint {
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 回灌过程：把每一轮的原始输出露出来，方便对着看"模型到底吐了什么" */
+.attempt-timeline {
+  margin-top: 4px;
+}
+
+.attempt-timeline .ant-timeline-item {
+  padding-bottom: 12px;
+}
+
+.issue-list {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+
+.issue-list li {
+  line-height: 1.7;
+}
+
+/*
+ * 原始输出用 pre + 自动换行。
+ * 结构化输出的 JSON 经常是单行几千字符，不换行会横向撑破卡片、并让整页能左右滚动 ——
+ * 这是展示模型原始输出时最容易忽略的一点。
+ */
+.raw-output {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  background: #f6f8fa;
+  border: 1px solid #eceef1;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
