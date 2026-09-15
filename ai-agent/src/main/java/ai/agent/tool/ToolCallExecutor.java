@@ -1,5 +1,7 @@
 package ai.agent.tool;
 
+import ai.agent.agent.limit.NoopPerToolGate;
+import ai.agent.agent.limit.PerToolGate;
 import ai.agent.tool.support.ToolFeedbackFormatter;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -99,10 +101,26 @@ public class ToolCallExecutor {
 
 	private final ToolFeedbackFormatter formatter;
 
+	/**
+	 * 并发闸门与熔断（阶段三第 3 件）。
+	 *
+	 * <p>有参构造器注入真的实现；无参构造器给 {@link ai.agent.agent.limit.NoopPerToolGate}
+	 * —— 于是工具自己的单测不需要起 Spring 上下文，而且**限制生效与不生效走的是同一段代码**
+	 * （空实现只是把上限调到极大），不存在"某条分支没被测到"。
+	 */
+	private final PerToolGate gate;
+
 	public ToolCallExecutor(ToolRegistry registry, Validator validator, ToolFeedbackFormatter formatter) {
+		this(registry, validator, formatter, NoopPerToolGate.instance());
+	}
+
+	@org.springframework.beans.factory.annotation.Autowired
+	public ToolCallExecutor(ToolRegistry registry, Validator validator, ToolFeedbackFormatter formatter,
+			PerToolGate gate) {
 		this.registry = registry;
 		this.validator = validator;
 		this.formatter = formatter;
+		this.gate = gate;
 	}
 
 	/**
@@ -130,29 +148,124 @@ public class ToolCallExecutor {
 		}
 		AgentTool<?> tool = found.get();
 
-		// ---- 门禁 2：解析 ----
-		Object parameters;
+		// ---- 门禁 2：并发闸门 + 熔断（阶段三第 3 件） ----
+		//
+		// 【位置：白名单之后、解析之前 —— 但这个位置我来回改过一次，值得记下来】
+		//
+		// 第一版放在"解析之后"，理由是："参数错是毫秒级的、不消耗下游资源，
+		// 为它排队没意义，而且会污染闸门的排队统计。"
+		//
+		// 那个理由**听起来对，但换来的后果更糟**：闸门在解析之后，
+		// 意味着"参数解析失败"的调用没有拿到许可 —— 于是它进入不了熔断记账的配对关系里。
+		// 而把闸门提前之后（现在这样），解析失败的调用会走到 release，
+		// 就<b>必须以某种身份</b>进熔断窗口 —— 除非显式排除。第一版没排除，
+		// 结果是它们以"成功"的身份进窗口，把失败率稀释掉（测试报
+		// `windowSize expected: 0 but was: 10` 才暴露）。
+		//
+		// 现在的做法是两头都对：
+		//   - 闸门保护的是**整个执行尝试**（而不是"执行那几毫秒"）——
+		//     这与它的初衷一致：限制的是"同时在处理多少个工具请求"，
+		//     而解析、校验同样占着一个处理中的请求；
+		//   - 由 PerToolGate.release 决定**哪些 stage 不参与熔断记账**
+		//     （解析/校验失败排除，因为它们既不是工具的成功也不是失败）。
+		//
+		// 为什么白名单仍然在闸门之前：白名单失败（模型编了个名字）连"工具"都不存在，
+		// 替它建一份闸门/熔断器是给不该有状态的输入建状态，而且 map 会被随机名字撑大。
+		var rejection = gate.tryAcquire(tool.name());
+		if (rejection != null) {
+			// 被拒时**不调用 gate.release** —— 因为我们压根没拿到许可。
+			// 这个"拿到才还"的配对关系是本类最容易写错的地方，
+			// 写反的后果是闸门永久少一个名额（越跑越慢、重启就好），见 ConcurrencyGate.release 的注释
+			log.warn("工具「{}」的调用被拒绝：{} {}", tool.name(), rejection.stage(), rejection.reason());
+			return new ToolCallOutcome(invocation, rejection.stage(), null,
+					formatter.rejected(invocation, tool, rejection.stage(), rejection.reason()), elapsedMs(startedAt),
+					true);
+		}
+
 		try {
-			parameters = parse(tool, invocation);
-		}
-		catch (ToolArgumentsException e) {
-			log.warn("工具「{}」的参数解析失败：{}", tool.name(), e.getMessage());
-			return new ToolCallOutcome(invocation, ToolCallStage.PARSE_ERROR, null,
-					formatter.parseError(invocation, tool, e.getMessage()), elapsedMs(startedAt), true);
-		}
+			// ---- 门禁 2：解析 ----
+			Object parameters;
+			try {
+				parameters = parse(tool, invocation);
+			}
+			catch (ToolArgumentsException e) {
+				log.warn("工具「{}」的参数解析失败：{}", tool.name(), e.getMessage());
+				return record(tool, invocation, ToolCallStage.PARSE_ERROR, null,
+						formatter.parseError(invocation, tool, e.getMessage()), startedAt);
+			}
 
-		// ---- 门禁 3：校验 ----
-		// 这一步是"模型看到 schema ≠ 模型遵守 schema"的直接体现。
-		// 回填里带字段名 + 具体原因 + 可用值，模型才有可能一次改对
-		List<String> issues = validate(parameters);
-		if (!issues.isEmpty()) {
-			log.warn("工具「{}」的参数未通过校验：{}", tool.name(), issues);
-			return new ToolCallOutcome(invocation, ToolCallStage.VALIDATION_ERROR, null,
-					formatter.validationError(invocation, tool, issues), elapsedMs(startedAt), true);
-		}
+			// ---- 门禁 3：校验 ----
+			// 这一步是"模型看到 schema ≠ 模型遵守 schema"的直接体现。
+			// 回填里带字段名 + 具体原因 + 可用值，模型才有可能一次改对
+			List<String> issues = validate(parameters);
+			if (!issues.isEmpty()) {
+				log.warn("工具「{}」的参数未通过校验：{}", tool.name(), issues);
+				return record(tool, invocation, ToolCallStage.VALIDATION_ERROR, null,
+						formatter.validationError(invocation, tool, issues), startedAt);
+			}
 
-		// ---- 门禁 4：执行 ----
-		return invoke(tool, parameters, invocation, startedAt);
+			// ---- 门禁 4：执行 ----
+			return invoke(tool, parameters, invocation, startedAt);
+		}
+		finally {
+			// 【这里刻意什么都不做，只留一句说明】
+			//
+			// 归还许可**不在**这个 finally 里，而是在下面 record(...) 里 —— 这不是风格问题：
+			// 归还时必须同时把"这次的结果"记进熔断窗口，而 stage 只有走到具体出口才知道。
+			// 如果在 finally 里归还、在 record 里记账，两者之间会有一条缝：
+			// 许可一还，另一个线程可能立刻拿到并开始执行，而这次的结果还没进窗口 ——
+			// 在"失败率刚好在阈值附近"时，熔断会因此晚一拍才打开。
+			//
+			// 代价是"每个出口都必须经过 record(...)"，而这是一条**可断言的不变式**：
+			// 见 ToolCallBoundaryTest 里"每次执行后闸门的在途数必须回到 0"那条测试 ——
+			// 哪天有人加了新出口却没走 record，它会立刻变红（而不是变成"越跑越慢最后卡住"）
+		}
+	}
+
+	/**
+	 * 统一的"记录结论 + 归还许可"出口。
+	 *
+	 * <p>四个阶段（解析失败 / 校验失败 / 执行成功 / 执行异常）都从这里出去，
+	 * 保证"stage 判定"与"释放 + 熔断记账"永远成对发生。
+	 * {@code feedback} 由各阶段自己构造（措辞归 formatter 管），本方法只负责记账与归还。
+	 */
+	private ToolCallOutcome record(AgentTool<?> tool, ToolInvocation invocation, ToolCallStage stage,
+			AgentToolResult result, String feedback, long startedAt) {
+		long elapsed = elapsedMs(startedAt);
+		// 先记账再归还 —— 顺序理由见上面 finally 里的注释。
+		// PerToolGate.release 内部就是"归还许可 + 按 stage 判断要不要算失败"
+		gate.release(tool.name(), stage);
+		return new ToolCallOutcome(invocation, stage, result, feedback, elapsed, fixableByModel(stage));
+	}
+
+	/**
+	 * 该 stage 的失败是否值得<b>再给模型一轮</b>。
+	 *
+	 * <p>注意它和 {@link ToolCallStage#countsAsToolFailure()} 是<b>两个不同的问题</b>，
+	 * 而这两个问题极容易混成一个：
+	 * <ul>
+	 *   <li>{@code countsAsToolFailure} 问的是"这次失败该不该算在<b>工具</b>头上"（熔断用）——
+	 *       答案是"只有执行异常算"；</li>
+	 *   <li>本方法问的是"这次失败该不该<b>让模型再试</b>"（循环用）——
+	 *       答案是"除了执行异常之外都值得，因为参数错、名字错、太挤了都能靠改一下解决"。</li>
+	 * </ul>
+	 * 两者对 {@code EXECUTION_ERROR} 的答案恰好都是"否"，但<b>理由完全不同</b>
+	 * （一个是"不是工具的错"，一个是"再来一次也一样"）。
+	 * 把两者合成一个布尔，就会在将来某次改判据时把另一边一起改错。
+	 */
+	private static boolean fixableByModel(ToolCallStage stage) {
+		return switch (stage) {
+			// 名字错、参数错、被限流、熔断打开 —— 都值得再给一轮：
+			// 前两个改参数/改名字，后两个等一下或换工具
+			case UNKNOWN_TOOL, PARSE_ERROR, VALIDATION_ERROR, REQUEST_REJECTED, CIRCUIT_OPEN, OK -> true;
+			// 工具自己炸了：原样重试不会有不同结果（回填里会明确说这一点）
+			case EXECUTION_ERROR -> false;
+		};
+	}
+
+	/** 供测试断言"许可有没有被正确归还"（闸门泄漏是最难查的一类问题）。 */
+	public PerToolGate gate() {
+		return gate;
 	}
 
 	/**
@@ -220,23 +333,22 @@ public class ToolCallExecutor {
 	private ToolCallOutcome invoke(AgentTool<?> tool, Object parameters, ToolInvocation invocation, long startedAt) {
 		try {
 			AgentToolResult result = invokeUnchecked(tool, parameters);
-			long elapsed = elapsedMs(startedAt);
 
 			// 注意：工具自己返回 Failure 时 stage 仍是 OK ——
 			// 工具**正常完成了它的工作**，只是工作上给出了一个否定结论。
 			// 把它记成 EXECUTION_ERROR 会让"没查到"看起来像"服务故障"，那是错误分类（踩坑库 #26/#37 同族）
-			boolean retriable = result instanceof AgentToolResult.Failure f && f.retriable();
-			log.info("工具「{}」执行完成 elapsed={}ms result={}", tool.name(), elapsed,
+			log.info("工具「{}」执行完成 elapsed={}ms result={}", tool.name(), elapsedMs(startedAt),
 					result instanceof AgentToolResult.Success ? "success" : "failure");
-			return new ToolCallOutcome(invocation, ToolCallStage.OK, result,
-					formatter.resultFeedback(invocation, tool, result), elapsed, retriable);
+			return record(tool, invocation, ToolCallStage.OK, result,
+					formatter.resultFeedback(invocation, tool, result), startedAt);
 		}
 		catch (RuntimeException e) {
-			long elapsed = elapsedMs(startedAt);
 			// 打成 ERROR：走到这里说明工具实现或它的依赖真出问题了，这和"没查到"不是一回事
-			log.error("工具「{}」执行时抛出异常 elapsed={}ms", tool.name(), elapsed, e);
-			return new ToolCallOutcome(invocation, ToolCallStage.EXECUTION_ERROR, null,
-					formatter.executionError(invocation, tool, rootMessage(e)), elapsed, false);
+			log.error("工具「{}」执行时抛出异常 elapsed={}ms", tool.name(), elapsedMs(startedAt), e);
+			// 走同一个 record 出口 —— 于是"执行异常"也会被算进熔断失败率
+			// （它是唯一算失败的一类，见 ToolCallStage.countsAsToolFailure）
+			return record(tool, invocation, ToolCallStage.EXECUTION_ERROR, null,
+					formatter.executionError(invocation, tool, rootMessage(e)), startedAt);
 		}
 	}
 

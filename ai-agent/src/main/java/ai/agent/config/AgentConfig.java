@@ -2,6 +2,8 @@ package ai.agent.config;
 
 import ai.agent.agent.ModelTurn;
 import ai.agent.agent.OpenAiModelTurn;
+import ai.agent.agent.limit.ConcurrencyGate;
+import ai.agent.agent.limit.LimitedModelTurn;
 import ai.agent.tool.ToolRegistry;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -30,7 +32,8 @@ import org.springframework.context.annotation.Configuration;
  * 会静默注入真实适配器（然后在测试里发真请求），那是最坏的一种测试失败。
  */
 @Configuration
-@EnableConfigurationProperties({ AgentLoopProperties.class, AgentStoreProperties.class })
+@EnableConfigurationProperties({ AgentLoopProperties.class, AgentStoreProperties.class,
+		AgentConcurrencyProperties.class })
 public class AgentConfig {
 
 	/*
@@ -49,11 +52,30 @@ public class AgentConfig {
 	  绑定来源是 application.properties 里的 ai.agent.loop.*（见那边的注释）。
 	*/
 
-	/** 真实模型适配器。测试提供自己的 {@code ModelTurn} 时这个 bean 不会创建。 */
+	/**
+	 * 真实模型适配器。<b>外面再套一层并发闸门</b>（阶段三第 3 件）。
+	 *
+	 * <h2>为什么包装发生在这里，而不是在 AgentLoop 里</h2>
+	 * 这个 bean 是"所有模型调用的唯一入口"：循环、将来的诊断端点、以及任何直接用
+	 * {@code ModelTurn} 的地方都会拿到它。在这里包一层，等于<b>用一个位置覆盖所有调用点</b>——
+	 * 而在循环里加锁只能保护循环那条路径（结构化输出的回灌轮、诊断端点就不会被保护到）。
+	 *
+	 * <p>顺带一个设计上的好处：{@code AgentLoop} 完全不知道限流的存在，
+	 * 它的 15 个测试也不需要为此起一个信号量。
+	 *
+	 * <p>注意顺序：{@code LimitingModelTurn} 包在 {@code OpenAiModelTurn} <b>外面</b>。
+	 * 反过来的话（闸门在内层），每次调用都会先建好请求、走到 HTTP 那一层才被拦，
+	 * 白做一遍准备；更重要的是"在途"的统计口径会变成"已经进到适配器内部的"，
+	 * 而不是"准备发出去的" —— 后者才是我们想限制的东西。
+	 */
 	@Bean
 	@ConditionalOnMissingBean(ModelTurn.class)
-	ModelTurn openAiModelTurn(ChatModel chatModel, ToolRegistry registry) {
-		return new OpenAiModelTurn(chatModel, registry);
+	ModelTurn openAiModelTurn(ChatModel chatModel, ToolRegistry registry,
+			AgentConcurrencyProperties concurrencyProperties) {
+		ModelTurn real = new OpenAiModelTurn(chatModel, registry);
+		ConcurrencyGate gate = new ConcurrencyGate("model", concurrencyProperties.maxConcurrentModelRequests(),
+				concurrencyProperties.acquireTimeoutMs());
+		return new LimitedModelTurn(real, gate);
 	}
 
 }

@@ -25,12 +25,44 @@ import java.util.List;
  * @param totalTokens 整个任务累计消耗的 token（所有模型调用之和）
  * @param elapsedMs 整个任务的墙上耗时
  * @param toolCallCount 一共发起了几次工具调用（含被拒绝的）
+ * @param failureCause 失败细分原因；只有 {@code stopReason == MODEL_ERROR} 时非空。
+ *                     <b>它是后加的字段，所以放在最后</b> —— 这样已有的构造调用
+ *                     （15 个循环测试里的那些）不需要改动就能编译，
+ *                     而新增信息由便利构造器补上（默认 null）。
+ *                     <p>为什么必须加它：{@code MODEL_ERROR} 这一个出口下面藏着
+ *                     鉴权失败、限流、超时、连不上、以及**我们自己的并发闸门拒绝**——
+ *                     而"太挤"与"上游挂了"的排查方向完全相反。
+ *                     只有 {@code stopReason} 的话，页面在最需要区分的时候
+ *                     （压力最大、限流生效时）恰恰给出的是**错误的归因**。
  */
 public record AgentRun(String question, List<Step> steps, String finalAnswer, AgentStopReason stopReason,
-		int totalTokens, long elapsedMs, int toolCallCount) {
+		int totalTokens, long elapsedMs, int toolCallCount, AgentFailureCause failureCause) {
 
 	public AgentRun {
 		steps = List.copyOf(steps);
+	}
+
+	/**
+	 * 不带失败细分的构造器。
+	 *
+	 * <p>保留它有三个好处：① 已有调用点（十几个测试）不用改；
+	 * ② 非失败路径本来就没有失败原因，写 null 是噪音；
+	 * ③ <b>它让"这个字段是补充信息而不是核心状态"这件事在类型上就成立</b> ——
+	 * 核心状态（停因）仍然只有一个必填字段。
+	 */
+	public AgentRun(String question, List<Step> steps, String finalAnswer, AgentStopReason stopReason,
+			int totalTokens, long elapsedMs, int toolCallCount) {
+		this(question, steps, finalAnswer, stopReason, totalTokens, elapsedMs, toolCallCount, null);
+	}
+
+	/** 带失败原因的副本（循环在把异常翻译成原因之后用它补全报告）。 */
+	public AgentRun withFailureCause(AgentFailureCause cause) {
+		return new AgentRun(question, steps, finalAnswer, stopReason, totalTokens, elapsedMs, toolCallCount, cause);
+	}
+
+	/** 失败时给页面/日志的下一步建议；没失败或没有细分原因时返回 null。 */
+	public String failureAdvice() {
+		return failureCause == null ? null : ModelFailureClassifier.advice(failureCause);
 	}
 
 	/** 是否给出了最终答案（false 表示被某个上限拦下）。 */

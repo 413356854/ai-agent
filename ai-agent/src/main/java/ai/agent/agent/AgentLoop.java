@@ -176,10 +176,16 @@ public class AgentLoop {
 			}
 			catch (RuntimeException e) {
 				// 模型调用失败：把已有步骤带回去，而不是抛掉已经花掉的成本
-				log.error("Agent 循环第 {} 轮调用模型失败", round, e);
+				//
+				// 【这里做了一次"翻译"】把异常分成"太挤/鉴权/限流/超时/连不上/其它"。
+				// 不做这一步的话，报告里只有 MODEL_ERROR 一句笼统的话 ——
+				// 而其中最要命的一个细分是"太挤"：那是**我们自己的并发闸门**拒绝的，
+				// 却会被读成"上游有问题"，于是排查方向整个跑偏
+				AgentFailureCause cause = ModelFailureClassifier.classify(e);
+				log.error("Agent 循环第 {} 轮调用模型失败（细分原因：{}）", round, cause, e);
 				steps.add(new AgentRun.Step(round, "", List.of(), List.of(), 0, 0, elapsedMs(stepStarted)));
 				AgentRun failed = new AgentRun(question, steps, null, AgentStopReason.MODEL_ERROR, totalTokens,
-						elapsedMs(startedAt), toolCallCount);
+						elapsedMs(startedAt), toolCallCount, cause);
 				listener.onFinish(runId, failed);
 				return failed;
 			}

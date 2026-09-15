@@ -2,6 +2,7 @@ package ai.agent.tool.support;
 
 import ai.agent.tool.AgentTool;
 import ai.agent.tool.AgentToolResult;
+import ai.agent.tool.ToolCallStage;
 import ai.agent.tool.ToolInvocation;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -111,6 +112,40 @@ public class ToolFeedbackFormatter {
 				可以选择：换一个参数（例如换更宽泛的查询条件）、换一个工具，或者直接用你已有的信息回答。
 				如果这个问题看起来是系统性的（多次都失败），请在回答里说明该工具当前不可用。"""
 				.formatted(tool.name(), reason);
+	}
+
+	/**
+	 * 被限流或熔断拒绝（阶段三第 3 件：并发控制）。
+	 *
+	 * <h2>这段回填的措辞是本轮最重要的产出之一</h2>
+	 * 两种拒绝要让模型做<b>相反</b>的事，所以文本必须分开写：
+	 * <ul>
+	 *   <li>{@link ToolCallStage#REQUEST_REJECTED}（太挤了）：<b>等一会儿用同样的参数重试是对的</b>。
+	 *       这时候如果让模型"换个工具试试"，它会在一个只要等一秒的问题上浪费好几轮预算，
+	 *       而那些尝试同样会被拒；</li>
+	 *   <li>{@link ToolCallStage#CIRCUIT_OPEN}（已经确定坏了）：<b>别再用这把工具</b>。
+	 *       这时候如果让它"稍后重试"，它会一直撞到冷却期结束，同样浪费轮次。</li>
+	 * </ul>
+	 * 所以这里不是共用一段"调用被拒绝"的模板，而是按 stage 给出各自的下一步动作 ——
+	 * 这与本类开头那条规则一致：<b>错误回填的价值在于告诉模型下一步做什么</b>。
+	 */
+	public String rejected(ToolInvocation invocation, AgentTool<?> tool, ToolCallStage stage, String reason) {
+		String nextStep = switch (stage) {
+			case REQUEST_REJECTED -> """
+					这是**暂时性的拥塞**，不是工具坏了：**稍后用完全相同的参数重试是有意义的**。
+					如果你现在还需要这个结果，可以再做一次同样的调用；也可以先用其它工具推进任务，
+					过一会儿再回来补这一次。**不要**因为被拒就换一个语义不同的参数 —— 那会拿到不相关的数据。""";
+			case CIRCUIT_OPEN -> """
+					这把工具当前处于**熔断**状态（它的下游最近失败率过高），所以这一次调用**压根没有发出去**。
+					**不要再用同样的参数重试**：在冷却期内它会被直接拒绝。
+					请改用其它工具来获取信息；如果确实没有替代工具，就基于已有信息回答，
+					并明确告诉用户"某类查询暂时不可用"。""";
+			default -> "请稍后重试，或换用其它工具。";
+		};
+		return """
+				工具「%s」的调用被拒绝（%s）：
+				%s
+				%s""".formatted(tool.name(), stage.name(), reason, nextStep);
 	}
 
 	/**
