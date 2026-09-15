@@ -343,6 +343,20 @@ export async function request(
   // 而这正是好事：类型系统逼着"用哪个超时"这件事必须显式决定，
   // 而不是漏传时静默地拿到 undefined。
   timeoutMs: number = DIAG_TIMEOUT_MS,
+  /**
+   * 请求体（可选）。
+   *
+   * **为什么加在这里，而不是让 Agent 那层自己写一个 fetch**：
+   * 下面那一大段错误翻译（超时 / 连不上 / HTTP 拒绝 / 从错误体里抠字段）
+   * 是**唯一一份**"后端没启动时该说什么"的实现。Agent 的 /ask 是 POST 且要带 body，
+   * 如果它自己写 fetch，那份文案就会变成两份，然后慢慢漂移 ——
+   * 用户会看到同一个"后端没启动"在两个面板里有两种说法。
+   *
+   * 顺带说清一个取舍：**这里刻意不做任何序列化**（不 JSON.stringify、不加 Content-Type 之外的判断）。
+   * 调用方传字符串，是因为它比我更清楚自己在发什么；
+   * 而这个函数越薄，它能引入的意外就越少。
+   */
+  body?: string,
 ): Promise<Response> {
   const controller = new AbortController()
   let timedOut = false
@@ -355,7 +369,10 @@ export async function request(
   try {
     const response = await fetch(path, {
       method,
-      headers: { Accept: 'application/json, text/plain' },
+      headers: body === undefined
+        ? { Accept: 'application/json, text/plain' }
+        : { Accept: 'application/json, text/plain', 'Content-Type': 'application/json' },
+      body,
       signal: controller.signal,
     })
 

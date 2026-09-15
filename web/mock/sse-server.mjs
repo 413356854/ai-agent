@@ -25,6 +25,7 @@
  * 假后端在这里扮演的是"契约样本"，验证的是界面能不能正确处理这份契约。
  */
 import { createServer } from 'node:http'
+import { handleAgentRoutes } from './agent-routes.mjs'
 import { handleRagRoutes } from './rag-routes.mjs'
 
 const PORT = Number(process.env.MOCK_PORT ?? 8081)
@@ -298,11 +299,22 @@ const server = createServer((req, res) => {
     return
   }
 
+  // ---------------------------------------------------------------
+  //  Agent 端点（阶段三第 5 件）
+  //
+  //  同样单独放一个文件：这里的假数据要造出一条"含失败与自愈"的四步轨迹，
+  //  而那条轨迹的数据量比真后端任何端点都大 —— 堆在这个文件里会让
+  //  "路由"和"剧本"混在一起，改一处看不全。
+  // ---------------------------------------------------------------
+  if (url.pathname.startsWith('/api/agent') && handleAgentRoutes(req, res, url, json)) {
+    return
+  }
+
   res.writeHead(404, { 'Content-Type': 'application/json' })
   res.end(
     JSON.stringify({
       message:
-        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async',
+        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async、POST /api/agent/ask、GET /api/agent/*',
     }),
   )
 })

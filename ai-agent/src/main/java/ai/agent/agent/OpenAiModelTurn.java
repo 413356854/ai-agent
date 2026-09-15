@@ -12,7 +12,6 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.openai.OpenAiChatOptions;
-import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -45,8 +44,28 @@ import java.util.List;
  *       缺的时候记 0 而不是抛异常 —— 但要在日志里说一次，
  *       因为"用量恒为 0"会让阶段四的成本看板一直显示零成本，而那是<b>看起来很正常的错数据</b>。</li>
  * </ol>
+ *
+ * <h2>⚠️ 这个类<b>刻意没有</b> {@code @Component}（这是一个踩过的坑，改它之前先读完）</h2>
+ * 它由 {@code AgentConfig.openAiModelTurn(...)} 显式装配 —— 那里还要在它<b>外面</b>
+ * 包一层 {@code LimitedModelTurn}（并发闸门）。
+ *
+ * <p>第一版这里标着 {@code @Component}，于是<b>同一个类有两个 bean 定义</b>：
+ * 组件扫描一个、{@code @Bean} 方法一个。而 {@code @Bean} 上的
+ * {@code @ConditionalOnMissingBean(ModelTurn.class)} 看到组件扫描那个已经存在，
+ * 就<b>跳过了整个方法</b>——包括那层包装。最终容器里是<b>裸的适配器</b>。
+ *
+ * <p><b>为什么这个坑极难发现</b>：它不报错、不抛异常、不产生歧义异常
+ * （因为条件装配"正确地"跳过了一个定义）。它唯一的表现是
+ * <b>并发闸门在真实路径上没生效</b> —— 而这件事只有在你主动去问
+ * "现在装的到底是哪个实现"时才会暴露。
+ * 发现它的方式是：真后端上打开 {@code /api/agent/limits}，
+ * 看到 {@code modelGate.available=false}，再顺着查到 bean 类型是 {@code OpenAiModelTurn}。
+ *
+ * <p><b>结论</b>：一个类只能由一个地方负责注册。
+ * 要么全部走组件扫描（那就不需要 {@code @Bean}，但也包不上闸门），
+ * 要么全部走 {@code @Bean}（那就<b>不能</b>再标 {@code @Component}）。
+ * 两者并存时，条件装配会安静地选择其中一个 —— 而"安静"就是这里最贵的地方。
  */
-@Component
 public class OpenAiModelTurn implements ModelTurn {
 
 	private static final Logger log = LoggerFactory.getLogger(OpenAiModelTurn.class);

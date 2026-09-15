@@ -473,6 +473,207 @@ const ragLayout = await page.evaluate(() => {
 })
 expect('RAG 面板无横向溢出', ragLayout.horizontalOverflow === 0, `overflow=${ragLayout.horizontalOverflow}px`)
 
+// ---------- Agent 工具调用面板（阶段三第 5 件） ----------
+//
+// 这一节断言的是"页面有没有把 Agent 到底干了什么如实表达出来"：
+//   - **答案与过程必须同屏** —— 只显示答案的话，"查了 3 次、失败 2 次、最后蒙对"
+//     与"一次就答对"长得一模一样，而区分这两者是这个功能的全部价值；
+//   - **每次工具调用都要有 stage 与回填文本** —— stage 说明"死在哪一步"，
+//     回填说明"模型当时看到了什么"，合起来才能回答"它为什么这么选"；
+//   - **被拒绝的调用也必须在页面上**（UNKNOWN_TOOL 那次）——
+//     报告要回答"模型想调几次、其中几次没让它调"，只显示成功的会让这个数字永远偏小；
+//   - **失败细分必须显示** —— MODEL_ERROR 下面藏着 6 种原因，其中
+//     "我们自己的并发闸门拒绝"与"上游鉴权失败"的排查方向完全相反；
+//   - **限额块必须写明"全局共享"** —— 否则读者会以为那是某一次运行的属性；
+//   - **"计入熔断"这一列必须由后端给** —— 前端不自己判 stage 的好坏，
+//     否则判据会有两份并慢慢漂移。
+console.log('[6.6] Agent 工具调用面板')
+await page.locator('label', { hasText: 'Agent 工具调用' }).click()
+await page.waitForTimeout(900)
+
+const agentCard = page.locator('.diag-card', { hasText: '跑一个任务' }).first()
+expect('Agent 面板已渲染', (await agentCard.count()) > 0)
+
+if ((await agentCard.count()) > 0) {
+  // 整张页面上只有这一个按钮有外部代价，必须明确标出来：
+  // 不标的话用户点它和点"刷新"的心理预期是一样的
+  const askText = (await agentCard.innerText()).trim()
+  expect('标出了"会调模型 · 花钱"', /花钱/.test(askText))
+
+  // 跑一次。
+  //
+  // **等待方式按路径分**（这是实测出来的必要区分）：
+  //   - 假后端：会给出一条"含失败与自愈"的四步轨迹，所以能等到 .agent-timeline；
+  //   - 真后端：本机 key 是假的，模型调用会 401 失败 → 那次运行**一步都没有**，
+  //     于是 .agent-timeline 根本不会渲染（组件在 steps 为空时返回 null）。
+  //     所以真路径要等"停因"那一格出现 —— 它在成功与失败两种情况下都会有。
+  //
+  // 这不是"把断言放宽"，而是**两条路径本来就跑在不同的场景里**：
+  // 假后端能确定性地产出完整轨迹，真后端（假 key）只能产出一次分类明确的失败。
+  // 硬等 .agent-timeline 会让真路径必然超时，而失败原因看起来像"界面没渲染"。
+  await agentCard.locator('button', { hasText: /跑\s*一\s*次/ }).first().click()
+  await agentCard.locator('.stat-cell', { hasText: '停因' }).first().waitFor({ state: 'visible', timeout: 150000 })
+  await page.waitForTimeout(800)
+
+  const resultText = (await agentCard.innerText()).trim()
+  expect('显示了停因与成本', /停因/.test(resultText) && /token/.test(resultText))
+  expect('显示了工具调用汇总', /工具调用/.test(resultText))
+
+  // 「停因」这一格在每个路径上都该是**真实的枚举名**，而不是空 ——
+  // 它是"这一页回答了为什么"的最小证据
+  expect('停因是真实的枚举名', /ANSWERED|MODEL_ERROR|MAX_STEPS|MAX_TOKENS|MAX_DURATION|DUPLICATE_ACTION|EMPTY_RESPONSE/.test(resultText))
+
+  if (EXPECT_REFLECTION) {
+    // ================= 假后端路径：验证完整的执行过程 =================
+    expect('显示了最终答案', (await agentCard.locator('.agent-answer-text').count()) > 0)
+
+    const steps = await agentCard.locator('.agent-step').count()
+    expect('渲染了执行过程时间线', steps >= 3, `${steps} 步`)
+    expect('每步标出了"调工具"还是"作答"', /调工具/.test(resultText) && /作答/.test(resultText))
+
+    const toolCalls = await agentCard.locator('.agent-tool-call').count()
+    expect('渲染了每次工具调用', toolCalls >= 3, `${toolCalls} 次`)
+    expect('显示了模型的 think 段', (await agentCard.locator('.agent-thought').count()) > 0)
+    // 回填文本是"模型当时看到了什么"的唯一凭据，必须能被看到
+    expect('显示了回填给模型的内容', (await agentCard.locator('.agent-tool-feedback pre').count()) >= 3)
+    // 被拒绝的那次必须也在（否则"想调几次"这个数字永远偏小）
+    expect('被拒绝的调用也在页面上', /工具不存在/.test(resultText))
+    expect('回填里带了可用工具列表', /可用工具/.test(resultText))
+    // stage 用中文短语显示，但枚举名要能查到（放在 title 里）—— 排查时要能和日志对上
+    expect('stage 的枚举名可查到', (await agentCard.locator('[title="UNKNOWN_TOOL"]').count()) > 0)
+    expect('工具调用的参数可见', (await agentCard.locator('.agent-tool-args code').count()) >= 3)
+  } else {
+    // ================= 真后端路径（假 key）：验证失败被如实说明 =================
+    //
+    // 这条路径**恰好是"失败细分"那个功能的真实验证**：
+    // 本机 key 是假的 → 上游 401 → 分类必须是 UPSTREAM_AUTH，
+    // 而不是笼统的 MODEL_ERROR。这正是本轮修掉的那个问题的核心场景。
+    expect('把失败原因分类显示出来了', /UPSTREAM_AUTH|MODEL_ERROR/.test(resultText))
+    expect('显示了对这一页失败的处置建议', /重试没有意义|下一步|API Key|鉴权/.test(resultText))
+    // 没有答案时不能显示"最终答案"那一块 —— 空答案框会让人以为"答了但是空的"
+    expect('没有答案时不显示答案块', (await agentCard.locator('.agent-answer-text').count()) === 0)
+  }
+
+  await page.screenshot({ path: `${SHOT_DIR}/agent-ask.png`, fullPage: true })
+}
+
+// —— 历史运行列表 ——
+const runsCard = page.locator('.diag-card', { hasText: '历史运行' }).first()
+expect('历史运行卡片存在', (await runsCard.count()) > 0)
+if ((await runsCard.count()) > 0) {
+  await runsCard
+    .locator('.ant-table-tbody tr')
+    .first()
+    .waitFor({ state: 'visible', timeout: 30000 })
+    .catch(() => {})
+  await page.waitForTimeout(300)
+  const runsText = (await runsCard.innerText()).trim()
+  // 刚刚跑过的那次一定在列表里（两条路径都成立：它就在这一次自检里跑出来的）
+  expect('列出了刚刚跑过的任务', /Agent 工具调用面板|分块策略的结论是什么/.test(runsText))
+
+  if (EXPECT_REFLECTION) {
+    // 假后端给了一份"包含各种结局"的历史，所以这些状态标签都能验证
+    expect('显示了状态标签', /已回答/.test(runsText))
+    // **等待恢复的提示必须显眼**：默认配置不会自动恢复，不说的话那些运行会一直躺着没人管，
+    // 而现象是"那个任务永远没结果"
+    expect('提示了有运行在等待恢复', /等待恢复/.test(runsText))
+    // 失败细分必须在列表里可见（MODEL_ERROR 这一个出口下面藏着 6 种原因）
+    expect('显示了失败细分', /LOCAL_CONCURRENCY_LIMIT/.test(runsText))
+    // 被上限拦下与"失败"是两件事，界面上要分开
+    expect('区分了"被上限拦下"与"失败"', /被上限拦下/.test(runsText) && /失败/.test(runsText))
+  } else {
+    // 真后端（假 key）：历史里只有那条 401 失败 —— 正好验证失败细分的**真实渲染**
+    expect('显示了失败细分', /UPSTREAM_AUTH/.test(runsText))
+    expect('显示了"失败"状态', /失败/.test(runsText))
+  }
+}
+
+// —— 点开详情：这一步验证"能还原执行过程" ——
+if ((await runsCard.count()) > 0) {
+  await runsCard.locator('.ant-table-tbody tr').first().click()
+  const detailCard = page.locator('.diag-card', { hasText: '运行详情' }).first()
+  await detailCard.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {})
+  await page.waitForTimeout(400)
+  if ((await detailCard.count()) > 0) {
+    const detailText = (await detailCard.innerText()).trim()
+    expect('详情显示了步骤表', /每步一个检查点/.test(detailText))
+    expect('详情显示了每次工具调用', /含被拒绝的/.test(detailText))
+    // **判据只能有一份**：这一列由后端给，页面不自己判 stage 的好坏
+    expect('详情里有「计入熔断」列', /计入熔断/.test(detailText))
+
+    if (EXPECT_REFLECTION) {
+      // 这一列是"断点恢复"在界面上的唯一痕迹 —— 没有它，阶段三第 2 件在页面上不可见。
+      // 真后端那次运行 0 步（假 key 直接 401），所以这条只在假路径可验证
+      expect('详情显示了检查点上下文大小', /字符/.test(detailText))
+    }
+
+    // 关掉详情。
+    //
+    // 这里踩了一个**老坑**（踩坑库 #48）：antd 6 会把恰好两个汉字的按钮渲染成
+    // 「关 闭」（中间插一个空格），所以 `hasText: '关闭'` **永远匹配不上** ——
+    // 而失败表现是"等按钮等到超时"，看起来像"详情卡里没有关闭按钮"。
+    // 同族问题还有 #24（纯文本里的 markdown 星号）——**界面文案的一个渲染细节，
+    // 能让一个看起来完全合理的定位永远失效**。
+    await detailCard
+      .locator('button')
+      .filter({ hasText: /关\s*闭/ })
+      .first()
+      .click()
+    await page.waitForTimeout(300)
+  }
+}
+
+// —— 四层保护的状态 ——
+const limitsCard = page.locator('.diag-card', { hasText: '四层保护' }).first()
+expect('限额卡片存在', (await limitsCard.count()) > 0)
+if ((await limitsCard.count()) > 0) {
+  await limitsCard
+    .locator('.rag-metric-table')
+    .first()
+    .waitFor({ state: 'visible', timeout: 30000 })
+    .catch(() => {})
+  await page.waitForTimeout(300)
+  const limitsText = (await limitsCard.innerText()).trim()
+  expect('显示了模型侧并发上限', /模型并发上限/.test(limitsText))
+  expect('显示了工具侧并发上限', /工具并发上限/.test(limitsText))
+  expect('显示了排队超时', /排队超时/.test(limitsText))
+  // **"全局共享"这一句不能少**：不说的话读者会以为限额状态是某一次运行的属性
+  expect('写明了限额是全局共享的', /全局共享/.test(limitsText))
+  // 闸门与熔断并排 —— 它们是两种不同的病，分开放会让人看不出"这把工具现在能不能用"
+  expect('闸门与熔断并排显示', /在途/.test(limitsText) && /熔断状态/.test(limitsText))
+  expect('显示了被拒绝次数', /被拒绝/.test(limitsText))
+  // 判据只有一份：只有"工具执行出错"计入失败率。
+  // 断言用两句**原文**而不是宽松的词匹配 —— 一个只查"算失败/不算"的断言，
+  // 在文案被改坏时照样会过，而它要保护的正是"这句话有没有被说清楚"
+  expect('说明了只有执行出错计入熔断', /只有"工具执行出错"计入失败率/.test(limitsText))
+  expect('说明参数错与限流拒绝都不算工具故障', /都\*\*不算\*\*工具故障|不算工具故障/.test(limitsText))
+  // 两种拒绝的下一步动作相反，页面上必须分开说
+  expect('区分了限流拒绝与熔断拒绝的下一步', /重试是有意义的/.test(limitsText) && /别再用/.test(limitsText))
+
+  if (EXPECT_REFLECTION) {
+    // 假数据刻意造了三种状态（健康 / 被限流 / 已熔断），界面上必须都能看出来。
+    // 真后端刚启动时没有任何工具调用记录，所以"每把工具一行"这段表格是空的 ——
+    // 那属于场景不成立，不是界面缺陷（空表时组件显示的是 Empty，而不是空白）
+    expect('显示了熔断打开的工具', /已熔断/.test(limitsText))
+    expect('显示了正常放行的工具', /正常放行/.test(limitsText))
+    expect('显示了正在被限流的工具', /0\.75 \/ 0\.5/.test(limitsText))
+  } else {
+    // 真后端：验证"模型侧闸门已启用"这件事**在界面上可见** ——
+    // 这条断言背后是一个真 bug：限流层曾经因为重复 bean 定义而压根没装上，
+    // 而唯一能看出它的地方就是这个字段（详见 OpenAiModelTurn 类注释里那段）
+    expect('模型侧闸门显示为已启用', !/模型侧并发闸门未启用/.test(limitsText))
+    expect('显示了在途/上限', /在途/.test(limitsText))
+  }
+
+  await page.screenshot({ path: `${SHOT_DIR}/agent-limits.png`, fullPage: true })
+}
+
+const agentLayout = await page.evaluate(() => {
+  const doc = document.documentElement
+  return { horizontalOverflow: doc.scrollWidth - doc.clientWidth }
+})
+expect('Agent 面板无横向溢出', agentLayout.horizontalOverflow === 0, `overflow=${agentLayout.horizontalOverflow}px`)
+
 // ---------- 切回流式：历史不能被清掉 ----------
 console.log('[7] 模式往返')
 await page.locator('label', { hasText: 'SSE 流式' }).click()
@@ -489,6 +690,12 @@ await page.locator('label', { hasText: 'RAG 分块评测' }).click()
 await page.waitForTimeout(400)
 const ragStillThere = (await page.locator('.rag-metric-table').count()) > 0
 expect('切回 RAG 后对照结果仍在（没有重跑）', ragStillThere)
+
+// 切回 Agent：任务结果必须还在（它会**真的调模型花钱**，丢了就要再花一次钱重跑）
+await page.locator('label', { hasText: 'Agent 工具调用' }).click()
+await page.waitForTimeout(400)
+const agentStillThere = (await page.locator('.agent-timeline').count()) > 0
+expect('切回 Agent 后任务结果仍在（没有重跑、没有再花钱）', agentStillThere)
 
 // ---------- 控制台必须干净 ----------
 console.log('[8] 控制台')

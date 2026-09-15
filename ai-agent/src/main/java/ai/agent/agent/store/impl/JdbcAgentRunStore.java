@@ -210,11 +210,11 @@ public class JdbcAgentRunStore implements AgentRunStore {
 
 	@Override
 	public void finish(String runId, RunStatus status, AgentStopReason stopReason, String finalAnswer, int totalTokens,
-			int toolCallCount, long elapsedMs, String error) {
+			int toolCallCount, long elapsedMs, String error, ai.agent.agent.AgentFailureCause failureCause) {
 		String sql = """
 				UPDATE agent_run
 				   SET status = ?, stop_reason = ?, final_answer = ?, total_tokens = ?,
-				       tool_calls = ?, elapsed_ms = ?, error = ?
+				       tool_calls = ?, elapsed_ms = ?, error = ?, failure_cause = ?
 				 WHERE id = ?
 				""";
 		try (Connection conn = pool.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -225,7 +225,8 @@ public class JdbcAgentRunStore implements AgentRunStore {
 			ps.setInt(5, toolCallCount);
 			ps.setLong(6, elapsedMs);
 			ps.setString(7, error);
-			ps.setString(8, runId);
+			ps.setString(8, failureCause == null ? null : failureCause.name());
+			ps.setString(9, runId);
 			int updated = ps.executeUpdate();
 			if (updated == 0) {
 				// 收尾一个不存在的运行 = 有人在别处删了它，或者 runId 拼错了。
@@ -455,7 +456,11 @@ public class JdbcAgentRunStore implements AgentRunStore {
 				rs.getString("stop_reason") == null ? null : AgentStopReason.valueOf(rs.getString("stop_reason")),
 				rs.getString("final_answer"), rs.getInt("total_tokens"), rs.getInt("tool_calls"),
 				rs.getLong("elapsed_ms"), rs.getString("node"), rs.getString("error"),
-				toInstant(rs.getTimestamp("created_at")), toInstant(rs.getTimestamp("updated_at")));
+				toInstant(rs.getTimestamp("created_at")), toInstant(rs.getTimestamp("updated_at")),
+				// 老数据这一列是 NULL → 读成 null，页面显示"未细分"。
+				// **不给它编一个默认值**：编一个具体的默认值等于给一个假归因
+				rs.getString("failure_cause") == null ? null
+						: ai.agent.agent.AgentFailureCause.valueOf(rs.getString("failure_cause")));
 	}
 
 	private static AgentRunRecord.StepCheckpoint mapStep(ResultSet rs) throws SQLException {

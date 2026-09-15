@@ -30,10 +30,24 @@ import java.util.List;
  * @param error 失败原因；{@code status=FAILED} 时非空
  * @param createdAt 创建时间
  * @param updatedAt 最后更新时间
+ * @param failureCause 失败细分原因（第七轮新增）。老数据为 null —— 这正是"加列不破坏旧行"的好处
  */
 public record AgentRunRecord(String id, String question, RunStatus status, AgentStopReason stopReason,
 		String finalAnswer, int totalTokens, int toolCallCount, long elapsedMs, String node, String error,
-		Instant createdAt, Instant updatedAt) {
+		Instant createdAt, Instant updatedAt, ai.agent.agent.AgentFailureCause failureCause) {
+
+	/** 不带失败细分的构造器（保持旧调用点可编译）。 */
+	public AgentRunRecord(String id, String question, RunStatus status, AgentStopReason stopReason, String finalAnswer,
+			int totalTokens, int toolCallCount, long elapsedMs, String node, String error, Instant createdAt,
+			Instant updatedAt) {
+		this(id, question, status, stopReason, finalAnswer, totalTokens, toolCallCount, elapsedMs, node, error,
+				createdAt, updatedAt, null);
+	}
+
+	/** 失败时给页面看的下一步建议。 */
+	public String failureAdvice() {
+		return failureCause == null ? null : ai.agent.agent.ModelFailureClassifier.advice(failureCause);
+	}
 
 	/** 这次运行是不是已经结束（结束的才不该被恢复）。 */
 	public boolean finished() {

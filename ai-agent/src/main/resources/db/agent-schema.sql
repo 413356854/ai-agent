@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS agent_run (
   elapsed_ms    BIGINT       NOT NULL DEFAULT 0,
   node          VARCHAR(128) NULL,                   -- 哪个实例跑的（多实例时能看出"是谁挂的"）
   error         TEXT         NULL,                   -- 失败原因（status=FAILED 时）
+  -- 失败细分原因（第七轮新增）：MODEL_ERROR 这一个出口下面藏着鉴权失败/限流/超时/连不上/
+  -- 以及**我们自己的并发闸门拒绝**，而"太挤"与"上游挂了"的排查方向完全相反。
+  -- 老数据为 NULL —— 加列不影响已有行，这正是这个设计的好处
+  failure_cause VARCHAR(32)  NULL,
   created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id)

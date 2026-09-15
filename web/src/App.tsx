@@ -1,31 +1,35 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Empty, Flex, Segmented, Tag, Typography } from 'antd'
+import { AgentPanel } from './components/AgentPanel'
 import { Composer } from './components/Composer'
 import { MessageBubble } from './components/MessageBubble'
 import { RagPanel } from './components/RagPanel'
 import { StructuredResultCard } from './components/StructuredResultCard'
 import { ThreadBudgetPanel } from './components/ThreadBudgetPanel'
+import { useAgent } from './hooks/useAgent'
 import { useChatStream } from './hooks/useChatStream'
 import { useRagDiag } from './hooks/useRagDiag'
 import { useStructuredChat } from './hooks/useStructuredChat'
 import { useThreadDiag } from './hooks/useThreadDiag'
 
-/** 四种模式共用一个壳。加模式时只改三处：这个联合类型、Segmented 的 options、头部那个 Tag 的文案表 */
-type Mode = 'stream' | 'structured' | 'threads' | 'rag'
+/** 五种模式共用一个壳。加模式时只改三处：这个联合类型、Segmented 的 options、头部那个 Tag 的文案表 */
+type Mode = 'stream' | 'structured' | 'threads' | 'rag' | 'agent'
 
 /**
- * 四种模式的对照台。
+ * 五种模式的对照台。
  *
- * **为什么做成"模式切换"而不是四个页面**：这些模式的差别本身就是这个项目要讲的东西 ——
+ * **为什么做成"模式切换"而不是五个页面**：这些模式的差别本身就是这个项目要讲的东西 ——
  * 同样一次模型调用，一个走 SSE 逐字推、回答是自由文本；另一个同步等、回答必须先过结构校验；
  * 第三个干脆不是"回答"，而是把线程模型和 token 预算的运行时证据摆出来；
- * 第四个更不同 —— 它**不调用模型**，量的是"文档怎么切、检索找不找得到"。
- * 放在同一个界面里能直接对比"同一个系统里，不同的契约 / 线程模型 / 检索链路各自长什么样"。
+ * 第四个更不同 —— 它**不调用模型**，量的是"文档怎么切、检索找不找得到"；
+ * 第五个（Agent）**会调模型、还会自己决定调哪些工具**，所以那一页要回答的是
+ * "它为什么这么选、失败在哪一步、花的钱值不值"。
+ * 放在同一个界面里能直接对比"同一个系统里，不同的契约 / 线程模型 / 检索链路 / 自主程度各自长什么样"。
  *
- * 四个 hook 都挂在 App 上（而不是按模式条件挂载）：切换模式时对话记录和实验数据不会被清空，
+ * 五个 hook 都挂在 App 上（而不是按模式条件挂载）：切换模式时对话记录和实验数据不会被清空，
  * 来回切两次不会丢掉刚才的结果 —— 这也是把状态放在这一层的理由。
- * 后两块尤其需要这样：钉住实验一次要跑一秒多，RAG 对照评测要在后端真跑一遍全量检索，
- * 切走再切回来就重跑一遍的代价太大。
+ * **Agent 那一页尤其需要这样**：一次任务会真的调模型花钱、要等十几秒，
+ * 切走再切回来就重跑一遍（再花一次钱）的代价太大。
  */
 export default function App() {
   const [mode, setMode] = useState<Mode>('stream')
@@ -37,12 +41,14 @@ export default function App() {
   const diag = useThreadDiag(mode === 'threads', stream.conversationId)
   // 第四个同理：语料解析要读 4 份文档、几百个块，没进过这个面板就不该付这份代价
   const rag = useRagDiag(mode === 'rag')
+  // 第五个：进面板只自动拉"只读"的运行列表与限额；跑任务必须用户明确点 —— 它会真的花钱
+  const agent = useAgent(mode === 'agent')
 
   const listRef = useRef<HTMLElement>(null)
 
   // 当前模式对应的视图数据，只用于"滚动到底部"和空状态判断。
-  // 两个诊断模式没有这两件事（面板自己滚、没有空状态），所以这里不参与，免得白白触发一次 effect
-  const isDiagnostic = mode === 'threads' || mode === 'rag'
+  // 三个诊断模式没有这两件事（面板自己滚、没有空状态），所以这里不参与，免得白白触发一次 effect
+  const isDiagnostic = mode === 'threads' || mode === 'rag' || mode === 'agent'
   const activeCount = mode === 'stream' ? stream.messages.length : structured.turns.length
   const busy = mode === 'stream' ? stream.streaming : structured.loading
   const conversationId = mode === 'structured' ? structured.conversationId : stream.conversationId
@@ -79,12 +85,14 @@ export default function App() {
               { label: '结构化输出', value: 'structured' },
               { label: '线程与预算', value: 'threads' },
               { label: 'RAG 分块评测', value: 'rag' },
+              { label: 'Agent 工具调用', value: 'agent' },
             ]}
           />
           {mode === 'stream' && <Tag color="blue">逐字推送 · 自由文本</Tag>}
           {mode === 'structured' && <Tag color="purple">同步返回 · JSON 校验</Tag>}
           {mode === 'threads' && <Tag color="cyan">运行时取证 · 不写死结论</Tag>}
           {mode === 'rag' && <Tag color="green">离线链路 · 调模型 0 次</Tag>}
+          {mode === 'agent' && <Tag color="orange">会调模型 · 自主选工具</Tag>}
         </Flex>
         {/*
           右侧这一段只在对话模式里有意义。两个诊断模式刻意不显示 conversationId 和「新会话」：
@@ -112,6 +120,8 @@ export default function App() {
         <ThreadBudgetPanel diag={diag} />
       ) : mode === 'rag' ? (
         <RagPanel diag={rag} />
+      ) : mode === 'agent' ? (
+        <AgentPanel agent={agent} />
       ) : (
         // 诊断模式没有输入区，所以 main/footer 只在对话模式下渲染 —— 空着的 footer 会白白吃掉一块高度
         <>

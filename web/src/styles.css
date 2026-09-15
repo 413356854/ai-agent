@@ -1130,3 +1130,121 @@ body {
 .align-details .issue-list {
   margin-top: 6px;
 }
+
+/* ---------------------------------------------------------------------------
+   Agent 面板（阶段三第 5 件）
+
+   这一页要回答的是"它怎么想的、调了什么、失败在哪一步"。
+   所以视觉上的核心是**执行过程的时间线**，而不是又一张汇总表 ——
+   表格擅长横向比大小，不擅长讲顺序，而"为什么"是顺序性的
+   （它先看了目录、再检索、失败后换了关键词）。
+   --------------------------------------------------------------------------- */
+
+.agent-answer {
+  border: 1px solid #d9f7be;
+  border-left: 4px solid #52c41a;
+  border-radius: 8px;
+  background: #fcfffa;
+  padding: 10px 14px;
+}
+
+.agent-answer-text {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.75;
+}
+
+/* 过程时间线：一条竖线串起每一步，让"顺序"本身可见 */
+.agent-timeline {
+  border-left: 2px solid #e6ebf2;
+  margin-left: 6px;
+  padding-left: 14px;
+}
+
+.agent-step {
+  margin-bottom: 14px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fafbfc;
+  border: 1px solid #eceef1;
+}
+
+/* 最后那一步（作答）用浅绿底：一眼看出"过程到此结束" */
+.agent-step.is-answer {
+  background: #fcfffa;
+  border-color: #d9f7be;
+}
+
+.agent-step-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+/* 模型的 think 段：引用块样式，与"工具返回"在视觉上分开 */
+.agent-thought {
+  font-size: 13px;
+  color: #595959;
+  background: #fff;
+  border-left: 3px solid #91caff;
+  padding: 6px 10px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.agent-thought-label {
+  color: #8c8c8c;
+  margin-right: 4px;
+}
+
+.agent-tool-call {
+  border: 1px solid #eceef1;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px 10px;
+  margin-top: 6px;
+}
+
+/* 工具侧失败（会被计入熔断）标红边：与"模型参数错"在视觉上分开 ——
+   后者是橙色的 stage 标签，前者是红边。这两类对排查的含义完全不同 */
+.agent-tool-call.is-failure {
+  border-left: 4px solid #ff4d4f;
+}
+
+.agent-tool-head {
+  margin-bottom: 6px;
+}
+
+.agent-tool-label {
+  color: #8c8c8c;
+  font-size: 12px;
+}
+
+.agent-tool-args {
+  font-size: 12.5px;
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+
+.agent-tool-feedback {
+  font-size: 12.5px;
+}
+
+/* 回填给模型的文本：这一页最该被读的部分，所以给它独立的一块 + 可滚动 */
+.agent-tool-feedback pre {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  background: #fafbfc;
+  border: 1px solid #eceef1;
+  border-radius: 6px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+  line-height: 1.7;
+}

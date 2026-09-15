@@ -2,6 +2,7 @@ package ai.agent.agent.store;
 
 import ai.agent.agent.AgentRun;
 import ai.agent.agent.AgentStopReason;
+import ai.agent.agent.ModelFailureClassifier;
 
 import java.util.List;
 import java.util.Optional;
@@ -51,9 +52,15 @@ public interface AgentRunStore {
 	/** 把一次运行的累计用量更新到库里（不改变状态）。 */
 	void updateProgress(String runId, int totalTokens, int toolCallCount, long elapsedMs);
 
-	/** 收尾：写最终状态 / 答案 / 停止原因。 */
+	/** 收尾：写最终状态 / 答案 / 停止原因 / 失败细分。 */
 	void finish(String runId, RunStatus status, AgentStopReason stopReason, String finalAnswer, int totalTokens,
-			int toolCallCount, long elapsedMs, String error);
+			int toolCallCount, long elapsedMs, String error, ai.agent.agent.AgentFailureCause failureCause);
+
+	/** 收尾（不带失败细分）—— 非失败路径用它，省掉一处写 null 的噪音。 */
+	default void finish(String runId, RunStatus status, AgentStopReason stopReason, String finalAnswer,
+			int totalTokens, int toolCallCount, long elapsedMs, String error) {
+		finish(runId, status, stopReason, finalAnswer, totalTokens, toolCallCount, elapsedMs, error, null);
+	}
 
 	/** 读一次运行。 */
 	Optional<AgentRunRecord> find(String runId);
@@ -135,8 +142,11 @@ public interface AgentRunStore {
 			case MAX_STEPS, MAX_TOKENS, MAX_DURATION, DUPLICATE_ACTION, EMPTY_RESPONSE -> RunStatus.STOPPED;
 			case MODEL_ERROR -> RunStatus.FAILED;
 		};
+		// 失败原因要落库：页面靠它回答"是上游挂了还是我们自己太挤"，
+		// 而那正是 MODEL_ERROR 这一个出口分不开的两件事
+		String error = run.failureCause() == null ? null : ModelFailureClassifier.advice(run.failureCause());
 		finish(runId, status, run.stopReason(), run.finalAnswer(), run.totalTokens(), run.toolCallCount(),
-				run.elapsedMs(), null);
+				run.elapsedMs(), error, run.failureCause());
 	}
 
 }
