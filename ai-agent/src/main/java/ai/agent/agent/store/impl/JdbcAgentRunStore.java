@@ -120,13 +120,22 @@ public class JdbcAgentRunStore implements AgentRunStore {
 
 	@Override
 	public void start(String runId, String question, String node) {
+		start(runId, question, node, null);
+	}
+
+	@Override
+	public void start(String runId, String question, String node, String intent) {
 		try (Connection conn = pool.getConnection();
 				PreparedStatement ps = conn.prepareStatement(
-						"INSERT INTO agent_run (id, question, status, node) VALUES (?, ?, ?, ?)")) {
+						"INSERT INTO agent_run (id, question, status, node, intent) VALUES (?, ?, ?, ?, ?)")) {
 			ps.setString(1, runId);
 			ps.setString(2, question);
 			ps.setString(3, RunStatus.RUNNING.name());
 			ps.setString(4, node);
+			// 空白归因键存 NULL 而不是空串：**"没标注"和"标注成了空"是两件事**，
+			// 而看板把这两种都归到「未标注」时，数据库里至少要能看出原本是哪种。
+			// （空串在 VARCHAR 上是一个合法的取值，它会让人以为"归因字段在用，只是值是空的"）
+			ps.setString(5, intent == null || intent.isBlank() ? null : intent);
 			ps.executeUpdate();
 		}
 		catch (SQLException e) {
@@ -138,12 +147,15 @@ public class JdbcAgentRunStore implements AgentRunStore {
 	public void checkpoint(AgentRunRecord.StepCheckpoint checkpoint) {
 		String sql = """
 				INSERT INTO agent_step
-				  (run_id, step_index, thought_text, prompt_tokens, completion_tokens, elapsed_ms, transcript)
-				VALUES (?, ?, ?, ?, ?, ?, ?)
+				  (run_id, step_index, thought_text, prompt_tokens, completion_tokens, cache_read_tokens,
+				   model_name, elapsed_ms, transcript)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 				ON DUPLICATE KEY UPDATE
 				  thought_text = VALUES(thought_text),
 				  prompt_tokens = VALUES(prompt_tokens),
 				  completion_tokens = VALUES(completion_tokens),
+				  cache_read_tokens = VALUES(cache_read_tokens),
+				  model_name = VALUES(model_name),
 				  elapsed_ms = VALUES(elapsed_ms),
 				  transcript = VALUES(transcript)
 				""";
@@ -153,8 +165,12 @@ public class JdbcAgentRunStore implements AgentRunStore {
 			ps.setString(3, checkpoint.thoughtText());
 			ps.setInt(4, checkpoint.promptTokens());
 			ps.setInt(5, checkpoint.completionTokens());
-			ps.setLong(6, checkpoint.elapsedMs());
-			ps.setString(7, checkpoint.transcriptJson());
+			ps.setInt(6, checkpoint.cacheReadTokens());
+			// 模型名 NOT NULL DEFAULT ''：空串是"取不到名字"，与"某个叫空串的模型"不会混淆
+			// （后者不是一个合法的模型名）。存 NULL 则要多一处 null 判断，收益为零
+			ps.setString(7, checkpoint.modelName() == null ? "" : checkpoint.modelName());
+			ps.setLong(8, checkpoint.elapsedMs());
+			ps.setString(9, checkpoint.transcriptJson());
 			ps.executeUpdate();
 		}
 		catch (SQLException e) {
@@ -286,7 +302,8 @@ public class JdbcAgentRunStore implements AgentRunStore {
 	@Override
 	public Optional<AgentRunRecord.StepCheckpoint> latestCheckpoint(String runId) {
 		String sql = """
-				SELECT run_id, step_index, thought_text, prompt_tokens, completion_tokens, elapsed_ms, transcript
+				SELECT run_id, step_index, thought_text, prompt_tokens, completion_tokens, cache_read_tokens,
+				       model_name, elapsed_ms, transcript
 				  FROM agent_step
 				 WHERE run_id = ?
 				 ORDER BY step_index DESC
@@ -306,7 +323,8 @@ public class JdbcAgentRunStore implements AgentRunStore {
 	@Override
 	public List<AgentRunRecord.StepCheckpoint> stepsOf(String runId) {
 		String sql = """
-				SELECT run_id, step_index, thought_text, prompt_tokens, completion_tokens, elapsed_ms, transcript
+				SELECT run_id, step_index, thought_text, prompt_tokens, completion_tokens, cache_read_tokens,
+				       model_name, elapsed_ms, transcript
 				  FROM agent_step
 				 WHERE run_id = ?
 				 ORDER BY step_index
@@ -466,11 +484,30 @@ public class JdbcAgentRunStore implements AgentRunStore {
 	private static AgentRunRecord.StepCheckpoint mapStep(ResultSet rs) throws SQLException {
 		return new AgentRunRecord.StepCheckpoint(rs.getString("run_id"), rs.getInt("step_index"),
 				rs.getString("transcript"), rs.getString("thought_text"), rs.getInt("prompt_tokens"),
-				rs.getInt("completion_tokens"), rs.getLong("elapsed_ms"));
+				rs.getInt("completion_tokens"), rs.getLong("elapsed_ms"), rs.getInt("cache_read_tokens"),
+				rs.getString("model_name"));
 	}
 
 	private static Instant toInstant(Timestamp timestamp) {
 		return timestamp == null ? null : timestamp.toInstant();
+	}
+
+	/**
+	 * 把连接池借给**同一个库上的其它读侧**（成本看板的聚合查询）。
+	 *
+	 * <h2>为什么是"借池子"而不是让它们各自建一个</h2>
+	 * H2 的内存库靠 {@code DB_CLOSE_DELAY=-1} 保活，所以**再多一个池子也确实连得上** ——
+	 * 也就是说，各自建池在本地完全能跑通，问题要到生产才出现：
+	 * 每个池子都有自己的连接上限与超时，于是一个"多加了几个只读查询"的改动
+	 * 会悄悄把进程的连接上限乘以几，而现象是"偶发的连接不够"，
+	 * 排查方向会跑到"是不是有连接泄漏"上去。
+	 *
+	 * <p>同时，池子的生命周期只能有一个负责人：{@link #close()} 在应用关闭时 dispose 它。
+	 * 两个类都持池、都 dispose，会在关闭时比赛谁先关掉 —— 而那个错误
+	 * 只出现在停机过程里，最难复现。
+	 */
+	public JdbcConnectionPool pool() {
+		return pool;
 	}
 
 	/**

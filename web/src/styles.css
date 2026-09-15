@@ -1357,3 +1357,76 @@ body {
 .agent-waiting {
   border-left: 4px solid #faad14;
 }
+
+/* ==========================================================================
+   成本看板（阶段四 · 工程化）
+   命名全部用 cost- 前缀 —— 与 agent-/approval- 那两族分开，
+   这样"这一块属于哪个功能"在样式表里也能一眼看出来
+   ========================================================================== */
+
+.cost-head { position: sticky; top: 0; z-index: 2; }
+
+/* 头部：左边一个金额、右边一排数字。金额是主角，所以它单独一列 */
+.cost-headline {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.cost-headline-main { min-width: 220px; }
+.cost-headline-amount { display: flex; flex-direction: column; gap: 2px; }
+.cost-headline-amount .ant-typography { margin: 0 !important; }
+.cost-headline-reason { max-width: 460px; font-size: 12px; line-height: 1.5; }
+.cost-headline-stats { flex: 1 1 auto; }
+
+.cost-stat { min-width: 108px; }
+.cost-stat-label { font-size: 12px; color: rgba(0, 0, 0, 0.45); }
+.cost-stat-value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cost-stat-value.is-danger { color: #d4380d; }
+.cost-stat-sub { font-size: 12px; color: rgba(0, 0, 0, 0.45); }
+
+/* 金额：等宽数字。金额列不对齐时，人没法快速比较两行的量级 */
+.cost-amount { font-variant-numeric: tabular-nums; font-weight: 600; }
+.cost-amount-unknown {
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+  border-bottom: 1px dashed currentColor;
+}
+.cost-fallback-tag { margin-left: 4px; font-size: 11px; }
+
+.cost-needs-price { border-color: #faad14; }
+.cost-needs-alert { margin-bottom: 12px; }
+.cost-config-sample {
+  margin: 8px 0 0;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.cost-config-notes { margin-top: 12px; }
+.cost-tool-note { font-size: 12px; margin-bottom: 8px !important; }
+.cost-note-line { font-size: 12px; margin: 8px 0 0 !important; }
+.cost-reconcile-bad { border-color: #ff4d4f; }
+
+/* 结论边界那一段：它是这一页的"免责声明"，所以要读得下去 —— 行距比正文松一点 */
+.cost-notes { margin: 0; padding-left: 18px; }
+.cost-notes li { margin-bottom: 6px; line-height: 1.7; font-size: 13px; }
+
+/*
+  成本看板：金额算不出时的显示。
+  「算不出」+ 原因同格显示，而不是把原因藏进 Tooltip ——
+  见 CostPanel 里 Amount 组件的注释（第一次打开看板的人不会去悬浮一个写着"算不出"的词）
+*/
+.cost-amount-unknown-box { display: inline-flex; flex-direction: column; gap: 2px; }
+.cost-amount-reason { font-size: 11px; line-height: 1.5; color: rgba(0, 0, 0, 0.45); max-width: 320px; }
+
+/* 业务归因输入框（Agent 面板）：它是成本看板「按业务」那一栏的唯一写入方 */
+.cost-intent-label { flex: 0 0 auto; }
+.cost-intent-input { max-width: 260px; }
+.cost-intent-hint { font-size: 12px; }

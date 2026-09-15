@@ -89,9 +89,20 @@ public record AgentRunRecord(String id, String question, RunStatus status, Agent
 	 * @param promptTokens 这一步的输入 token
 	 * @param completionTokens 这一步的输出 token
 	 * @param elapsedMs 这一步耗时
+	 * @param cacheReadTokens 这一步的输入里命中上游提示词缓存的部分（阶段四成本看板）。
+	 *            <b>它是 {@code promptTokens} 的子集</b>；两者分别按不同单价计费。
+	 *            上游不报时为 0，读的时候按"全部未命中"算 —— 方向是保守的（偏高）
+	 * @param modelName 这一步用的模型名。它让**成本可以按模型归因**，
+	 *            也是"换了模型之后钱花在哪"这个问题的唯一数据来源
 	 */
 	public record StepCheckpoint(String runId, int stepIndex, String transcriptJson, String thoughtText,
-			int promptTokens, int completionTokens, long elapsedMs) {
+			int promptTokens, int completionTokens, long elapsedMs, int cacheReadTokens, String modelName) {
+
+		/** 不带成本口径的构造器（旧调用点与测试用）。 */
+		public StepCheckpoint(String runId, int stepIndex, String transcriptJson, String thoughtText,
+				int promptTokens, int completionTokens, long elapsedMs) {
+			this(runId, stepIndex, transcriptJson, thoughtText, promptTokens, completionTokens, elapsedMs, 0, null);
+		}
 	}
 
 	/** 一次工具调用的落库记录（含被拒绝的）。 */

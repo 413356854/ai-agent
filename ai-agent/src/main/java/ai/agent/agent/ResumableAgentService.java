@@ -72,13 +72,28 @@ public class ResumableAgentService {
 	 */
 	private final AgentApprovalService approvalService;
 
+	/**
+	 * 取"这一步是哪个模型跑的"（阶段四成本看板）。
+	 *
+	 * <p>用的是 {@code ObjectProvider} 而不是直接注入 {@link ModelTurn}：这个服务在
+	 * 很多测试里被直接 new 出来（没有 Spring 容器），而那些测试不关心成本归因。
+	 * 真正需要它的是**生产路径**，那里容器里一定有。
+	 *
+	 * <p>取不到时记 {@link ModelTurn#UNKNOWN_MODEL} —— **不是**记一个默认模型名：
+	 * 编一个模型名会让成本按错的单价算，而那个错钱数在页面上完全看不出来。
+	 * 这与"认不出来就说认不出来"是同一条规矩。
+	 */
+	private final org.springframework.beans.factory.ObjectProvider<ModelTurn> modelTurnProvider;
+
 	public ResumableAgentService(AgentLoop loop, AgentRunStore store, TranscriptCodec codec,
-			AgentStoreProperties properties, AgentApprovalService approvalService) {
+			AgentStoreProperties properties, AgentApprovalService approvalService,
+			org.springframework.beans.factory.ObjectProvider<ModelTurn> modelTurnProvider) {
 		this.loop = loop;
 		this.store = store;
 		this.codec = codec;
 		this.properties = properties;
 		this.approvalService = approvalService;
+		this.modelTurnProvider = modelTurnProvider;
 	}
 
 	/** 新起一次任务（带持久化）。 */
@@ -89,7 +104,22 @@ public class ResumableAgentService {
 
 	/** 用指定 id 跑一次（测试要能控制 id，否则没法在断言里引用它）。 */
 	public AgentRun runWithId(String runId, String question) {
-		return runWithId(runId, question, null);
+		// 显式转型：`runWithId(id, q, null)` 在这里是**歧义的**
+		// ——第三个参数既可能是 ModelTurn（覆盖模型），也可能是 String（归因键），
+		// 而 null 两种都匹配。编译器报"对 runWithId 的引用不明确"，
+		// 那一行代码看起来毫无问题（这正是重载 + null 的经典陷阱）。
+		// 顺带说明为什么没有把两个重载合成一个"接受 Object"的方法：那样更糟 ——
+		// 它会把一个**编译期**能发现的错误推成运行期的 ClassCastException
+		return runWithId(runId, question, (ModelTurn) null);
+	}
+
+	/**
+	 * 用指定 id 与<b>业务归因键</b>跑一次（阶段四成本看板）。
+	 *
+	 * @param intent 业务归因键；{@code null} 表示未标注
+	 */
+	public AgentRun runWithId(String runId, String question, String intent) {
+		return runWithId(runId, question, null, intent);
 	}
 
 	/**
@@ -107,8 +137,14 @@ public class ResumableAgentService {
 	 * @param modelTurn 覆盖默认模型；传 {@code null} 表示用容器里那个
 	 */
 	public AgentRun runWithId(String runId, String question, ModelTurn modelTurn) {
-		store.start(runId, question, properties.node());
-		PersistingListener listener = new PersistingListener(runId);
+		return runWithId(runId, question, modelTurn, null);
+	}
+
+	/** 完整入口：id + 问题 + 覆盖模型 + 业务归因键。 */
+	public AgentRun runWithId(String runId, String question, ModelTurn modelTurn, String intent) {
+		store.start(runId, question, properties.node(), intent);
+		// 把"这次实际用哪个模型"传给监听器 —— 它是成本归因的一部分（见 PersistingListener.override）
+		PersistingListener listener = new PersistingListener(runId, modelTurn);
 		try {
 			// 传了模型就临时换一个 loop：AgentLoop 是无状态的（所有可变状态都在方法局部变量里），
 			// 所以这里 new 一个是安全的 —— 不是"共享可变状态"那种危险做法
@@ -381,8 +417,45 @@ public class ResumableAgentService {
 
 		private final String runId;
 
+		/**
+		 * 这一次运行**实际**用的模型（拿它的名字做成本归因）。
+		 *
+		 * <h2>为什么它不能是"构造监听器时从容器里取一个"</h2>
+		 * 因为 {@link #runWithId(String, String, ModelTurn, String)} 允许**换一个模型跑**，
+		 * 而那时容器里那个 ModelTurn <b>根本不是这次用的那一个</b>。
+		 * 第一版就是从容器里取的，于是"换模型跑"的每一次运行都被记成配置里那个模型的名字 ——
+		 * 抓出它的是一条端到端测试（{@code CostPipelineIntegrationTest}）：
+		 * 它给了一个 modelName 为「测试模型-带缓存」的替身，而库里落的是 `deepseek-flash`。
+		 *
+		 * <p><b>这个错为什么危险</b>：成本看板会按 `deepseek-flash` 的单价给那些运行算钱，
+		 * 而真实单价可能是另一个模型的 —— 于是钱数是错的，却**看起来完全正常**
+		 * （有一个具体的模型名、有一笔具体的金额）。
+		 * 这正是"成本归因"这一层最需要防的一件事：<b>按"我以为在用的模型"计价。</b>
+		 */
+		private final ModelTurn override;
+
+		/**
+		 * 取模型名。
+		 *
+		 * <p>有覆盖就用覆盖（那是这次真的在用的），否则每轮问一次容器 ——
+		 * 而**不能**在构造期问一次就缓存：模型可能在运行期间被换掉，
+		 * 缓存它会让成本归因悄悄落在错的模型上。
+		 */
+		private String resolveModelName() {
+			if (override != null) {
+				return override.modelName();
+			}
+			ModelTurn turn = modelTurnProvider.getIfAvailable();
+			return turn == null ? ModelTurn.UNKNOWN_MODEL : turn.modelName();
+		}
+
 		PersistingListener(String runId) {
+			this(runId, null);
+		}
+
+		PersistingListener(String runId, ModelTurn override) {
 			this.runId = runId;
+			this.override = override;
 		}
 
 		@Override
@@ -398,8 +471,12 @@ public class ResumableAgentService {
 						outcome.invocation().argumentsForFeedback(2000), outcome.stage().name(), outcome.feedback(),
 						outcome.elapsedMs()));
 			}
+			// 缓存命中与模型名一起落库：它们是成本看板的两个输入口径。
+			// 少了前者，成本只能按最贵那一档算（偏高，且高估倍数随上游缓存命中率浮动）；
+			// 少了后者，"换了模型之后钱花在哪"这个问题没有数据可答
 			store.checkpoint(new AgentRunRecord.StepCheckpoint(runId, stepIndex, codec.encode(messages),
-					step.thoughtText(), step.promptTokens(), step.completionTokens(), step.elapsedMs()));
+					step.thoughtText(), step.promptTokens(), step.completionTokens(), step.elapsedMs(),
+					step.cachedPromptTokens(), resolveModelName()));
 			store.updateProgress(runId, totalTokensSoFar, toolCallsSoFar, elapsedMsSoFar);
 		}
 	}

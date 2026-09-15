@@ -226,7 +226,8 @@ public class AgentLoop {
 			// ---- 模型没要工具 → 这是最终回答 ----
 			if (!reply.wantsTools()) {
 				AgentRun.Step step = new AgentRun.Step(round, reply.text(), List.of(), List.of(),
-						reply.promptTokens(), reply.completionTokens(), elapsedMs(stepStarted));
+						reply.promptTokens(), reply.completionTokens(), elapsedMs(stepStarted),
+						reply.cachedPromptTokens());
 				steps.add(step);
 				if (reply.text() == null || reply.text().isBlank()) {
 					// 既没文字也没工具调用：不是"模型的回答"，是上游异常。
@@ -323,7 +324,8 @@ public class AgentLoop {
 				// 仍然这样写是刻意的：它就是"进程现在能保存下来的最新状态"，
 				// 而恢复逻辑不依赖"每步都完整"这个假设（它自己会从对话里找出悬空的 tool_call）
 				AgentRun.Step partialStep = new AgentRun.Step(round, reply.text(), reply.toolCalls(), outcomes,
-						reply.promptTokens(), reply.completionTokens(), elapsedMs(stepStarted));
+						reply.promptTokens(), reply.completionTokens(), elapsedMs(stepStarted),
+						reply.cachedPromptTokens());
 				listener.afterStep(runId, round, partialStep, List.copyOf(messages), totalTokens, toolCallCount,
 						elapsedMs(startedAt));
 
@@ -335,7 +337,8 @@ public class AgentLoop {
 			}
 
 			AgentRun.Step step = new AgentRun.Step(round, reply.text(), reply.toolCalls(), outcomes,
-					reply.promptTokens(), reply.completionTokens(), elapsedMs(stepStarted));
+					reply.promptTokens(), reply.completionTokens(), elapsedMs(stepStarted),
+					reply.cachedPromptTokens());
 			steps.add(step);
 
 			// ---- 检查点：这一步已经完整结束，上下文可以落库了 ----

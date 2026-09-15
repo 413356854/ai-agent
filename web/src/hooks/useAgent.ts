@@ -46,7 +46,7 @@ export interface UseAgentResult {
   /** 决定失败的原因（后端拒绝、超时、记录已被别人处理…） */
   decisionError: string | null
 
-  ask: (question: string) => void
+  ask: (question: string, intent?: string) => void
   loadRuns: () => void
   openDetail: (runId: string) => void
   closeDetail: () => void
@@ -183,7 +183,7 @@ export function useAgent(active: boolean): UseAgentResult {
   }, [])
 
   const ask = useCallback(
-    async (question: string) => {
+    async (question: string, intent = '') => {
       const content = question.trim()
       if (!content) return
       // 守卫必须在同一个 tick 内生效：await 之后再读 ref 就晚了。
@@ -196,7 +196,7 @@ export function useAgent(active: boolean): UseAgentResult {
       // 人应当在按下"跑一次"的瞬间就看到它（而不是等 2.5 秒后的下一次轮询）
       void loadApprovals()
       try {
-        const data = await askAgent(content)
+        const data = await askAgent(content, intent)
         setCurrent({ status: 'ok', data })
         // 跑完顺手刷一次列表：刚跑的任务应该立刻出现在历史里。
         // 不刷的话用户会以为"没记下来"（而它其实记了）——
@@ -298,7 +298,7 @@ export function useAgent(active: boolean): UseAgentResult {
     decision,
     deciding,
     decisionError,
-    ask: q => void ask(q),
+    ask: (q, intent) => void ask(q, intent),
     loadRuns: () => void loadRuns(),
     openDetail: id => void openDetail(id),
     closeDetail,

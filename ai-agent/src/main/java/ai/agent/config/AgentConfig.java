@@ -71,8 +71,9 @@ public class AgentConfig {
 	@Bean
 	@ConditionalOnMissingBean(ModelTurn.class)
 	ModelTurn openAiModelTurn(ChatModel chatModel, ToolRegistry registry,
-			AgentConcurrencyProperties concurrencyProperties) {
-		ModelTurn real = new OpenAiModelTurn(chatModel, registry);
+			AgentConcurrencyProperties concurrencyProperties,
+			org.springframework.beans.factory.ObjectProvider<org.springframework.ai.model.openai.autoconfigure.OpenAiChatProperties> chatProperties) {
+		ModelTurn real = new OpenAiModelTurn(chatModel, registry, chatProperties);
 		ConcurrencyGate gate = new ConcurrencyGate("model", concurrencyProperties.maxConcurrentModelRequests(),
 				concurrencyProperties.acquireTimeoutMs());
 		return new LimitedModelTurn(real, gate);

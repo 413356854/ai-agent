@@ -74,6 +74,20 @@ public class LimitedModelTurn implements ModelTurn {
 		return delegate.toolCallingEnabled();
 	}
 
+	/**
+	 * 委派给被包装的那个适配器（阶段四成本看板）。
+	 *
+	 * <p><b>这一行如果漏了会怎样</b>：默认实现返回 {@code UNKNOWN_MODEL}，
+	 * 于是**每一次 Agent 运行的每一步都记成"未知模型"**，成本看板上所有钱都归到
+	 * 「未上报模型名」那一行，而"按模型归因"这个维度整个失效 ——
+	 * 而且它不报错、接口照常 200，只有打开看板才会发现全是"未知"。
+	 * 这正是装饰器模式最经典的漏法：包装类忘了转发一个新增的接口方法。
+	 */
+	@Override
+	public String modelName() {
+		return delegate.modelName();
+	}
+
 	/** 闸门快照（诊断端点与报告用）。 */
 	public ConcurrencyGate.Snapshot gateSnapshot() {
 		return gate.snapshot();

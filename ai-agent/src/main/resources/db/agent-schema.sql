@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS agent_run (
   status        VARCHAR(32)  NOT NULL,               -- RUNNING / ANSWERED / FAILED / INTERRUPTED
   stop_reason   VARCHAR(32)  NULL,                   -- 走到哪个出口（AgentStopReason）
   final_answer  TEXT         NULL,                   -- 最终答案；被上限截断时为 NULL
-  total_tokens  INT          NOT NULL DEFAULT 0,     -- 累计 token（阶段四成本看板的数据源）
+  total_tokens  INT          NOT NULL DEFAULT 0,     -- 累计 token（阶段四成本看板的运行时口径）
   tool_calls    INT          NOT NULL DEFAULT 0,     -- 一共提出过几次工具调用（含被拒的）
   elapsed_ms    BIGINT       NOT NULL DEFAULT 0,
   node          VARCHAR(128) NULL,                   -- 哪个实例跑的（多实例时能看出"是谁挂的"）
@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS agent_run (
   -- 以及**我们自己的并发闸门拒绝**，而"太挤"与"上游挂了"的排查方向完全相反。
   -- 老数据为 NULL —— 加列不影响已有行，这正是这个设计的好处
   failure_cause VARCHAR(32)  NULL,
+  -- 【阶段四成本看板】业务归因键（路线文档的「成本归因：按业务/租户/功能拆分」）。
+  -- 由调用方在 /ask 时给出，本列**刻意不做外键、不做枚举**：
+  -- 归因键是业务侧的概念，数据库管不了它有多少取值。
+  -- NULL 表示"这次运行没有标注归因" —— 看板会把它显示成「未标注」，
+  -- 而不是悄悄并进某一个业务里（那会让那一项虚高，且无从发现）
+  intent        VARCHAR(64)  NULL,
   created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id)
@@ -47,6 +53,18 @@ CREATE TABLE IF NOT EXISTS agent_step (
   thought_text      TEXT        NULL,                -- 模型这一步的文字输出（ReAct 的 think）
   prompt_tokens     INT         NOT NULL DEFAULT 0,
   completion_tokens INT         NOT NULL DEFAULT 0,
+  -- 【阶段四成本看板】这一步的输入里有多少命中了上游的提示词缓存。
+  -- 为什么必须单独一列：缓存命中与未命中的**单价差一个数量级**（DeepSeek 官方口径是 50 倍），
+  -- 而 prompt_tokens 是**两者之和**。只存合计的话，成本的误差方向永远是"高估"，
+  -- 且高估的倍数取决于上游缓存命中率 —— 一个我们既看不见也调不了的量。
+  -- 上游没报这个字段时记 0，读的时候按"全部未命中"算（偏保守，见 CostPricing 的注释）。
+  cache_read_tokens INT         NOT NULL DEFAULT 0,
+  -- 【阶段四成本看板】这一步是**哪个模型**跑的。
+  -- 为什么落在"每一步"而不是"每次运行"上：成本和 token 一样，是**每一步**的产物
+  -- （同一轮运行里换了模型，每步的单价就不同）。落在运行上只有在
+  -- "整个运行只用一个模型"时才成立，而那正是灰度/切换期间不成立的前提。
+  -- 上游没报 / 取不到名字时为空串，看板显示成「未知模型」，且**不给它算命**
+  model_name        VARCHAR(128) NOT NULL DEFAULT '',
   elapsed_ms        BIGINT      NOT NULL DEFAULT 0,
   transcript        TEXT        NOT NULL,            -- 这一步之后的完整消息列表（JSON）
   created_at        TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -74,6 +92,11 @@ CREATE TABLE IF NOT EXISTS agent_tool_invocation (
 
 -- 恢复时最常见的查询是"这个实例上还有哪些没跑完的运行"
 CREATE INDEX IF NOT EXISTS idx_agent_run_status ON agent_run (status, updated_at);
+
+-- 【阶段四成本看板】看板的每一次查询都带一个时间窗（默认最近 7 天），
+-- 且按天分桶。所以这个索引是"看板能不能在数据量上来之后还跑得动"的落点 ——
+-- 没有它，看板会随运行数线性变慢，而现象是"这个页面越来越慢"，看不出是缺索引。
+CREATE INDEX IF NOT EXISTS idx_agent_run_created ON agent_run (created_at);
 
 -- ============================================================================
 --  人工审批记录（阶段三第 9 件：HITL）

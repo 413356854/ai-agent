@@ -81,13 +81,24 @@ public record AgentRun(String question, List<Step> steps, String finalAnswer, Ag
 	 * @param promptTokens 这一轮请求的 token
 	 * @param completionTokens 这一轮生成的 token
 	 * @param elapsedMs 这一轮（模型 + 全部工具）的耗时
+	 * @param cachedPromptTokens 这一轮输入里**命中上游提示词缓存**的部分（{@code promptTokens} 的子集）。
+	 *            它是阶段四成本看板的输入口径：缓存命中与未命中的单价差一个数量级，
+	 *            而只留 {@code promptTokens} 就只能按最贵那档算。
+	 *            <p>同样放成"补充信息"（带便利构造器、默认 0）：旧调用点不用改，
+	 *            而 0 的语义是明确的 ——"没有命中"，也就是按最贵那一档计费。
 	 */
 	public record Step(int index, String thoughtText, List<ToolInvocation> invocations, List<ToolCallOutcome> outcomes,
-			int promptTokens, int completionTokens, long elapsedMs) {
+			int promptTokens, int completionTokens, long elapsedMs, int cachedPromptTokens) {
 
 		public Step {
 			invocations = List.copyOf(invocations);
 			outcomes = List.copyOf(outcomes);
+		}
+
+		/** 不带缓存信息的构造器（脚本化模型 / 旧调用点用）。 */
+		public Step(int index, String thoughtText, List<ToolInvocation> invocations, List<ToolCallOutcome> outcomes,
+				int promptTokens, int completionTokens, long elapsedMs) {
+			this(index, thoughtText, invocations, outcomes, promptTokens, completionTokens, elapsedMs, 0);
 		}
 
 		/** 这一步有没有真的调工具。 */
@@ -98,6 +109,18 @@ public record AgentRun(String question, List<Step> steps, String finalAnswer, Ag
 		/** 一步的 token 小计。 */
 		public int tokens() {
 			return promptTokens + completionTokens;
+		}
+
+		/**
+		 * 这一步里按**未命中缓存单价**计费的输入 token。
+		 *
+		 * <p>与 {@code ModelReply.uncachedPromptTokens()} 是同一个派生量，
+		 * 之所以两处都要有：前者是适配器交出来的口径，后者是落库/报告用的口径，
+		 * 而**减法只有一个正确写法** —— 与其让每个使用点自己减（总有一个会写错，
+		 * 而写错的表现是成本偏高、不报错），不如各留一个名字说得清的入口。
+		 */
+		public int uncachedPromptTokens() {
+			return Math.max(0, promptTokens - cachedPromptTokens);
 		}
 
 		/** 给报告用的一行摘要。 */

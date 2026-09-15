@@ -125,7 +125,7 @@ public class AgentApprovalService implements ToolApprovalGate {
 		return switch (decided) {
 			case APPROVED -> Authorization.Allowed.preApproved(record.id());
 			case TIMED_OUT, EXPIRED -> new Authorization.Denied(ToolCallStage.APPROVAL_TIMEOUT,
-					"等待人工确认超过 %s，没有人处理。这次调用**没有执行**（超时按拒绝处理）"
+					"等待人工确认超过 %s，没有人处理。这次调用没有执行（超时按拒绝处理）"
 							.formatted(human(effectiveTimeout(context))),
 					record.id());
 			default -> {

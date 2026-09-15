@@ -134,11 +134,11 @@ public class ToolFeedbackFormatter {
 	public String awaitingApproval(ToolInvocation invocation, AgentTool<?> tool,
 			ToolApprovalGate.ApprovalRequest request) {
 		return """
-				工具「%s」是一次**写操作**，按规则需要人工确认后才能执行。这次调用已被挂起：
+				工具「%s」是一次写操作，按规则需要人工确认后才能执行。这次调用已被挂起：
 				- 审批编号：%s
 				- 它将会执行的参数：%s
 				- 风险声明：%s
-				它**还没有执行**（也没有失败）。在有人确认之前，请不要重新发起这次调用 ——
+				它还没有执行（也没有失败）。在有人确认之前，请不要重新发起这次调用 ——
 				重复发起只会产生多条待批记录，而不会让它更快被批准。
 				如果你现在无法继续，就把当前进展和"在等什么确认"直接告诉用户。"""
 				.formatted(tool.name(), request.approvalId(), invocation.argumentsForFeedback(500),
@@ -163,12 +163,12 @@ public class ToolFeedbackFormatter {
 	public String approvalRejected(ToolInvocation invocation, AgentTool<?> tool, ToolCallStage stage, String reason,
 			String approvalId) {
 		String headline = stage == ToolCallStage.APPROVAL_TIMEOUT
-				? "人工确认**超时**（在时限内没有人处理）"
-				: "人工确认**被拒绝**";
+				? "人工确认超时（在时限内没有人处理）"
+				: "人工确认被拒绝";
 		return """
-				工具「%s」的%s，所以这次**没有执行**（审批编号：%s）。
+				工具「%s」的%s，所以这次没有执行（审批编号：%s）。
 				原因：%s
-				⚠️ 不要再重新发起同样的调用：它会被**再次拦住**，需要人再确认一次，
+				⚠️ 不要再重新发起同样的调用：它会被再次拦住，需要人再确认一次，
 				而这不会比现在更快得到批准。
 				请改用只读工具收集更多信息、换一个不涉及写操作的方案，
 				或者直接把情况告诉用户（说明你本来打算做什么、为什么被拦下）。"""
@@ -193,12 +193,12 @@ public class ToolFeedbackFormatter {
 	public String rejected(ToolInvocation invocation, AgentTool<?> tool, ToolCallStage stage, String reason) {
 		String nextStep = switch (stage) {
 			case REQUEST_REJECTED -> """
-					这是**暂时性的拥塞**，不是工具坏了：**稍后用完全相同的参数重试是有意义的**。
+					这是暂时性的拥塞，不是工具坏了：稍后用完全相同的参数重试是有意义的。
 					如果你现在还需要这个结果，可以再做一次同样的调用；也可以先用其它工具推进任务，
-					过一会儿再回来补这一次。**不要**因为被拒就换一个语义不同的参数 —— 那会拿到不相关的数据。""";
+					过一会儿再回来补这一次。不要因为被拒就换一个语义不同的参数 —— 那会拿到不相关的数据。""";
 			case CIRCUIT_OPEN -> """
-					这把工具当前处于**熔断**状态（它的下游最近失败率过高），所以这一次调用**压根没有发出去**。
-					**不要再用同样的参数重试**：在冷却期内它会被直接拒绝。
+					这把工具当前处于熔断状态（它的下游最近失败率过高），所以这一次调用压根没有发出去。
+					不要再用同样的参数重试：在冷却期内它会被直接拒绝。
 					请改用其它工具来获取信息；如果确实没有替代工具，就基于已有信息回答，
 					并明确告诉用户"某类查询暂时不可用"。""";
 			default -> "请稍后重试，或换用其它工具。";
@@ -222,7 +222,7 @@ public class ToolFeedbackFormatter {
 			case AgentToolResult.Success success -> {
 				String body = limit(success.payload());
 				String truncNote = success.truncated()
-						? "\n【注意】上面的结果因为过长被截断了，你看到的内容**不完整**。"
+						? "\n【注意】上面的结果因为过长被截断了，你看到的内容不完整。"
 								+ "如果需要被截掉的部分，请用更精确的查询重新调用这个工具。"
 						: "";
 				yield "【工具「%s」的返回结果｜call_id=%s】\n%s%s".formatted(tool.name(), callId, body, truncNote);
@@ -230,7 +230,7 @@ public class ToolFeedbackFormatter {
 			case AgentToolResult.Failure failure -> {
 				String advice = failure.retriable()
 						? "这个失败是暂时的：可以稍后用同样的参数再试一次，或者换一个参数/工具。"
-						: "这个失败不是暂时的：**用同样的参数重试不会有不同结果**，请改变查询方式或换用其它工具。";
+						: "这个失败不是暂时的：用同样的参数重试不会有不同结果，请改变查询方式或换用其它工具。";
 				yield "【工具「%s」未能完成｜code=%s｜call_id=%s】\n%s\n%s".formatted(tool.name(), failure.code(), callId,
 						limit(failure.message()), advice);
 			}

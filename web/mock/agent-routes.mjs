@@ -332,7 +332,7 @@ const LIMITS = {
     openCircuits: 1,
   },
   note:
-    '闸门与熔断都是**全局共享**的：同一把工具被所有任务共用，所以这里的数字不是某一次运行的属性。' +
+    '闸门与熔断都是全局共享的：同一把工具被所有任务共用，所以这里的数字不是某一次运行的属性。' +
     '「拒绝」是限流生效（稍后重试即可）；「熔断」是下游已判为不可用（别再用它）。',
 }
 
@@ -415,7 +415,7 @@ function askResponse(question) {
       answered: true,
       finalAnswer:
         '工单已经建好了（id: RV-0001，标题「台账二·六节：正文 token 数大于总数」，级别 MEDIUM）。\n\n' +
-        '这是一次**写操作**，按规矩它先停在了人工确认闸门上；有人在界面上点了批准之后它才真正执行 —— ' +
+        '这是一次写操作，按规矩它先停在了人工确认闸门上；有人在界面上点了批准之后它才真正执行 —— ' +
         '执行结论里带着那条审批的 id，所以事后可以从工单倒查到"是哪一次审批放行了它"。',
       stopReason: 'ANSWERED',
       failureCause: '',
@@ -498,9 +498,9 @@ const WRITE_DENIED_STEP = {
       fixableByModel: false,
       countsAsToolFailure: false,
       feedback:
-        '工具「propose_review」的人工确认**被拒绝**，所以这次**没有执行**（审批编号：ap-demo-0001）。\n' +
+        '工具「propose_review」的人工确认被拒绝，所以这次没有执行（审批编号：ap-demo-0001）。\n' +
         '原因：这条已经有对应的工单了，别重复建\n' +
-        '⚠️ 不要再重新发起同样的调用：它会被**再次拦住**，需要人再确认一次，' +
+        '⚠️ 不要再重新发起同样的调用：它会被再次拦住，需要人再确认一次，' +
         '而这不会比现在更快得到批准。\n' +
         '请改用只读工具收集更多信息、换一个不涉及写操作的方案，' +
         '或者直接把情况告诉用户（说明你本来打算做什么、为什么被拦下）。',
@@ -530,12 +530,19 @@ export function handleAgentRoutes(req, res, url, json) {
     })
     req.on('end', () => {
       let question = '（假后端没有收到问题）'
+      // 业务归因键（阶段四成本看板）：假后端不拿它做任何事 ——
+      // **刻意如此**，因为真实链路里它只是被写进 agent_run.intent 的一个字符串，
+      // 不参与任何判断。假后端在这里"顺手也做点什么"反而会造出一个真后端没有的行为
+      let intent = ''
       try {
-        question = JSON.parse(body || '{}').question ?? question
+        const parsed = JSON.parse(body || '{}')
+        question = parsed.question ?? question
+        intent = parsed.intent ?? ''
       } catch {
         // 解析失败就用默认值：这是**假后端**，它的职责是让界面能跑起来，
         // 不是严格校验输入（严格校验在真后端，而且那里有测试）
       }
+      void intent
       setTimeout(() => json(res, askResponse(question)), 900)
     })
     return true
@@ -859,11 +866,11 @@ const PENDING_WRITE_STEP = {
       fixableByModel: false,
       countsAsToolFailure: false,
       feedback:
-        '工具「propose_review」是一次**写操作**，按规则需要人工确认后才能执行。这次调用已被挂起：\n' +
+        '工具「propose_review」是一次写操作，按规则需要人工确认后才能执行。这次调用已被挂起：\n' +
         `- 审批编号：${approvalState.id}\n` +
         `- 它将会执行的参数：${approvalState.arguments}\n` +
         `- 风险声明：${approvalState.hints}\n` +
-        '它**还没有执行**（也没有失败）。在有人确认之前，请不要重新发起这次调用 —— ' +
+        '它还没有执行（也没有失败）。在有人确认之前，请不要重新发起这次调用 —— ' +
         '重复发起只会产生多条待批记录，而不会让它更快被批准。\n' +
         '如果你现在无法继续，就把当前进展和"在等什么确认"直接告诉用户。',
     },

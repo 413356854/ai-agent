@@ -770,7 +770,7 @@ function DeltaChart({ baseline, other }: { baseline: StrategyReport; other: Stra
       ))}
       <Typography.Text type="secondary" className="diag-note">
         两条 bar 的量纲不同（一个是 0~1 的比例，一个是 token 数按最大值归一），
-        所以它们**只能各自纵向对比**，不能横向比长短 —— 混着比会得出没有意义的结论。
+        所以它们<strong>只能各自纵向对比</strong>，不能横向比长短 —— 混着比会得出没有意义的结论。
       </Typography.Text>
     </div>
   )

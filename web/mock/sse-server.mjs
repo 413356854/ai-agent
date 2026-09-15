@@ -26,6 +26,7 @@
  */
 import { createServer } from 'node:http'
 import { handleAgentRoutes } from './agent-routes.mjs'
+import { handleCostRoutes } from './cost-routes.mjs'
 import { handleRagRoutes } from './rag-routes.mjs'
 
 const PORT = Number(process.env.MOCK_PORT ?? 8081)
@@ -307,6 +308,21 @@ const server = createServer((req, res) => {
   //  "路由"和"剧本"混在一起，改一处看不全。
   // ---------------------------------------------------------------
   if (url.pathname.startsWith('/api/agent') && handleAgentRoutes(req, res, url, json)) {
+    return
+  }
+
+  // ---------------------------------------------------------------
+  //  成本看板端点（阶段四 · 工程化）
+  //
+  //  同样单独一个文件。这一组的假数据有两处与其他几组**不同性质**的地方：
+  //    - 它是**聚合**数据（按天 / 按业务 / 按模型 / 按工具四个视图
+  //      再加上一次对账），内部必须自洽（"按模型加起来等于合计"），
+  //      否则自检里那条一致性断言永远红，而人会去改断言而不是改数据；
+  //    - 它刻意**不是一份"万事如意"的数据** —— 有一个模型没价、有一条运行没归因、
+  //      有对账不一致、有缓存命中率为 0。那几个分支正是这一页最需要被验证的部分，
+  //      而"所有数据都正常"的假数据会让它们一条都走不到。
+  // ---------------------------------------------------------------
+  if (url.pathname.startsWith('/api/cost') && handleCostRoutes(req, res, url, json)) {
     return
   }
 

@@ -110,12 +110,27 @@ public final class ModelFailureClassifier {
 	 *
 	 * <p>每种原因都要有<b>下一步动作</b>，而不只是"这是什么" ——
 	 * 这与工具回填是同一条原则：光说"失败了"没人知道该做什么。
+	 *
+	 * <h2>⚠️ 这里的字符串里不许出现 markdown 星号（踩过两次，改之前先读完）</h2>
+	 * 它在界面上有<b>一个纯文本消费方</b>：{@code AgentPanel} 的失败详情里那句
+	 * {@code <Alert description={data.run.failureAdvice}>} —— 它的直接子内容是**纯文本**，
+	 * 于是 {@code **重试没有意义**} 会在页面上原样印出两个星号。
+	 *
+	 * <p>第一版 {@code UPSTREAM_AUTH} 那条写的正是 {@code **重试没有意义**}。
+	 * 同一个坑在成本看板的 {@code notes} 里已经咬过一次（那次是
+	 * {@code CostDashboardView}，见那里的注释），修那一处时**没有顺手全局搜一遍**，
+	 * 于是它以另一种形状又留在了这里 —— 这是"同一类错误会换一个地方复发"的典型。
+	 *
+	 * <p>处理办法与那次一样：<b>源头就不写星号</b>，改用中文书名号与破折号表达强调。
+	 * <b>不要</b>在界面上过滤星号 —— 那样 JSON 接口的读者会拿到被改过的文本。
 	 */
 	public static String advice(AgentFailureCause cause) {
 		return switch (cause) {
 			case LOCAL_CONCURRENCY_LIMIT -> "本机并发闸门满了（这是我们自己的限制，不是上游的问题）。"
 					+ "稍后重试即可；如果经常出现，按实际配额调大 ai.agent.concurrency.max-concurrent-model-requests。";
-			case UPSTREAM_AUTH -> "上游鉴权失败 —— **重试没有意义**，请检查 API Key 是否被当前进程读到"
+			// 【强调只能用书名号/破折号，不能用星号】理由见方法注释：
+			// 这句话直接渲染在页面的纯文本里，星号会原样显示出来
+			case UPSTREAM_AUTH -> "上游鉴权失败 —— 「重试没有意义」，请检查 API Key 是否被当前进程读到"
 					+ "（注意环境变量是进程启动时的快照，改完要重启）。";
 			case UPSTREAM_RATE_LIMITED -> "上游限流或配额用尽。稍后重试，或检查账号配额。";
 			case UPSTREAM_TIMEOUT -> "上游超时。先看是这一次的网络抖动，还是模型服务整体变慢。";

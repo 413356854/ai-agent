@@ -385,9 +385,16 @@ export interface AgentLimitsResponse {
  *
  * **它会真的调模型并花钱**，所以界面上必须有明确的动作（按钮 + 提示成本），
  * 不做任何自动触发。
+ *
+ * @param intent 业务归因键（阶段四成本看板）：这次运行为哪个业务花的钱。
+ *            留空则看板上归到「未标注」那一行 —— **不会被并进任何一个业务**，
+ *            因为"猜一个业务"会让那个业务的成本虚高，而虚高的部分无从发现。
+ *
+ *            <p>它由**调用方**给而不是后端自己推：后端只能看到问题文本，
+ *            而"这段文本属于哪个业务"是业务侧才知道的事（同一个问题可能被两个业务问）。
  */
-export function askAgent(question: string): Promise<AgentAskResponse> {
-  return postJson<AgentAskResponse>('/api/agent/ask', { question }, '跑 Agent 任务')
+export function askAgent(question: string, intent = ''): Promise<AgentAskResponse> {
+  return postJson<AgentAskResponse>('/api/agent/ask', { question, intent }, '跑 Agent 任务')
 }
 
 /** 历史运行列表。 */

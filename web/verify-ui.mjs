@@ -33,12 +33,15 @@ const EXPECT_REFLECTION = process.env.CHECK_EXPECT_REFLECTION !== '0'
 /**
  * 每条路径实际执行多少项断言（**实测出来的，不是数出来的**）。
  *
- * 脚本里一共 180 个 `expect(...)`，但两条路径执行的数量不同 ——
+ * 脚本里一共 229 个 `expect(...)`，但两条路径执行的数量不同 ——
  * 因为有几个分支各跑各的（回灌细节 / 降级标记 / Agent 的完整轨迹 / HITL 的批准与拒绝），
  * 它们的可复现性依赖假后端：
  *
- *   假后端（默认，实测 2026-09-16）  → **165 项，全过**
- *   真后端（=0，实测同日）           → **121 项执行、120 项通过**
+ *   假后端（默认，实测 2026-09-16 第十一轮）→ **205 项，全过**
+ *   真后端（=0，实测 2026-09-16 第十轮）    → **143 项执行、142 项通过**
+ *     ⚠️ 真后端那一组数字是**第十轮**的；第十一轮只跑了假后端路径（改了 3 条断言，
+ *        两条是"合计必须等于按天表的和"这种**两条路径都成立**的形状，
+ *        所以真路径的数字应当在下次跑真后端时重新测一遍，不要照抄这里）
  *
  * 真路径唯一失败的那条是**流式回答**（`流式回答已渲染`）——
  * 本机用的是假 key，上游必然 401，与本次改动无关（第八轮起就是这样）。
@@ -588,12 +591,30 @@ if ((await runsCard.count()) > 0) {
 }
 
 // —— 点开详情：这一步验证"能还原执行过程" ——
+//
+// ⚠️ 这里必须**先确认列表里真的有一行**再点（实测踩到，值得记）。
+// 原来写的是"卡片在就点第一行"，而 `.first().click()` 在**列表为空**时会等满 30 秒然后
+// 抛一个未捕获异常，**整条自检当场中断** —— 于是这一条之后的所有断言（包括成本看板整节）
+// 一条都没跑，而日志里看起来像"点不动详情"。
+//
+// 什么时候列表会是空的：真后端上"有没有历史运行"取决于 `/ask` 有没有落库 ——
+// 本机 key 是假的，`/ask` 会 401，但**那次失败的运行同样会落库**，
+// 所以通常有；可一旦它在别的路径上没落上（比如上一个用例刚清库、或者 `/ask` 卡在加载中），
+// 列表就真的是空的。**"卡片在"不等于"列表有行"** —— 两者要分开判。
 if ((await runsCard.count()) > 0) {
-  await runsCard.locator('.ant-table-tbody tr').first().click()
+  const runRows = runsCard.locator('.ant-table-tbody tr')
+  const rowCount = await runRows.count()
+  if (rowCount === 0) {
+    // 空列表也要被解释清楚，而不是让后面的步骤静默跳过
+    console.log('    （列表里没有运行记录，跳过"点开详情"这一段）')
+  }
+  else {
+    await runRows.first().click()
+  }
   const detailCard = page.locator('.diag-card', { hasText: '运行详情' }).first()
   await detailCard.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {})
   await page.waitForTimeout(400)
-  if ((await detailCard.count()) > 0) {
+  if (rowCount > 0 && (await detailCard.count()) > 0) {
     const detailText = (await detailCard.innerText()).trim()
     expect('详情显示了步骤表', /每步一个检查点/.test(detailText))
     expect('详情显示了每次工具调用', /含被拒绝的/.test(detailText))
@@ -752,7 +773,29 @@ expect(
 )
 
 if ((await approvalCard.count()) > 0) {
-  await page.waitForTimeout(700)
+  /*
+    ⚠️ 这里**必须轮询等待，不能用固定 sleep**（实测踩到，值得记下来）。
+
+    待办列表是**轮询**来的（每 2.5 秒一次，见 AGENT_APPROVAL_POLL_MS），
+    而上面刚调过一次"复位"（把假后端的待批状态改回 PENDING）。
+    这一节原来写的是 `waitForTimeout(700)` 然后立刻断言 —— 700ms 短于一个轮询间隔，
+    所以它**跑得通还是跑不通取决于上一次轮询落在哪**：
+    如果这个面板是刚切过来的（首拉刚发生过），700ms 后拿到的还是复位之前的那份数据，
+    于是"显示了有写操作在等我"以及它下面那 9 条**整节全红**，
+    而失败信息看起来像"待办卡片没渲染" —— 功能完全正常。
+
+    这正是这个文件里反复记过的那类坑（钉住实验那次：
+    **等待时长与它要等的东西没有关系**）。所以改成"轮询它出现"：
+    假后端上它 2.5 秒内必然出现；真后端上待批列表本来就是空的，
+    这次轮询等满超时后照常走下面那条分支（那一节验证的是"空列表必须被解释清楚"）。
+  */
+  if (EXPECT_REFLECTION) {
+    const pendingArrived = await waitFor(async () => /在等我/.test(await approvalCard.innerText()), 5000)
+    expect('待办列表把复位后的待批捡回来了（轮询在生效）', pendingArrived)
+  }
+  else {
+    await page.waitForTimeout(700)
+  }
   const apprText = (await approvalCard.innerText()).trim()
   // 闸门状态必须可见 —— 空列表的两种含义（没危险操作 / 闸门没开）必须能分开
   expect('显示了闸门开关状态', /闸门已启用|闸门已关闭/.test(apprText))
@@ -1003,6 +1046,197 @@ if (EXPECT_REFLECTION) {
 
   await page.screenshot({ path: `${SHOT_DIR}/agent-ask.png`, fullPage: true })
 }
+
+// ---------- 成本看板（阶段四 · 工程化） ----------
+//
+// 【这一节最值钱的那条断言是"不许出现 ¥0.0000"】
+// 假数据里刻意有一个模型没有价格（deepseek-v4-pro）。按"看起来对"的做法，
+// 那一行的金额会被渲染成 0.0000 —— 而那个 0 会被读成"这个功能不花钱"，
+// 真相是"我们不知道它花多少钱"。这两句话对使用者的含义完全相反，
+// 而界面上长得一模一样。所以这一节的核心断言是**负向的**：
+// 页面上必须出现"算不出"与原因，而**不能**出现把未知渲染成 0 的那种形态。
+//
+// 【两条路径的断言条数刻意保持一致，但验的不是同一件事】
+//   假后端：有数据、有价格、有"算不出"的那一行 → 验证四个视图 + 金额纪律；
+//   真后端：**全新的库**（没有任何运行记录）且**价格没配** → 验证的是另一件事，
+//           而它恰好是这一页**第一次被人打开时的样子**：
+//           不能显示 ¥0.0000，必须显示"算不出"+ 一句能照着做的配置说明。
+// 真路径反而把那条纪律验得更彻底 —— 因为那里连一条能算出钱的记录都没有。
+console.log('[6.8] 成本看板')
+
+await page.locator('label', { hasText: '成本看板' }).click()
+const costHead = page.locator('.cost-head', { hasText: '成本看板' })
+// 进面板会自动拉一次（只读、零外部代价），但要等它回来
+const costLoaded = await waitFor(async () => (await page.locator('.cost-headline').count()) > 0, 15000)
+expect('进面板自动加载了看板', costLoaded)
+await page.waitForTimeout(500)
+
+// 价格表、按天、按模型这三张卡在两条路径上都存在（只是内容不同）
+const priceCard = page.locator('.diag-card', { hasText: '价格表：这一页的钱是按这些单价算出来的' })
+const daysCard = page.locator('.diag-card', { hasText: '按天：钱是怎么涨上去的' })
+const modelCard = page.locator('.diag-card', { hasText: '按模型：换成别的模型会差多少' })
+const intentCard = page.locator('.diag-card', { hasText: '按业务归因：钱是谁花的' })
+const toolCard = page.locator('.diag-card', { hasText: '哪把工具在拖慢任务' })
+const notesCard = page.locator('.diag-card', { hasText: '这份数据能说什么、不能说什么' })
+
+// 从一段文本里读出某个指标格子的数字。
+// ⚠️ 必须吃掉千分位逗号：大数在页面上是「1,234」，只匹配 \d+ 会读出 1 而不是 1234 ——
+// 而那种误读的失败信息看起来像"两边对不上"，会把人引到错误的方向去查
+function statNumber(text, label) {
+  const raw = (text.match(new RegExp(`${label}\\s*([\\d,]+)`)) ?? [])[1]
+  return raw === undefined ? -1 : Number(raw.replace(/,/g, ''))
+}
+
+// ---- 两条路径共用的断言 ----
+const costText = await costHead.innerText()
+expect('显示了运行次数', /运行次数/.test(costText))
+expect('失败的运行被单独显示（花了钱又没办成事 —— 账单里看不到这一格）', /失败的运行/.test(costText))
+// 【被上限拦下的那些必须自己占一格】它既不是成功也不是失败，但同样花了钱 ——
+// 并进任何一边都会让那边的数字说谎（详见 CostPanel 里那段注释）
+expect('被上限拦下的运行单独占一格', /被上限拦下/.test(costText))
+// 【★ 这一条钉的是一个真 bug：合计的运行级计数取错了来源】
+// 合计曾经用"按模型那一组"的和，而那个维度里 finished/failed 是写死的 0 ——
+// 于是真后端上「已结束」永远是 0（假数据里写的是正确的和，所以只在这条路径上现形）。
+// 判据刻意写成"两个数字必须相等"而不是"已结束大于 0"：
+// 后者在空库的真后端上会红，而空库时 0 是正确的。
+{
+  const dayFinished = await daysCard.evaluate(card =>
+    [...card.querySelectorAll('tbody tr')].reduce((sum, tr) => {
+      const cell = tr.querySelector('td:nth-child(3)') // 按天表第 3 列是「已结束」
+      return sum + (cell ? Number(cell.textContent.trim()) || 0 : 0)
+    }, 0))
+  const headlineFinished = statNumber(costText, '已结束')
+  expect(
+    '合计的「已结束」等于按天表的和（取错来源时这里会是 0）',
+    headlineFinished === dayFinished,
+    `合计 ${headlineFinished} vs 按天之和 ${dayFinished}`,
+  )
+  // 同理钉住"被上限拦下"：它也必须两边一致，而且它在假数据里刻意非 0
+  // （恒为 0 的假数据会让那一格永远看起来"从来没被拦下过"）
+  const dayStopped = await daysCard.evaluate(card =>
+    [...card.querySelectorAll('tbody tr')].reduce((sum, tr) => {
+      const cell = tr.querySelector('td:nth-child(4)') // 第 4 列是「被上限拦下」
+      return sum + (cell ? Number(cell.textContent.trim()) || 0 : 0)
+    }, 0))
+  const headlineStopped = statNumber(costText, '被上限拦下')
+  expect('「被上限拦下」的合计等于按天表的和', headlineStopped === dayStopped,
+    `合计 ${headlineStopped} vs 按天之和 ${dayStopped}`)
+}
+expect('总 token 已显示', /总 token/.test(costText))
+expect('缓存命中率已显示', /缓存命中/.test(costText))
+expect('价格表卡已渲染', (await priceCard.count()) > 0)
+expect('按天卡已渲染', (await daysCard.count()) > 0)
+expect('按业务归因卡已渲染', (await intentCard.count()) > 0)
+expect('按模型卡已渲染', (await modelCard.count()) > 0)
+expect('按工具卡已渲染', (await toolCard.count()) > 0)
+// 纯文本里的 markdown 星号不能以字面量出现（踩坑库 #24 同族）。
+// ⚠️ 这条**在真后端路径上曾经红过**：后端 notes 里写的 `**加粗**` 在界面上真的印出了星号，
+// 因为那段文本有两个消费方（JSON 接口 / 页面的纯文本渲染），而只有后者在意星号。
+// 修法是源头不写星号，而不是在界面上过滤（那样接口的读者会拿到被改过的文本）
+const costPanelText = await page.locator('.diag-panel').first().innerText()
+expect('看板正文无字面量星号', !costPanelText.includes('**'))
+
+if (EXPECT_REFLECTION) {
+  // ================= 假后端：有数据、有价格 =================
+  expect('合计金额已渲染', /¥[\d.]+/.test(costText), (costText.match(/¥[\d.]+/) ?? [''])[0])
+  const dayRows = await daysCard.locator('tbody tr').count()
+  expect('按天表有数据行', dayRows >= 1, `${dayRows} 行`)
+
+  // ---- 核心：未配价的模型必须显示「算不出」而不是 0 ----
+  const modelText = await modelCard.innerText()
+  expect('未配价的模型显示「算不出」而不是 0', /算不出/.test(modelText))
+  expect('并且给出了算不出的原因（能照着去补价格）', /没有匹配的价格规则|补一条/.test(modelText))
+  expect('有模型没价时，合计被标成下界', /下界/.test(await page.locator('.cost-needs-alert').first().innerText()))
+  const unknownRows = await page.locator('.cost-amount-unknown').count()
+  expect('确实有金额格被渲染成「算不出」形态', unknownRows > 0, `${unknownRows} 处`)
+  // 原因必须是**可见文本**，不能只藏在悬浮提示里：
+  // 「为什么算不出」就是这一格的全部信息，而藏起来的信息只有已经知道它存在的人才会去找。
+  // （顺带记一个实测的坑：给 antd <Tooltip> 的直接子元素传 title，那个 title 不会落到 DOM 上 ——
+  //  Tooltip 会把它吃掉当自己的内容。第一版断言"元素带 title 属性"因此是红的，而功能其实在）
+  expect('「算不出」的原因以可见文本给出（不是只在悬浮提示里）', (await page.locator('.cost-amount-reason').count()) > 0)
+
+  // ---- 归因 / 工具 / 对账 ----
+  const intentText = await intentCard.innerText()
+  expect('按业务归因表有数据行', (await intentCard.locator('tbody tr').count()) >= 1)
+  expect('未标注的运行单独成一行（没被并进任何业务里）', /未标注/.test(intentText))
+  expect('界面说明了「未标注」不该被并进业务里', /没有.*被并进|虚高/.test(intentText))
+
+  const toolText = await toolCard.innerText()
+  expect('按工具表有数据行', (await toolCard.locator('tbody tr').count()) >= 1)
+  expect('工具那一栏明确标注了没有金额', /没有金额/.test(toolText) || /不直接消耗 token/.test(toolText))
+  expect('模型编错的工具名也在这一栏', /doc_search/.test(toolText))
+  expect('被限流拒绝与被熔断拒绝分列（它们要给模型相反的建议）', /被限流拒绝/.test(toolText))
+
+  const reconCard = page.locator('.diag-card', { hasText: '口径对账' })
+  const reconText = await reconCard.innerText()
+  expect('对账块已渲染（两个口径并排）', /步骤表 token/.test(reconText) && /运行行 token/.test(reconText))
+  expect('对账不一致时明确报出来（假数据刻意差 1200）', /差|对不上/.test(reconText))
+  expect('一步都没有的运行被单独数出来', /一步都没有的运行/.test(reconText))
+
+  const notesText = await notesCard.innerText()
+  expect('写明了 token 不是估算的', /不是估算/.test(notesText))
+  expect('写明了默认库是内存库（多天走势需要改 url）', /内存库/.test(notesText))
+
+  // ---- 时间窗切换会真的换数据 ----
+  const beforeSwitch = dayRows
+  await page.locator('.cost-head .ant-segmented-item', { hasText: '30 天' }).click()
+  const switched = await waitFor(
+    async () => (await page.locator('.cost-headline').count()) > 0 && !/正在汇总/.test(await costHead.innerText()),
+    15000,
+  )
+  expect('切到 30 天后仍然正常渲染', switched)
+  expect(
+    '切换后按天表仍有数据',
+    (await daysCard.locator('tbody tr').count()) >= beforeSwitch,
+  )
+  expect('价格表有数据行', (await priceCard.locator('tbody tr').count()) >= 1)
+  expect('没配缓存价的那条被标成「假设」而不是「事实」', /假设/.test(await priceCard.innerText()))
+} else {
+  // ================= 真后端：全新的库 + 价格没配 =================
+  //
+  // 这条路径验的是"这一页第一次被人打开时的样子"。它比假后端那条**更严格**：
+  // 那里至少有能算出钱的记录，而这里一条都没有 ——
+  // 于是"算不出"这条纪律是在**没有任何数字可依赖**的情况下被检验的。
+  expect('没有价格时不显示金额，而是明确说「算不出」', /算不出金额/.test(costText))
+  expect('并给出了原因（能照着去配价格）', /价格未配置|ai\.cost\.prices/.test(costText))
+  // 按天那一格：有记录就是表格行、没记录就是一句可操作的空状态。
+  // **两种形态都合法**，而"显示一个 0 让人以为没花钱"是唯一不合法的那种
+  const realDayRows = await daysCard.locator('tbody tr').count()
+  const realDaysText = await daysCard.innerText()
+  expect(
+    '按天那一格要么有数据行、要么给出可操作的空状态（不是静默的 0）',
+    realDayRows > 0 || /一次运行都没有|跑一个任务/.test(realDaysText),
+    realDayRows > 0 ? `${realDayRows} 行` : '空状态',
+  )
+  const emptyPrices = await priceCard.innerText()
+  expect('价格卡给出配置写法（那是一份待办）', /ai\.cost\.prices/.test(emptyPrices))
+  expect('空价格表说明「刻意不给 0」的理由', /不花钱|不知道/.test(emptyPrices))
+  const reconText = await page.locator('.diag-card', { hasText: '口径对账' }).innerText()
+  expect('对账块仍然渲染（没有数据时也要显示两个 0，而不是藏起来）', /步骤表 token/.test(reconText))
+  const notesText = await notesCard.innerText()
+  // ⚠️ 这一条第一版写的是"断言缓存那一栏说『无从谈起』"，而它**在真后端上会闪红** ——
+  // 因为真后端的形态取决于这次跑批里 `/ask` 有没有落下步骤：
+  //   一次成功往返都没有 → 「窗口内没有 token 记录，命中率无从谈起」；
+  //   有任何一步落了库   → 「整个窗口的缓存命中都是 0，有两种可能」。
+  // 两种都是**正确**的文案，所以断言任何一个都不该写死 ——
+  // 真正该被钉住的是"金额不许变成 0"（上面那两条），而不是备注里挑了哪句措辞。
+  expect('边界说明随数字一起交付（不是只有数字）', (await notesCard.locator('.cost-notes li').count()) >= 3)
+  expect('边界说明里有"默认库是内存库"这条提醒', /内存库/.test(notesText))
+  expect('价格表卡在真后端也渲染了（空表也要有说明）', (await priceCard.count()) > 0)
+}
+
+// ---- 布局体检（两条路径共用，代替肉眼） ----
+const costLayout = await page.evaluate(() => {
+  const doc = document.documentElement
+  const card = document.querySelector('.cost-head')
+  return {
+    horizontalOverflow: doc.scrollWidth - doc.clientWidth,
+    cardFitsViewport: card ? card.getBoundingClientRect().right <= doc.clientWidth + 1 : null,
+  }
+})
+expect('成本看板无横向溢出', costLayout.horizontalOverflow === 0, `overflow=${costLayout.horizontalOverflow}px`)
+expect('成本看板头部不超出视口', costLayout.cardFitsViewport !== false)
+await page.screenshot({ path: `${SHOT_DIR}/cost-dashboard.png`, fullPage: true })
 
 
 // ---------- 切回流式：历史不能被清掉 ----------

@@ -77,9 +77,37 @@ public class OpenAiModelTurn implements ModelTurn {
 	/** usage 缺失只提醒一次，避免每次调用都刷日志。 */
 	private volatile boolean usageMissingReported;
 
-	public OpenAiModelTurn(ChatModel chatModel, ToolRegistry registry) {
+	/** 上游"命中量 > 输入量"这种自相矛盾只提醒一次（理由见 translate 里的注释）。 */
+	private volatile boolean cacheAnomalyReported;
+
+	/**
+	 * 当前实际在用的模型名。
+	 *
+	 * <p>取自 Spring AI 自己的配置（{@code spring.ai.openai.chat.options.model}），
+	 * 而<b>不是</b>我们另抄一份到自己的配置里 —— 抄一份的话，改了
+	 * {@code spring.ai.openai.*} 而忘了改我们那份，成本就会按一个**根本没用过的模型**计价，
+	 * 而页面上一切正常。这类"同一个事实有两份来源"的漂移，本项目的做法一律是
+	 * 找出真正的那一份，另一份删掉。
+	 *
+	 * <p>用 {@code ObjectProvider} 而不是直接注入属性类：那个 bean 由 Spring AI 的自动配置提供，
+	 * 而**测试里不一定存在**（替换掉 ChatModel 时它可能不在）。
+	 * 取不到时退回 {@link ModelTurn#UNKNOWN_MODEL}，看板显示"未上报"并**拒绝计价** ——
+	 * 而不是编一个模型名出来。
+	 */
+	private final org.springframework.beans.factory.ObjectProvider<org.springframework.ai.model.openai.autoconfigure.OpenAiChatProperties> chatProperties;
+
+	public OpenAiModelTurn(ChatModel chatModel, ToolRegistry registry,
+			org.springframework.beans.factory.ObjectProvider<org.springframework.ai.model.openai.autoconfigure.OpenAiChatProperties> chatProperties) {
 		this.chatModel = chatModel;
 		this.registry = registry;
+		this.chatProperties = chatProperties;
+	}
+
+	@Override
+	public String modelName() {
+		var properties = chatProperties.getIfAvailable();
+		String model = properties == null ? null : properties.getModel();
+		return model == null || model.isBlank() ? UNKNOWN_MODEL : model;
 	}
 
 	@Override
@@ -136,12 +164,39 @@ public class OpenAiModelTurn implements ModelTurn {
 
 		int promptTokens = 0;
 		int completionTokens = 0;
+		int cachedPromptTokens = 0;
 		var metadata = response.getMetadata();
 		if (metadata != null) {
 			Usage usage = metadata.getUsage();
 			if (usage != null) {
 				promptTokens = usage.getPromptTokens() == null ? 0 : usage.getPromptTokens();
 				completionTokens = usage.getCompletionTokens() == null ? 0 : usage.getCompletionTokens();
+				// 【阶段四成本看板】命中提示词缓存的那部分输入 token。
+				//
+				// 它不是 Spring AI 自造的概念：`Usage.getCacheReadInputTokens()` 读的就是
+				// OpenAI 协议里的 `prompt_tokens_details.cached_tokens`（用 javap 核过
+				// `OpenAiChatModel` 的字节码：它取的正是
+				// `CompletionUsage$PromptTokensDetails.cachedTokens()`）。
+				// 兼容端点的做法是把 `prompt_cache_hit_tokens` 映射到同一个位置。
+				//
+				// ⚠️ 这里**必须夹紧到 [0, promptTokens]**，理由有两条，都是"不这么写就出错"：
+				//   ① 上游没报这个字段时它是 null → 0，语义正好是"全部未命中"（按最贵那档算，偏保守）；
+				//   ② 有些兼容端点的总数与明细**对不上**（总数不含明细、或明细比总数大）。
+				//      不夹紧的话，费用计算会算出"命中比总量还多"，也就是**负的未命中量** ——
+				//      一个能让成本变成负数（或小于真实值）的错数字，而且在页面上完全看不出来。
+				//      夹紧的代价只是"上游少报的那部分按未命中算"，方向是安全的那一侧。
+				Long cached = usage.getCacheReadInputTokens();
+				if (cached != null && cached > 0) {
+					cachedPromptTokens = (int) Math.min(cached, promptTokens);
+				}
+				// 命中量比总量大是上游数据的问题，必须留痕：静默夹紧会让这个上游缺陷
+				// 永远不被人发现，而它影响的是**所有**成本数字
+				if (cached != null && cached > promptTokens && !cacheAnomalyReported) {
+					cacheAnomalyReported = true;
+					log.warn("上游报的命中缓存 token（{}）大于输入 token（{}）—— 已按输入总量夹紧。"
+							+ "这会让成本按最贵那一档计算（偏保守），但数据源本身有问题，建议核对上游的 usage 字段",
+							cached, promptTokens);
+				}
 			}
 		}
 		if (promptTokens == 0 && completionTokens == 0 && !usageMissingReported) {
@@ -150,7 +205,7 @@ public class OpenAiModelTurn implements ModelTurn {
 					+ "如果这不是预期，请检查上游端点是否支持 usage 字段（成本看板会因它显示零成本而看起来正常）");
 		}
 
-		return new ModelReply(text, invocations, promptTokens, completionTokens, truncated);
+		return new ModelReply(text, invocations, promptTokens, completionTokens, truncated, cachedPromptTokens);
 	}
 
 	/**

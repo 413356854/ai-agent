@@ -162,7 +162,7 @@ function ApprovalBody({ agent, data }: { agent: UseAgentResult; data: AgentAppro
         <Alert
           type="warning"
           showIcon
-          title="审批闸门当前是**关闭**的 —— 写操作不会被拦下"
+          title="审批闸门当前是「关闭」的 —— 写操作不会被拦下"
           description={
             <Flex vertical gap={4}>
               <span>{data.note}</span>
@@ -211,7 +211,7 @@ function ApprovalBody({ agent, data }: { agent: UseAgentResult; data: AgentAppro
             description={
               <Flex vertical gap={4}>
                 <span>
-                  它背后的任务线程**正停在闸门上等** —— 最长等 {data.timeoutSeconds} 秒。
+                  它背后的任务线程「正停在闸门上等」 —— 最长等 {data.timeoutSeconds} 秒。
                   <strong>超时按「拒绝」处理，而不是默认通过</strong>
                   （没人管事时系统该停下来，而不是照常写数据）。
                 </span>
@@ -476,9 +476,22 @@ function AskCard({
 }: {
   remote: Remote<AgentAskResponse>
   running: boolean
-  onAsk: (q: string) => void
+  onAsk: (q: string, intent: string) => void
 }) {
   const [question, setQuestion] = useState('分块策略的结论是什么？')
+  /**
+   * 业务归因键（阶段四成本看板）。
+   *
+   * <h2>为什么这个输入框必须存在，而不是"后端有字段就够了"</h2>
+   * 成本看板的「按业务归因」那一栏，唯一的**写入方**就是这里 ——
+   * 界面上不给入口的话，那一栏会永远只有一行「未标注」，
+   * 而那正是"这个能力只能靠 curl 用"的又一次重演（第九轮 HITL 踩过的同一个形状）。
+   *
+   * <p>默认值给了「客服问答」而不是空：一个空输入框的结果是所有人都不填，
+   * 于是归因永远为空 —— 而一个**能改的默认值**至少让那一栏有内容，
+   * 人看到"客服问答"之后会顺手改成自己那条业务。
+   */
+  const [intent, setIntent] = useState('客服问答')
 
   return (
     <Card
@@ -492,14 +505,36 @@ function AskCard({
           <Input
             value={question}
             onChange={e => setQuestion(e.target.value)}
-            onPressEnter={() => onAsk(question)}
+            onPressEnter={() => onAsk(question, intent)}
             placeholder="问一个需要查文档的问题（Enter 发送）"
             className="rag-input"
             disabled={running}
           />
-          <Button type="primary" onClick={() => onAsk(question)} loading={running}>
+          <Button type="primary" onClick={() => onAsk(question, intent)} loading={running}>
             跑一次
           </Button>
+        </Flex>
+
+        {/*
+          归因键单独一行、并且写清它去哪儿：它是**成本看板那一栏的分组键**，
+          而分组键的取值质量直接决定那一栏有没有用。
+          不说清的话，没人知道"业务归因"这四个字是干什么的
+        */}
+        <Flex gap={8} align="center" wrap>
+          <Typography.Text type="secondary" className="cost-intent-label">
+            业务归因
+          </Typography.Text>
+          <Input
+            value={intent}
+            onChange={e => setIntent(e.target.value)}
+            placeholder="这次运行为哪个业务花钱（留空则记成「未标注」）"
+            maxLength={64}
+            disabled={running}
+            className="cost-intent-input"
+          />
+          <Typography.Text type="secondary" className="cost-intent-hint">
+            它会成为「成本看板」里按业务归因的那一行
+          </Typography.Text>
         </Flex>
 
         {/*
@@ -509,16 +544,23 @@ function AskCard({
         */}
         <Flex gap={6} wrap align="center">
           <Typography.Text type="secondary">试试：</Typography.Text>
-          {['分块策略的结论是什么？', 'token 预算的系数怎么校准的？', '你是谁？'].map(sample => (
+          {[
+            { q: '分块策略的结论是什么？', intent: '文档问答' },
+            { q: 'token 预算的系数怎么校准的？', intent: '成本排查' },
+            { q: '你是谁？', intent: '闲聊' },
+          ].map(sample => (
             <Tag
-              key={sample}
+              key={sample.q}
               className="rag-tag-clickable"
               onClick={() => {
-                setQuestion(sample)
-                onAsk(sample)
+                setQuestion(sample.q)
+                // 点例子时把归因键也一起切过去：三个例子的业务归属本来就不同，
+                // 全按输入框里那个值记的话，成本看板上这三个业务会被并成一个
+                setIntent(sample.intent)
+                onAsk(sample.q, sample.intent)
               }}
             >
-              {sample}
+              {sample.q}
             </Tag>
           ))}
         </Flex>
@@ -751,7 +793,7 @@ const STAGE_META: Record<string, { label: string; color: string; hint?: string }
   EXECUTION_ERROR: {
     label: '工具执行出错',
     color: 'red',
-    hint: '参数没问题、工具自己炸了。**只有这一类会计入熔断失败率** —— 模型写错参数不算工具故障。',
+    hint: '参数没问题、工具自己炸了。「只有这一类」会计入熔断失败率 —— 模型写错参数不算工具故障。',
   },
   REQUEST_REJECTED: {
     label: '被并发限制拒绝',
@@ -767,17 +809,17 @@ const STAGE_META: Record<string, { label: string; color: string; hint?: string }
   AWAITING_APPROVAL: {
     label: '等人工确认',
     color: 'red',
-    hint: '这是一次写操作，按规矩需要有人点头才能执行。它**既没成功也没失败** —— 界面上方那张「待我确认」卡片就是它的处理入口。',
+    hint: '这是一次写操作，按规矩需要有人点头才能执行。它「既没成功也没失败」 —— 界面上方那张「待我确认」卡片就是它的处理入口。',
   },
   APPROVAL_DENIED: {
     label: '人工拒绝',
     color: 'purple',
-    hint: '有人在界面上拒绝了这次写操作，所以它**没有执行**。拒绝理由会原样回填给模型，并明确告诉它「不要再重新发起」。',
+    hint: '有人在界面上拒绝了这次写操作，所以它「没有执行」。拒绝理由会原样回填给模型，并明确告诉它「不要再重新发起」。',
   },
   APPROVAL_TIMEOUT: {
     label: '等确认超时',
     color: 'purple',
-    hint: '在时限内没有人处理，于是**按拒绝处理**（不是默认通过）。它与「人工拒绝」分开显示：前者是流程没接上，后者是业务判断。',
+    hint: '在时限内没有人处理，于是「按拒绝处理」（不是默认通过）。它与「人工拒绝」分开显示：前者是流程没接上，后者是业务判断。',
   },
 }
 
@@ -1036,7 +1078,7 @@ function DetailBody({ data }: { data: AgentRunDetail }) {
           </table>
         </div>
         <Typography.Text type="secondary" className="diag-note">
-          「计入熔断」这一列由**后端**判定（只有"工具执行出错"算失败）——
+          「计入熔断」这一列由<strong>后端</strong>判定（只有"工具执行出错"算失败）——
           模型写错参数、被限流拒绝、等人确认都不算工具故障。页面不自己判，
           否则就会有第二份判据，而两份必然漂移。
         </Typography.Text>
@@ -1274,7 +1316,7 @@ function LimitsBody({ data }: { data: AgentLimitsResponse }) {
           <Flex vertical gap={6}>
             <span>
               <strong>「被拒绝」是限流生效</strong>：闸门满了，这次调用没有执行。
-              这是**暂时的** —— 回填会告诉模型"稍后用同样的参数重试是有意义的"。
+              这是<strong>暂时的</strong> —— 回填会告诉模型"稍后用同样的参数重试是有意义的"。
             </span>
             <span>
               <strong>「熔断状态」是下游已判为不可用</strong>：打开期间调用压根不发出，
@@ -1282,7 +1324,7 @@ function LimitsBody({ data }: { data: AgentLimitsResponse }) {
             </span>
             <span>
               <strong>判据只有一份</strong>：只有"工具执行出错"计入失败率 ——
-              模型写错参数、被限流拒绝都**不算**工具故障。
+              模型写错参数、被限流拒绝都<strong>不算</strong>工具故障。
               否则模型连写几个错参数就能把一个健康工具熔断掉。
             </span>
           </Flex>

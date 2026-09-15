@@ -116,9 +116,26 @@ public class AgentController {
 		}
 
 		String runId = java.util.UUID.randomUUID().toString();
-		AgentRun run = service.runWithId(runId, question);
+		// 【阶段四成本看板】把业务归因键一起落库。
+		//
+		// 为什么在**这一刻**就写它（而不是跑完再补）：见 AgentRunStore.start 的注释 ——
+		// 失败与中断的运行同样花了钱，而它们恰恰最需要按业务去看。
+		// 补写式的设计会把它们全落进"未标注"。
+		//
+		// 这里做长度裁剪（64 字符，与库里的列宽一致）：**不裁的话**，
+		// 一个超长的归因键会在写库那一刻抛 SQL 异常 —— 于是"用户多打了几个字"
+		// 变成"这次任务直接失败"，而那个失败看起来像存储出了问题。
+		// 裁剪是这里唯一合理的处理：归因键是给人看的标签，不是数据本体
+		String intent = request == null || request.intent() == null ? null : request.intent().strip();
+		if (intent != null && intent.length() > MAX_INTENT_CHARS) {
+			intent = intent.substring(0, MAX_INTENT_CHARS);
+		}
+		AgentRun run = service.runWithId(runId, question, intent);
 		return assemble(runId, run);
 	}
+
+	/** 归因键的最大长度（与 {@code agent_run.intent} 的列宽一致，改一处要一起改）。 */
+	private static final int MAX_INTENT_CHARS = 64;
 
 	/** 历史运行列表（最近的在前）。 */
 	@GetMapping("/runs")
@@ -334,8 +351,23 @@ public class AgentController {
 		}
 	}
 
-	/** 请求体：问题走 body（不进 URL），理由见类注释。 */
-	public record AskRequest(String question) {
+	/**
+	 * 请求体：问题走 body（不进 URL），理由见类注释。
+	 *
+	 * @param question 用户问题
+	 * @param intent 业务归因键（阶段四成本看板）：这次运行为哪个业务/功能花的钱。
+	 *            可空 —— 空表示"未标注"，看板会把它单列一行而不是并进某个业务里。
+	 *            <p>它进请求体而不是路径/查询串，与 question 同一条理由；
+	 *            而且它是**成本表的分组键**，一旦被 URL 转义规则改写（比如
+	 *            加号变成空格），就会出现两个只差一个空格的业务分组 ——
+	 *            那种错误在看板上表现为"这个业务怎么有两行"，而没人会想到是转义
+	 */
+	public record AskRequest(String question, String intent) {
+
+		/** 不带归因键的构造器（旧调用点与测试用）—— 归因键为空就是"未标注"。 */
+		public AskRequest(String question) {
+			this(question, null);
+		}
 	}
 
 }
