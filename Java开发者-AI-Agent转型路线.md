@@ -288,6 +288,9 @@ Agent 编排层 →  LangChain4j（灵活）或 Spring AI Alibaba（国内/国�
         向量索引与检索都只依赖 `Retriever` 契约（评测代码一行未改）
       → ⚠️ **但"本地 PG + pgvector"这条没走通**：Docker 引擎在本机报 `OsNotSupported`、
         无本机 PostgreSQL、无 MSVC 工具链可编译 pgvector（三条都实测过，见 `ai-agent/docs/向量库环境记录.md`）。
+        **注意"RAG 需要什么环境"要分三档看**（同文档第〇节）：① 跑本模块只需 **JDK 21 + Maven**
+        （RAG 依赖全是内嵌库，评测 0 次调模型）；② 想接真 embedding 只需**一个 key**；
+        ③ PG + pgvector 属于生产形态，**它现在不阻塞任何结论**。
         替代实现是自研 `VectorIndex`（暴力精确 KNN），换回真库**只需改这一个文件**
 - [x] Embedding 漂移：换模型必须全量重生成向量，**不能混用**
       → **做成了代码而不是文档**：索引里存指纹（模型名/维度），检索时维度不一致**直接抛**，

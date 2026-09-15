@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   compareStrategies,
+  getAlignment,
   getCorpus,
   getEvalSet,
   getPreview,
@@ -8,6 +9,7 @@ import {
   retrieve as retrieveApi,
 } from '../api/rag'
 import type {
+  AlignmentResponse,
   CompareResponse,
   CorpusResponse,
   EvalSetResponse,
@@ -30,11 +32,14 @@ export interface UseRagDiagResult {
   tokens: Remote<TokensResponse>
   retrieval: Remote<RetrieveResponse>
   comparison: Remote<CompareResponse>
+  alignment: Remote<AlignmentResponse>
 
   /** 当前选中的分块策略（预览与检索共用） */
   strategy: string
   /** 对照评测正在跑 */
   running: boolean
+  /** 对齐实验正在跑（比对照更重，所以单独一个标志驱动按钮的 loading） */
+  aligning: boolean
   /** 最近一次检索用的提问（结果卡要显示"这条是问什么问出来的"） */
   lastQuery: string
 
@@ -45,6 +50,7 @@ export interface UseRagDiagResult {
   analyzeTokens: (text: string) => void
   search: (query: string) => void
   runComparison: () => void
+  runAlignment: () => void
 }
 
 /**
@@ -76,12 +82,16 @@ export function useRagDiag(active: boolean): UseRagDiagResult {
   const [tokens, setTokens] = useState<Remote<TokensResponse>>({ status: 'idle' })
   const [retrieval, setRetrieval] = useState<Remote<RetrieveResponse>>({ status: 'idle' })
   const [comparison, setComparison] = useState<Remote<CompareResponse>>({ status: 'idle' })
+  const [alignment, setAlignment] = useState<Remote<AlignmentResponse>>({ status: 'idle' })
   const [strategy, setStrategy] = useState(DEFAULT_STRATEGY)
   const [lastQuery, setLastQuery] = useState('')
 
   /** 对照评测专用的锁；ref 用于同 tick 内立刻生效，state 用于驱动按钮禁用 */
   const comparing = useRef(false)
   const [running, setRunning] = useState(false)
+  /** 对齐实验专用的锁，与对照那把**互斥**（理由见 runAlignment） */
+  const aligningRef = useRef(false)
+  const [aligning, setAligning] = useState(false)
   const initialized = useRef(false)
 
   const loadCorpus = useCallback(async () => {
@@ -141,7 +151,7 @@ export function useRagDiag(active: boolean): UseRagDiagResult {
   const runComparison = useCallback(async () => {
     // 守卫必须在同一个 tick 内生效：await 之后再读 ref 就晚了，
     // 两次快速点击会同时通过检查，然后两个全量评测并行跑
-    if (comparing.current) return
+    if (comparing.current || aligningRef.current) return
     comparing.current = true
     setRunning(true)
     setComparison({ status: 'loading' })
@@ -155,6 +165,48 @@ export function useRagDiag(active: boolean): UseRagDiagResult {
     }
   }, [])
 
+  /**
+   * 跑对齐实验。
+   *
+   * <h2>为什么它和 `/compare` **互斥**，而不是"各跑各的"</h2>
+   * 后端两个端点都会把语料重新分块、重建内存索引、跑满 CPU。并行发出去的话，
+   * 两边都会变慢，而且**报告里的耗时/规模数字会互相影响** —— 用户看到的"这次怎么慢了"
+   * 其实是自己上一秒点的另一个按钮造成的。这不是假想的顾虑：
+   * `/align` 自己要跑 15 次全量评测（5 个变体 × 3 路检索），
+   * 叠上 `/compare` 的 2 次，就是 17 次互相抢 CPU。
+   *
+   * 所以这里做成**双向互斥**：对照在跑时不能启动对齐，对齐在跑时不能启动对照。
+   * 按钮那侧同样要 disable（否则用户点了没反应，会以为界面坏了）——
+   * 见 RagPanel 里两个按钮的 `disabled`。
+   *
+   * <h2>为什么首次进面板会自动跑它，而 `/compare` 不会</h2>
+   * 两者都不便宜，但**它们在这张页面上的角色不同**：
+   *   - `/compare` 是"上一版的结论"，它已经**在页面上写清了结论文字**（那张解读 Alert）。
+   *     不点也能读懂这张表在说什么，所以点了才跑；
+   *   - `/align` 是**本轮唯一"只做了一半"的东西**（后端齐了、界面没接），
+   *     而它的结论与上一版**相反**。一个空着的区域，读者会自动按上一版的结论去理解 ——
+   *     也就是说"没跑"和"跑了但界面没渲染"在视觉上一样，而这次的差别恰恰是结论方向。
+   *
+   * 代价上它也扛得住：后端实测 **4.95 秒**（真启动、43 条用例 / 4 份文档），
+   * 而超时给了 180 秒。作为对照，进面板本来就会自动打的 `/preview` 也要真跑一遍分块。
+   *
+   * 它**不会**和 `/compare` 抢 CPU：那个要点了才跑，而且两者互斥（见上）。
+   */
+  const runAlignment = useCallback(async () => {
+    if (aligningRef.current || comparing.current) return
+    aligningRef.current = true
+    setAligning(true)
+    setAlignment({ status: 'loading' })
+    try {
+      setAlignment({ status: 'ok', data: await getAlignment() })
+    } catch (e) {
+      setAlignment({ status: 'error', error: describeError(e) })
+    } finally {
+      aligningRef.current = false
+      setAligning(false)
+    }
+  }, [])
+
   // 首次进入面板时把"打开就该看到"的内容拉一遍。用 ref 当守卫而不是 state：
   // StrictMode 下开发环境会把 effect 跑两遍，state 版本的守卫挡不住第二次（读到的还是旧值）
   //
@@ -165,6 +217,10 @@ export function useRagDiag(active: boolean): UseRagDiagResult {
   //     和"分块没跑起来"在视觉上几乎一样 —— 而自检脚本里那种
   //     "点了按钮才出内容"的路径，也很容易在改动中被静默跳过（本次就踩到了：
   //     断言在按钮点击之前跑，拿到 0 条，看起来像"结构分块没产出块"）。
+  //
+  // 对齐实验同理自动跑一次（2026-09-15 第三轮加的）：它的理由是"空着的区域会被
+  // 按上一版结论理解"，详见 runAlignment 的注释。四个请求**互不依赖**，
+  // 所以一起发出去 —— 串行只会让进面板多等几个来回。
   useEffect(() => {
     if (!active || initialized.current) return
     initialized.current = true
@@ -172,7 +228,8 @@ export function useRagDiag(active: boolean): UseRagDiagResult {
     void loadEvalSet()
     // 预览用默认策略先拉一份；切策略时由界面再触发一次
     void runPreview(DEFAULT_STRATEGY)
-  }, [active, loadCorpus, loadEvalSet, runPreview])
+    void runAlignment()
+  }, [active, loadCorpus, loadEvalSet, runPreview, runAlignment])
 
   return {
     corpus,
@@ -181,8 +238,10 @@ export function useRagDiag(active: boolean): UseRagDiagResult {
     tokens,
     retrieval,
     comparison,
+    alignment,
     strategy,
     running,
+    aligning,
     lastQuery,
     loadCorpus: () => void loadCorpus(),
     loadEvalSet: () => void loadEvalSet(),
@@ -191,6 +250,7 @@ export function useRagDiag(active: boolean): UseRagDiagResult {
     analyzeTokens: text => void analyzeTokens(text),
     search: query => void search(query),
     runComparison: () => void runComparison(),
+    runAlignment: () => void runAlignment(),
   }
 }
 

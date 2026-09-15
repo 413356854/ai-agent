@@ -13,6 +13,7 @@
  *   GET  /api/diag/rag/retrieve        单条提问的召回结果
  *   GET  /api/diag/rag/eval-set        评测集条数与分组
  *   GET  /api/diag/rag/compare         ★ 两种分块策略的并排对照
+ *   GET  /api/diag/rag/align           ★ 块大小对齐实验（消掉混杂因素后的对照）
  */
 import { DiagError, request } from './diag'
 
@@ -31,6 +32,24 @@ import { DiagError, request } from './diag'
  * 一句话：**超时值必须大于被调用者的固有耗时，而固有耗时只能靠实测得知。**
  */
 export const RAG_COMPARE_TIMEOUT_MS = 120_000
+
+/**
+ * 对齐实验的超时。
+ *
+ * **为什么要比 `/compare` 还宽（180 秒，是它的 1.5 倍）**：这一件事台账里写得很直白 ——
+ * 「它比 `/compare` 重约 4 倍」。实际跑的东西是：两次尺寸扫描 + 两次二分收敛（各 11 个探针）
+ * + **5 个变体 × 3 路检索 = 15 次全量评测**，而 `/compare` 只是 2 个策略 × 1 路检索。
+ *
+ * 本机实测 **2.2–3.4 秒**（真启动的后端，HTTP 200 / 124KB 响应），所以 180 秒不是"刚好够"，
+ * 是**留足了机器忙 / 语料变大 / 评测集变长时的余量**。
+ *
+ * 这里沿用 `RAG_COMPARE_TIMEOUT_MS` 上面那段教训，但把结论再推一步：
+ * **同一个面板里的不同端点，超时值必须各自按自己的固有耗时定**。
+ * `/compare` 的 120 秒是照着"2 个策略"定的，直接拿来给"4 倍工作量"的 `/align` 用，
+ * 就是在重复阶段一那个坑（钉住实验 19~26 秒 vs 前端 20 秒超时）——
+ * 只不过这次是我们自己主动埋的。
+ */
+export const RAG_ALIGN_TIMEOUT_MS = 180_000
 
 // ---------------------------------------------------------------------------
 //  与后端契约对应的类型。
@@ -222,6 +241,106 @@ export interface CompareResponse {
   notes: string[]
 }
 
+/**
+ * 等 token 预算那一档里，某一组的指标。
+ *
+ * `avgTokensUsed` 与 `avgHitCount` 必须**一起**看 —— 这是后端注释里的原话：
+ * 预算没装满就是「块太大装不下」的直接证据。只看 Recall 会把"它根本没花到那么多钱"
+ * 误读成"它更省"。
+ */
+export interface BudgetAlignment {
+  budget: number
+  recall: number
+  mrr: number
+  /** 这次检索真正塞进 prompt 的 token（= 台账里"检索预算入账"要用的口径） */
+  avgTokensUsed: number
+  avgHitCount: number
+}
+
+/**
+ * 尺寸扫描表的一行：某个字符数下切出来的规模。
+ *
+ * `gapToTarget` 是这一行与对齐目标的差 —— 扫描表的意义就是**让"对齐是怎么收敛的"可重放**，
+ * 只报最后那个收敛点，读者没法判断收敛过程是不是在乱撞。
+ */
+export interface SweepRow {
+  fixedSize: number
+  chunkCount: number
+  avgChunkTokens: number
+  totalTokens: number
+  duplicationRatio: number
+  gapToTarget: number
+}
+
+/**
+ * 一组对齐对照。
+ *
+ * ⚠️ **`reports` 恒为两项，且第 0 项是参照方、第 1 项是被考察方**，
+ * 差值一律"第 1 项 − 第 0 项"。方向是后端定死的（它自己的注释里写了为什么：
+ * "在一张有 6 个数字的对照表里，搞错方向会让读者得出完全相反的结论"）。
+ * 界面这边**不要**再去猜方向，直接按 `[0]` / `[1]` 取。
+ */
+export interface PairComparison {
+  /** 这一组对齐的是哪个字段 —— 后端已经把「左=…｜右=…」也拼进来了 */
+  fieldDescription: string
+  /** 对齐轴：平均块大小 / 等 token 预算 */
+  dimension: string
+  reports: StrategyReport[]
+  /** 指标名 → 被考察方策略名 → 差值（百分点） */
+  deltas: Record<string, Record<string, number>>
+  /** 这一组自己的注意事项（哪一组能说什么、不能说什么 —— 必须显示） */
+  notes: string[]
+}
+
+/**
+ * GET /api/diag/rag/align 的响应 —— **把 `/compare` 里那个混杂因素消掉之后的对照**。
+ *
+ * `/compare` 的结论只能说"结构分块省 token"，不能说"哪个策略更好"：
+ * 两组平均块大小不同（234.8 vs 200.9），而判定标准是"块有没有覆盖答案所在章节"，
+ * **块越大越容易覆盖答案**。这个报告就是来消掉它的。
+ *
+ * `notes` 里装着**不能下的结论**（尤其是"向量那一路是离线哈希近似品"那条），
+ * 必须显示出来 —— 界面上摆着 vector-local 的 Recall，不解释它是什么，
+ * 读者一定会拿去和 BM25 比。
+ */
+export interface AlignmentResponse {
+  evalSetLocation: string
+  caseCount: number
+  sampleSufficient: boolean
+  documents: number
+  failedDocuments: string[]
+  /** 对齐轴（后端给的是「平均块大小」） */
+  dimension: string
+  /** 对齐目标：结构分块的平均块 token，也就是"靶子" */
+  alignTargetTokens: number
+  /** 扫描区间的字符数范围（含两端） */
+  sweepRange: number[]
+  sweep: SweepRow[]
+  /** 收敛得到的对照组分块字符数 */
+  alignedFixedSize: number
+  /** 用该尺寸实测到的平均块 token */
+  alignedMeasuredAvg: number
+  /** 与对齐目标的差（token）—— "对齐"永远是近似的，差多少要看得到 */
+  alignedGapTokens: number
+  /** 二分细化实际跑了几次（收敛过程的可复现性） */
+  refinementProbes: number
+  /** 各组对齐对照 —— 7 组：3 路检索 × 2 个对齐组 + 1 组"块更大的效应" */
+  pairs: PairComparison[]
+  budgetSteps: number[]
+  /** 各对齐组的可读名，与 budgetRows 里的键一一对应 */
+  budgetLabel: string[]
+  /** 预算档位 → 组名 → 该档位下的指标 */
+  budgetRows: Record<string, Record<string, BudgetAlignment>>
+  /** 对照里跑过的检索方式（词法 / 向量 / 混合） */
+  retrievalMethods: string[]
+  /** 向量那一路的 Embedding 实现名。带 `local-` 前缀说明它是离线近似品，不是真语义嵌入 */
+  embeddingModel: string
+  embeddingDimensions: number
+  /** 索引指纹（模型/维度），用于校验 Embedding 漂移 */
+  vectorFingerprint: string
+  notes: string[]
+}
+
 // ---------------------------------------------------------------------------
 //  调用函数
 // ---------------------------------------------------------------------------
@@ -260,6 +379,18 @@ export function getEvalSet(): Promise<EvalSetResponse> {
 /** 分块策略对照（走单独的 120 秒超时，理由见 RAG_COMPARE_TIMEOUT_MS） */
 export function compareStrategies(topK = 0): Promise<CompareResponse> {
   return getJson<CompareResponse>('/api/diag/rag/compare?topK=' + topK, '分块策略对照', RAG_COMPARE_TIMEOUT_MS)
+}
+
+/**
+ * 块大小对齐实验（走单独的 **180 秒**超时，理由见 RAG_ALIGN_TIMEOUT_MS）。
+ *
+ * `budgets` 一律不传：档位由后端的 `DEFAULT_BUDGETS` 定（1000/2000/3000/4000/6000/8000），
+ * 界面**不做"选档位"的控件**。理由：档位是实验设计的一部分而不是用户的偏好，
+ * 让界面能改它，就等于让用户悄悄地把两组对照比在不同档位上 ——
+ * 而"同一个预算里谁把答案找回来"是这张表唯一的说服力。
+ */
+export function getAlignment(): Promise<AlignmentResponse> {
+  return getJson<AlignmentResponse>('/api/diag/rag/align', '块大小对齐实验', RAG_ALIGN_TIMEOUT_MS)
 }
 
 // ---------------------------------------------------------------------------

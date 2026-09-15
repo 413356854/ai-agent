@@ -1030,3 +1030,103 @@ body {
 .rag-miss-group {
   margin-bottom: 8px;
 }
+
+/* ---------------------------------------------------------------------------
+   块大小对齐实验（/align）
+
+   视觉上刻意**不**做成又一张普通卡片：它承载的结论与上面那张对照表**相反**
+   （上面说"结构分块省 token"，这里说"按住块大小之后它全面落后"）。
+   两块长得一模一样，读者会以为是同一份数据的两种呈现，
+   于是要么只信第一张、要么以为页面自相矛盾。
+   所以给它一条左侧色条 + 浅底，让"这是对上一张表的结论修订"一眼可见。
+   --------------------------------------------------------------------------- */
+
+.align-card {
+  border: 1px solid #d6e4ff;
+  border-left: 4px solid #1677ff;
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: #fbfdff;
+}
+
+.align-head {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.align-head > div {
+  min-width: 0;
+}
+
+.align-title {
+  margin: 0 0 6px !important;
+  font-size: 15px !important;
+}
+
+/* 一组 = 一路检索下的若干对齐对照。组与组之间留白，
+   否则三张表连在一起会看不出"这三个是同一批数字换了度量方式" */
+.align-group {
+  margin-bottom: 18px;
+}
+
+.align-group-head {
+  margin-bottom: 8px;
+}
+
+/* 参照方整行淡底：与 /compare 那张表同一条规则 ——
+   读差值时永远要拿它当基准 */
+.align-row-ref td {
+  background: #fafbfc;
+}
+
+/* 被考察方加一条上边框，让"两行是一组"这件事在视觉上闭合 */
+.align-row-subject td {
+  border-top: none;
+}
+
+.align-desc {
+  font-size: 11.5px;
+}
+
+/* 表内的差值：与 .rag-delta-value 同一套方向配色，
+   但表格单元格里不需要那么大字号 */
+.rag-inline-delta.is-good {
+  color: #389e0d;
+  font-weight: 600;
+}
+
+.rag-inline-delta.is-bad {
+  color: #cf1322;
+  font-weight: 600;
+}
+
+.rag-inline-delta.is-flat {
+  color: #8c8c8c;
+}
+
+/* 「预算没装满」的警示：预算口径下"装进来的条数"远少于上限，
+   就是"块太大装不下"的直接证据，不能用普通颜色混过去 */
+.rag-underfilled {
+  color: #d46b08;
+}
+
+/* 每一组自己的注意事项：用原生 details，不引入额外状态管理 ——
+   折叠与否纯属阅读习惯，而"有没有这些文字"才是要紧的 */
+.align-details {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: #595959;
+}
+
+.align-details > summary {
+  cursor: pointer;
+  color: #1677ff;
+  user-select: none;
+}
+
+.align-details .issue-list {
+  margin-top: 6px;
+}

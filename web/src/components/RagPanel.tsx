@@ -12,6 +12,7 @@ import type {
   TokensResponse,
 } from '../api/rag'
 import type { Remote } from '../types'
+import { AlignmentCard } from './AlignmentPanel'
 
 /**
  * 「RAG 分块评测」面板：把阶段二那条离线链路摆出来。
@@ -67,7 +68,25 @@ export function RagPanel({ diag }: { diag: UseRagDiagResult }) {
         evalSet={diag.evalSet}
       />
 
-      <ComparisonCard remote={diag.comparison} onRun={diag.runComparison} running={diag.running} />
+      <ComparisonCard
+        remote={diag.comparison}
+        onRun={diag.runComparison}
+        running={diag.running}
+        aligning={diag.aligning}
+      />
+
+      {/*
+        对齐实验紧跟在对照表后面 —— 顺序刻意如此：先看到"结构分块召回更低、但省 token"，
+        紧接着看到"把块大小按住之后那个『省 token』消失了、而且全面落后"。
+        这份报告是上面那张表的**结论修订**，所以它不能离得太远，
+        也不能放在上面（没有前一张表，读者不知道它在消掉什么混杂因素）。
+      */}
+      <AlignmentCard
+        remote={diag.alignment}
+        onRun={diag.runAlignment}
+        aligning={diag.aligning}
+        comparisonRunning={diag.running}
+      />
 
       <EvalSetCard remote={diag.evalSet} onReload={diag.loadEvalSet} />
     </div>
@@ -493,10 +512,12 @@ function ComparisonCard({
   remote,
   onRun,
   running,
+  aligning,
 }: {
   remote: Remote<CompareResponse>
   onRun: () => void
   running: boolean
+  aligning: boolean
 }) {
   return (
     <Card
@@ -504,7 +525,16 @@ function ComparisonCard({
       className="diag-card diag-card-wide"
       title="分块策略对照：阶段二的验收数字"
       extra={
-        <Button type="primary" size="small" onClick={onRun} loading={running}>
+        <Button
+          type="primary"
+          size="small"
+          onClick={onRun}
+          loading={running}
+          // 与「跑对齐实验」互斥：两个都会把后端 CPU 打满（对齐要跑 15 次全量评测），
+          // 并行跑只会让两边的耗时与数字互相影响。禁用而不是"点了没反应"，
+          // 否则用户会以为是界面坏了
+          disabled={aligning}
+        >
           跑对照
         </Button>
       }
@@ -616,6 +646,10 @@ function ComparisonBody({ data }: { data: CompareResponse }) {
         这不是免责声明 —— 0.7674 与 0.8140 摆在一起，任何人都会自行脑补一个方向性结论，
         而**块大小这个混杂因素没排除**（块越大越容易碰到答案）。
         不写出来，这个界面就在制造错误结论。
+
+        ⚠️ 第 3 条曾经写的是"要下结论必须先做块大小对齐的实验" —— **那个实验现在做完了**，
+        所以这里改成指向下面那份报告。**留着旧文案会比没有文案更糟**：
+        它会让人以为这个结论还悬着，进而自己脑补一个方向（多半是偏向"结构分块更好"）。
       */}
       <Alert
         type="info"
@@ -633,10 +667,11 @@ function ComparisonBody({ data }: { data: CompareResponse }) {
               看「前 3 条 token」那一列（那才是真正进上下文的量）与「全部候选 token」那一列。
             </span>
             <span>
-              <strong>3. 不能说"语义分块更好"或"更差"。</strong>
+              <strong>3. ⚠️ 但"省 token"这个结论本身也是不可归因的 —— 见下面那份报告。</strong>
               相关性判定用的是「检索到的块有没有覆盖答案所在章节」，而<strong>块越大越容易碰到答案</strong>
-              —— 对照组平均块更大，所以这个 Recall 差异里混着块大小的差异。
-              要下结论，必须先做"块大小对齐"的实验。
+              —— 对照组平均块更大，所以这个 Recall 差异里混着块大小的差异，
+              "省 token"也只是"它的块更小"的副作用。
+              <strong>下面那份「块大小对齐实验」把这个混杂因素消掉了，然后结论反了。</strong>
             </span>
           </Flex>
         }

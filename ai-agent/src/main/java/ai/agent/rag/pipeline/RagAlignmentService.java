@@ -489,10 +489,14 @@ public class RagAlignmentService {
 		notes.add(("对齐后的实测平均块大小与目标差 %.2f token —— 「对齐」是近似的，"
 				+ "这个差距是否足够小要由读者判断，不能由实现方默认成立")
 						.formatted(align.measuredAvg() - noBreadcrumb.avgChunkTokens()));
-		notes.add(("**关掉面包屑的那一组才是在比「切点」**：结构分块的 %.1f token 里正文只有 %.1f，"
-				+ "差值就是每块拼一遍的标题路径。不关掉的话，对齐的是渲染后的大小，"
-				+ "正文仍然更小 —— 混杂因素只是换了个地方待着")
-						.formatted(plain.avgChunkTokens(), noBreadcrumb.avgChunkTokens()));
+		notes.add(("**关掉面包屑的那一组才是在比「切点」**：结构分块开/关面包屑的实测规模是 %.1f token × %d 块 "
+				+ "vs %.1f token × %d 块（同一份语料、同一个 max-tokens=400）。两组**只有面包屑这一个开关不同**，"
+				+ "所以它们的全部差异都来自「结构元数据有没有进块」这件事。"
+				+ "⚠ 注意带面包屑那一组的平均块反而更小、块数更多（%d vs %d）——"
+				+ "这是实测结果，不是预期方向；本报告只对齐块大小，**不对这个现象作解释**，"
+				+ "要弄清它得单独查 StructuralChunker 的装填逻辑")
+						.formatted(plain.avgChunkTokens(), plain.chunkCount(), noBreadcrumb.avgChunkTokens(),
+								noBreadcrumb.chunkCount(), plain.chunkCount(), noBreadcrumb.chunkCount()));
 		notes.add("面包屑的取舍本身是一个**独立实验**（它是特征，不是切点）："
 				+ "真实系统里通常值得开（用户提问常直接用标题词，而正文可能一次都没写），"
 				+ "这里关掉只是为了把「切点」这一个变量隔离出来");

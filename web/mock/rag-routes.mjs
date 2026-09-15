@@ -24,6 +24,7 @@
  * 界面就会自相矛盾 —— 而自检断言不了"文字和数字是否一致"，
  * 只有让假数据与真实结论同向，人工看的时候才不会被误导。
  */
+import { ALIGNMENT } from './rag-align-data.mjs'
 
 const STRATEGIES = [
   {
@@ -244,6 +245,15 @@ export function handleRagRoutes(req, res, url, json) {
         notes: NOTES,
       })
     }, 400)
+    return true
+  }
+
+  if (req.method === 'GET' && pathname === '/api/diag/rag/align') {
+    // 睡 600ms 而不是瞬时返回：与 `/compare` 同一个理由，让"正在跑对齐实验"那个
+    // loading 分支真的被渲染到一次。**但别睡太久** —— 真后端实测 4.95 秒，
+    // 这里要是也睡 5 秒，自检脚本每次都要多等 5 秒，而它验证不了"真后端够快"
+    // （超时是 180 秒，5 秒和 0.6 秒都在余量之内）。
+    setTimeout(() => json(res, ALIGNMENT), 600)
     return true
   }
 

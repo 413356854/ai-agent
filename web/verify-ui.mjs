@@ -344,6 +344,119 @@ if ((await compareCard.count()) > 0) {
   await page.screenshot({ path: `${SHOT_DIR}/rag-compare.png`, fullPage: true })
 }
 
+// —— 块大小对齐实验：本轮把混杂因素消掉之后的那份报告 ——
+//
+// 这一节断言的是"界面有没有如实呈现一个**与上一张表相反**的结论"：
+//   - 7 组对照必须都在（少了就等于只报了一部分数字）；
+//   - **左右两行必须并排出现**（只显示一行就等于没做对照，这正是这张报告存在的理由）；
+//   - 差值颜色必须区分方向（token 类指标涨了是坏事，与 Recall 相反）；
+//   - "关掉面包屑那一组才是在比切点"必须写在界面上 ——
+//     不写的话读者会拿带面包屑那三组去下"切点"的结论，而那三组对齐的是渲染后大小；
+//   - **向量那一路是离线近似品**必须出现 —— 否则读者会拿 vector-local 的
+//     Recall@5 0.34 去和 BM25 的 0.74 比，得出"向量检索差一半"这个完全错误的结论。
+console.log('[6.5] 块大小对齐实验')
+const alignCard = page.locator('.align-card').first()
+expect('对齐实验卡片存在', (await alignCard.count()) > 0)
+if ((await alignCard.count()) > 0) {
+  // 它进面板就自动跑（后端实测 4.95 秒），所以这里等结果元素而不是点按钮。
+  // 超时给 120 秒：真后端要跑 15 次全量评测，假后端睡 600ms
+  await alignCard.locator('.rag-metric-table').first().waitFor({ state: 'visible', timeout: 120000 })
+  await page.waitForTimeout(500)
+
+  const alignText = (await alignCard.innerText()).trim()
+  expect('对齐实验的标题写明了结论反转', /结论反了|混杂因素/.test(alignText))
+  // 概览：目标 / 实测 / 残差 三格必须在 —— 残差单独占一格是刻意的
+  //（"对齐永远是近似的"，差多少要让读者自己判断）
+  expect('显示了对齐目标与实测值', /对齐目标/.test(alignText) && /收敛后实测/.test(alignText))
+  expect('显示了对齐残差', /对齐残差/.test(alignText))
+  // 7 组对照（3 路检索 × 2 个对齐组 + 1 组"块更大的效应"）
+  const alignGroups = await alignCard.locator('.align-group').count()
+  expect('按检索方式分组渲染了 7 组对照', alignGroups >= 3, `${alignGroups} 个检索分组`)
+  const refRows = await alignCard.locator('.align-row-ref').count()
+  const subjectRows = await alignCard.locator('.align-row-subject').count()
+  expect('每组对照的参照方都渲染了', refRows >= 7, `${refRows} 行参照方`)
+  expect('每组对照的被考察方都渲染了', subjectRows >= 7, `${subjectRows} 行被考察方`)
+  // 左右并排 —— 只显示一侧就等于没做对照
+  expect('左右两方成对出现', refRows === subjectRows)
+  expect('标出了左右两方的角色', /参照方/.test(alignText) && /被考察方/.test(alignText))
+  // 差值的方向配色：Recall 与 token 成本必须能同时出现两种颜色
+  expect('差值列按各自方向着色', (await alignCard.locator('.rag-inline-delta.is-bad').count()) > 0)
+  // token 成本必须与召回并排（只给 Recall 会让人得出"块越大越好"）
+  expect('token 成本与召回并排', /全语料 token/.test(alignText) && /重复率/.test(alignText))
+  // "哪几组才是在比切点"必须写在界面上
+  expect('说明了哪几组才是在比切点', /不能单独判断切点|在比「切点」/.test(alignText))
+
+  /*
+    这两个标签的数量是**钉住一个回归**：第一版把"能不能判断切点"打在了**分组表头**上，
+    于是 vector / hybrid 两个分组被整体标成"对齐的是渲染后大小" ——
+    而它们的第一组恰恰是最干净的那一组（关掉面包屑）。根因是分组里混着两种性质的对照，
+    只要有一组不合格就污染了整个分组。
+
+    所以断言**两种标签同时出现且数量固定**：
+      - "在比「切点」" 3 个 = 三路检索各一组（对齐正文的那三组）；
+      - "对齐的是渲染后大小" 4 个 = 三组带面包屑的锚点 + 第 7 组"块更大的效应"。
+    数量写死是有意的：多一个少一个都说明后端的 pairs 构成变了，
+    而那时这套解读文字需要重新核对（它讲的正是"哪几组干净"）。
+  */
+  const definitiveTags = await alignCard.locator('.align-row-ref .ant-tag', { hasText: '在比「切点」' }).count()
+  const anchorTags = await alignCard.locator('.align-row-ref .ant-tag', { hasText: '对齐的是渲染后大小' }).count()
+  expect('干净对照（在比切点）正好三组', definitiveTags === 3, `${definitiveTags} 个`)
+  expect('锚点对照（渲染后大小）正好四组', anchorTags === 4, `${anchorTags} 个`)
+
+  // 收敛过程：扫描表 + 收敛点
+  expect('显示了尺寸扫描表', /确定收敛|收敛点|尺寸扫描表/.test(alignText))
+  // 轴二：等预算表，且必须写明"只有词法那一路有数"
+  expect('显示了等预算表', /等 token 预算/.test(alignText))
+  expect('说明了预算表只有词法有数', /只有词法那一路有数/.test(alignText))
+  // 不能下的结论必须出现（尤其"向量那一路不是语义嵌入"）
+  expect('写明了向量那一路是离线近似品', /离线哈希|不是语义嵌入/.test(await alignCard.innerText()))
+
+  await page.screenshot({ path: `${SHOT_DIR}/rag-align.png`, fullPage: true })
+}
+
+/*
+  假数据自身的**方向自检** —— 这一节不打开浏览器，直接读 mock 数据。
+
+  为什么值得单独写一条：这份面板上的**解读文字与数字是绑定的**
+  （"块大小对齐之后固定硬切全面占优"），而自检断言不了"文字和数字是否一致"。
+  一旦有人顺手改了 mock 里的数字（或者换了一版真数据），
+  界面就会变成"文字说结论反了、数字说没反"，而**所有基于文案的断言照样全绿**。
+
+  两条相反方向的断言放在一起，还顺带把这条实验的逻辑钉住了：
+
+    - 三组"块大小已对齐"的对照里，**右侧（结构分块）必须更差**；
+    - 而第 7 组（刻意**不**对齐块大小那组）里，**块更大的那一侧反而更好** ——
+      这恰恰是"块越大越容易覆盖答案"这个混杂因素本身，也是上面那份报告存在的理由。
+      所以第 7 组出现"方向相反"**不是**数据错了，是它在证明混杂因素真的存在。
+*/
+{
+  const { ALIGNMENT } = await import('./mock/rag-align-data.mjs')
+  // 「块大小已对齐」那三组：字段描述里写着"关掉面包屑"（对齐的是正文，不是渲染后大小）。
+  //
+  // ⚠️ 别用"不含 '+面包屑'"来筛 —— 这条会连**第 7 组（块更大的效应）**一起筛进来，
+  // 而那一组是**刻意不对齐块大小**的对照，它的方向本来就该相反。
+  // 实测踩到了：`/\+面包屑/` 筛出 4 组，然后第 7 组稳定报"反向 1 组"，
+  // 看起来像数据错了，其实是筛选条件把"反证组"当成了"结论组"。
+  const definitive = ALIGNMENT.pairs.filter(p => p.fieldDescription.includes('关掉面包屑'))
+  const wrong = definitive.filter(p => {
+    const [left, right] = p.reports
+    const d5 = p.deltas['recall@5']?.[right.strategy] ?? 0
+    const dmrr = p.deltas['mrr']?.[right.strategy] ?? 0
+    return !(d5 <= 0 && dmrr <= 0)
+  })
+  expect(
+    '假数据方向与界面结论一致（对齐组里右方更差）',
+    wrong.length === 0,
+    `共 ${definitive.length} 组，反向 ${wrong.length} 组`,
+  )
+  // 反证：不对齐块大小那组必须能看出"块更大 = 更好"，否则说明这份数据里
+  // 根本没有混杂因素，"消掉混杂因素"这句话就无从谈起
+  const confound = ALIGNMENT.pairs.find(p => p.fieldDescription.includes('块更大的效应'))
+  const confoundProvesIt =
+    confound !== undefined && (confound.deltas['recall@1']?.[confound.reports[1].strategy] ?? 0) > 0
+  expect('假数据里能看出"块更大更容易覆盖答案"这个混杂因素', confoundProvesIt)
+}
+
 // —— 评测集 ——
 const evalCard = page.locator('.diag-card', { hasText: '评测集：' }).first()
 expect('评测集卡片存在', (await evalCard.count()) > 0)
