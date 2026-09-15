@@ -33,15 +33,28 @@ const EXPECT_REFLECTION = process.env.CHECK_EXPECT_REFLECTION !== '0'
 /**
  * 每条路径实际执行多少项断言（**实测出来的，不是数出来的**）。
  *
- * 脚本里一共 72 个 `expect(...)`，但两条路径执行的数量不同，因为有两个分支
- * 各跑各的断言（回灌细节 / 降级标记只在假后端可复现）：
+ * 脚本里一共 180 个 `expect(...)`，但两条路径执行的数量不同 ——
+ * 因为有几个分支各跑各的（回灌细节 / 降级标记 / Agent 的完整轨迹 / HITL 的批准与拒绝），
+ * 它们的可复现性依赖假后端：
  *
- *   假后端（默认）      → **68 项全过**
- *   真后端（=0）        → **66 项**，其中流式那条会失败（假 key 导致 401）
+ *   假后端（默认，实测 2026-09-16）  → **165 项，全过**
+ *   真后端（=0，实测同日）           → **121 项执行、120 项通过**
  *
- * 这里刻意把两个数字都写下来：阶段一曾经只写"36 项"而单条路径实际只跑 29 项，
+ * 真路径唯一失败的那条是**流式回答**（`流式回答已渲染`）——
+ * 本机用的是假 key，上游必然 401，与本次改动无关（第八轮起就是这样）。
+ *
+ * ⚠️ 这里刻意把两个数字都写下来：阶段一曾经只写"36 项"而单条路径实际只跑 29 项，
  * 被台账自己记为"虚报"。**一个会随环境变化的数字，必须把每个环境的取值都写清**，
  * 否则读的人没法判断某次输出是不是正常。
+ *
+ * ⚠️ 还有一个更隐蔽的坑（第九轮踩到，值得单独记）：
+ * **"真后端路径"可能在骗你。** `vite.config.ts` 里 `strictPort: true`，
+ * 所以如果之前那个 `pnpm dev:mock` 还占着 5173，新起的 `pnpm dev`（指向真后端）
+ * **会启动失败**，而 `UI_URL` 仍然打得到 5173 —— 于是你以为是"真后端路径"，
+ * 实际打的是假后端，两次跑的断言数也会因此对不上。
+ * 判断方法很简单（也在 README 里写了）：
+ *     GET /api/agent/runs → `awaitingRecovery`
+ *     假后端固定给 1，真后端是 0。**一个数字就能区分你在打谁。**
  */
 const SHOT_DIR = 'ui-check-out'
 mkdirSync(SHOT_DIR, { recursive: true })
@@ -59,6 +72,33 @@ const problems = []
 const expect = (label, ok, detail = '') => {
   console.log(`    ${ok ? '✓' : '✗'} ${label}${detail ? ` — ${detail}` : ''}`)
   if (!ok) problems.push(label)
+}
+
+/**
+ * 轮询等待某个条件成立（最多 `timeoutMs`）。
+ *
+ * <h2>为什么需要它，而不是 `page.waitForTimeout(N)` 一把等够</h2>
+ * 这一轮新增的断言里有一大半要等的是**异步状态转移**：
+ * "点批准 → 界面轮询把那条待批捡走 → 列表里它消失"。
+ * 用固定 sleep 的话只能两种结果：睡太短会闪断（CI/慢机器上必红），
+ * 睡太长会让整条自检慢下来 —— 而**闪断的断言最后总会被注释掉**，
+ * 那时它保护的东西就悄悄没了。
+ *
+ * <p>轮询的代价是失败时慢（等满超时才报错），收益是**快的时候立刻继续**且不闪断。
+ * 这个取舍与后端那边"等待批登记出来"用的是同一套（见 `AgentApprovalTest.awaitPending`）。
+ */
+async function waitFor(check, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      if (await check()) return true
+    }
+    catch {
+      // 元素还没出现时 locator 会抛/返回 0 —— 都当作"还没好"，继续等
+    }
+    await page.waitForTimeout(250)
+  }
+  return false
 }
 
 // antd 的 autoSize TextArea 会额外渲染一个隐藏 textarea 用来量高度，必须排除它
@@ -488,74 +528,33 @@ expect('RAG 面板无横向溢出', ragLayout.horizontalOverflow === 0, `overflo
 //   - **"计入熔断"这一列必须由后端给** —— 前端不自己判 stage 的好坏，
 //     否则判据会有两份并慢慢漂移。
 console.log('[6.6] Agent 工具调用面板')
+
+/**
+ * <b>切到 Agent 面板 —— 这是下面所有内容的前提。</b>
+ *
+ * <p>不切过来的话，"待我确认""跑一个任务""历史运行""四层保护"四张卡片
+ * 一个都不会渲染，而失败信息看起来像"功能没做"。
+ *
+ * <h2>这一步踩过一次，值得单独记</h2>
+ * 本次改动把"跑一个任务 + 验证四步轨迹"整段往后移（因为假后端现在按审批状态
+ * 返回不同轨迹，所以那段必须在批准之后才能跑）。
+ * 而**搬动时顺手把"切面板"这个动作也一起搬走了** ——
+ * 于是紧随其后的"历史运行卡片存在""限额卡片存在"两条先红，
+ * 而 [6.7] 那一整节（新功能）也跟着全红。
+ *
+ * <p>教训一句话：**一段自检代码里往往混着"动作"与"断言"两类语句，
+ * 搬动时只盯着断言，就会把动作一起搬走** —— 而症状是"看起来这个功能没渲染"。
+ */
 await page.locator('label', { hasText: 'Agent 工具调用' }).click()
 await page.waitForTimeout(900)
 
-const agentCard = page.locator('.diag-card', { hasText: '跑一个任务' }).first()
-expect('Agent 面板已渲染', (await agentCard.count()) > 0)
-
-if ((await agentCard.count()) > 0) {
-  // 整张页面上只有这一个按钮有外部代价，必须明确标出来：
-  // 不标的话用户点它和点"刷新"的心理预期是一样的
-  const askText = (await agentCard.innerText()).trim()
-  expect('标出了"会调模型 · 花钱"', /花钱/.test(askText))
-
-  // 跑一次。
-  //
-  // **等待方式按路径分**（这是实测出来的必要区分）：
-  //   - 假后端：会给出一条"含失败与自愈"的四步轨迹，所以能等到 .agent-timeline；
-  //   - 真后端：本机 key 是假的，模型调用会 401 失败 → 那次运行**一步都没有**，
-  //     于是 .agent-timeline 根本不会渲染（组件在 steps 为空时返回 null）。
-  //     所以真路径要等"停因"那一格出现 —— 它在成功与失败两种情况下都会有。
-  //
-  // 这不是"把断言放宽"，而是**两条路径本来就跑在不同的场景里**：
-  // 假后端能确定性地产出完整轨迹，真后端（假 key）只能产出一次分类明确的失败。
-  // 硬等 .agent-timeline 会让真路径必然超时，而失败原因看起来像"界面没渲染"。
-  await agentCard.locator('button', { hasText: /跑\s*一\s*次/ }).first().click()
-  await agentCard.locator('.stat-cell', { hasText: '停因' }).first().waitFor({ state: 'visible', timeout: 150000 })
-  await page.waitForTimeout(800)
-
-  const resultText = (await agentCard.innerText()).trim()
-  expect('显示了停因与成本', /停因/.test(resultText) && /token/.test(resultText))
-  expect('显示了工具调用汇总', /工具调用/.test(resultText))
-
-  // 「停因」这一格在每个路径上都该是**真实的枚举名**，而不是空 ——
-  // 它是"这一页回答了为什么"的最小证据
-  expect('停因是真实的枚举名', /ANSWERED|MODEL_ERROR|MAX_STEPS|MAX_TOKENS|MAX_DURATION|DUPLICATE_ACTION|EMPTY_RESPONSE/.test(resultText))
-
-  if (EXPECT_REFLECTION) {
-    // ================= 假后端路径：验证完整的执行过程 =================
-    expect('显示了最终答案', (await agentCard.locator('.agent-answer-text').count()) > 0)
-
-    const steps = await agentCard.locator('.agent-step').count()
-    expect('渲染了执行过程时间线', steps >= 3, `${steps} 步`)
-    expect('每步标出了"调工具"还是"作答"', /调工具/.test(resultText) && /作答/.test(resultText))
-
-    const toolCalls = await agentCard.locator('.agent-tool-call').count()
-    expect('渲染了每次工具调用', toolCalls >= 3, `${toolCalls} 次`)
-    expect('显示了模型的 think 段', (await agentCard.locator('.agent-thought').count()) > 0)
-    // 回填文本是"模型当时看到了什么"的唯一凭据，必须能被看到
-    expect('显示了回填给模型的内容', (await agentCard.locator('.agent-tool-feedback pre').count()) >= 3)
-    // 被拒绝的那次必须也在（否则"想调几次"这个数字永远偏小）
-    expect('被拒绝的调用也在页面上', /工具不存在/.test(resultText))
-    expect('回填里带了可用工具列表', /可用工具/.test(resultText))
-    // stage 用中文短语显示，但枚举名要能查到（放在 title 里）—— 排查时要能和日志对上
-    expect('stage 的枚举名可查到', (await agentCard.locator('[title="UNKNOWN_TOOL"]').count()) > 0)
-    expect('工具调用的参数可见', (await agentCard.locator('.agent-tool-args code').count()) >= 3)
-  } else {
-    // ================= 真后端路径（假 key）：验证失败被如实说明 =================
-    //
-    // 这条路径**恰好是"失败细分"那个功能的真实验证**：
-    // 本机 key 是假的 → 上游 401 → 分类必须是 UPSTREAM_AUTH，
-    // 而不是笼统的 MODEL_ERROR。这正是本轮修掉的那个问题的核心场景。
-    expect('把失败原因分类显示出来了', /UPSTREAM_AUTH|MODEL_ERROR/.test(resultText))
-    expect('显示了对这一页失败的处置建议', /重试没有意义|下一步|API Key|鉴权/.test(resultText))
-    // 没有答案时不能显示"最终答案"那一块 —— 空答案框会让人以为"答了但是空的"
-    expect('没有答案时不显示答案块', (await agentCard.locator('.agent-answer-text').count()) === 0)
-  }
-
-  await page.screenshot({ path: `${SHOT_DIR}/agent-ask.png`, fullPage: true })
-}
+// 【原「跑一个任务 + 验证四步轨迹」那一段被移到了 HITL 那一节之后】
+//
+// 移它的理由是一个真实的耦合：假后端现在按**审批状态**返回不同的轨迹 ——
+// 有待批时返回"停在等人确认"（steps 为空），批准之后才返回完整轨迹。
+// 所以"验证完整四步轨迹"这件事**必须发生在批准之后**，否则它断言的是一个
+// 那一刻还不存在的场景（跑出来就是"0 步""没有最终答案"一串红）。
+// 这不是把断言放宽，而是**顺序本来就有依赖** —— 之前没暴露是因为那时假后端只有一条轨迹。
 
 // —— 历史运行列表 ——
 const runsCard = page.locator('.diag-card', { hasText: '历史运行' }).first()
@@ -674,6 +673,338 @@ const agentLayout = await page.evaluate(() => {
 })
 expect('Agent 面板无横向溢出', agentLayout.horizontalOverflow === 0, `overflow=${agentLayout.horizontalOverflow}px`)
 
+// ---------- HITL：人工确认界面（阶段三第 9 件） ----------
+//
+// 这一节断言的是**"人能不能真的把那条写操作批掉"**，而不是"页面上有这几个字"：
+//   - 待批的参数必须**原样可见** —— 人批的就是它，后端为此刻意不做脱敏与摘要；
+//   - 「已等 / 还剩多久」必须显示 —— 审批对任务耗时的影响，唯一可量化的口径就是它；
+//   - 批准之后那条待批必须**消失**，并且下一次任务**真的执行了写操作** ——
+//     这是"闸门放行"与"闸门真的生效"的区别，也正是这一整轮要在界面上证明的东西；
+//   - 拒绝之后**不能建单**，而理由必须原样回填给模型 ——
+//     "人拒绝之后那个副作用真的没发生"是 HITL 唯一有意义的验收口径；
+//   - 闸门关掉 / 没有待批时，空列表必须被解释清楚（否则"闸门没装"看起来像"系统很安全"）。
+//
+// 【为什么"批准/拒绝"这两条分支只在假后端跑】
+// 真后端上没有待批时**根本没有可点的按钮** —— 那不是界面缺陷，是"这次还没有危险操作"。
+// 要让它出现，得真的跑一次会触发写工具的 Agent 任务，而本机 key 是假的（401）。
+// 所以真路径验证的是另一半、也是更该被验证的一半：**空列表必须被解释清楚**
+// （"没有待批"有三种原因，混起来读会得出完全相反的结论）。
+console.log('[6.7] HITL 人工确认界面')
+
+/**
+ * <b>"批准之前时间线在不在"</b> —— 由 HITL 那一节在动作**之前**写下来，
+ * 给最后那条"切模式不丢结果"用。
+ *
+ * <h2>为什么要提前记，而不是用到的时候当场判断</h2>
+ * 两条路径上这个前提本来就不同（假后端的任务有完整轨迹 → 时间线在；
+ * 真后端假 key 直接 401 → 一次运行 0 步 → 时间线不渲染）。
+ * 当场判断的话，同一段代码在两条路径上会走不同的分支 ——
+ * 而**一个会随环境变化的断言条数，是没法写进文档的**
+ * （阶段一就在这里含糊过一次，台账里把它记为"虚报"：写成"36 项"而实际只执行 29 项）。
+ *
+ * <p>提前记下来还有一个好处：它记的是**审批动作之前**的状态 ——
+ * 而那正是"切模式不丢结果"要保护的东西（一次任务会真的花钱，丢了就得重跑）。
+ */
+let timelineWasThere = false
+
+/**
+ * 「跑一个任务」那张卡片。
+ *
+ * <h2>为什么这个定位器要在这里声明（而不是在它所属的那一节里）</h2>
+ * 因为 HITL 那一节要用它做两件事：① 断言"待我确认"**排在它上面**
+ * （有截止时间的东西优先于需要花钱的东西）；② 点它跑任务来验证
+ * "批准之后写操作真的执行了"。
+ *
+ * <p>而"验证完整四步轨迹"的那一段被排在了 HITL **之后** —— 理由见上面那条指针注释：
+ * 假后端现在按审批状态返回不同的轨迹，所以**顺序本身有依赖**。
+ * 定位器提前声明出来，两节都能用，也就不会出现"谁先声明"这种与断言无关的耦合。
+ */
+const agentCard = page.locator('.diag-card', { hasText: '跑一个任务' }).first()
+
+// 假后端才有复位端点（真后端没有这个路径，调用会 404 —— 所以只在假路径调）
+if (EXPECT_REFLECTION) {
+  const reset = await page.request.post(`${URL}/api/agent/__reset-approval`).catch(() => null)
+  expect('假后端支持把审批状态复位（否则两条相反的分支只能测一条）', !!reset && reset.ok())
+}
+
+// 【这里刻意**不**再点一次「Agent 工具调用」标签】
+//
+// 上一节刚跑完 `/ask` + 打开过历史详情 + 读过限额，面板与三张卡片都已经就位。
+// 再点一次标签会让 Ant Design 的 Segmented 触发一次重挂载，而那样做的后果很具体：
+// **历史运行与限额这两张卡片会短暂消失**（它们的 Remote 态被重置成 idle）——
+// 于是紧接其后的"历史运行卡片存在 / 限额卡片存在"两条断言会红，
+// 而失败信息看起来像"页面少了两块"，实际只是我们自己把它重新挂了一遍。
+// 踩这一次的教训值得记：**在界面自检里，"多此一举地点一下"不是无害的**。
+//
+// ⚠️ 这里**不**再重复切一次面板：上面 [6.6] 那一节已经切过来了，
+// 而且它之后紧接着就是"历史运行 / 运行详情 / 四层保护"三块 ——
+// 那三块都建立在"面板已经切过来"这个前提上（它们是同一个面板的组成部分）。
+// 一开始我把这一步也写在了这里，结果把它从 [6.6] 搬了过来、导致上面两块全红，
+// 所以最后把它放回了 [6.6] 的开头（理由写在那里）。
+
+const approvalCard = page.locator('.diag-card', { hasText: '待我确认' }).first()
+expect('「待我确认」卡片已渲染', (await approvalCard.count()) > 0)
+expect(
+  '「待我确认」排在"跑一个任务"之前（有截止时间的东西优先）',
+  (await approvalCard.count()) > 0 && (await agentCard.count()) > 0
+    ? (await approvalCard.boundingBox()).y < (await agentCard.boundingBox()).y
+    : false,
+)
+
+if ((await approvalCard.count()) > 0) {
+  await page.waitForTimeout(700)
+  const apprText = (await approvalCard.innerText()).trim()
+  // 闸门状态必须可见 —— 空列表的两种含义（没危险操作 / 闸门没开）必须能分开
+  expect('显示了闸门开关状态', /闸门已启用|闸门已关闭/.test(apprText))
+  expect('显示了等人时限', /时限\s*\d+s/.test(apprText))
+
+  if (EXPECT_REFLECTION) {
+    // ================= 假后端：验证"批掉它"这条完整路径 =================
+    expect('显示了有写操作在等我', /在等我/.test(apprText))
+    expect('显示了是哪个工具', /propose_review/.test(apprText))
+    // 参数原样可见 —— 人批的就是这一份，界面上不许折叠成摘要
+    expect('显示了将被执行的参数（原样）', /台账二·六节：正文 token 数大于总数/.test(apprText))
+    // 风险声明来自工具的 ToolHints（与"要不要审批"的判据同源，不是前端另写一份）
+    expect('显示了风险声明', /非幂等|需人工确认/.test(apprText))
+    // 已等 / 还剩：这一块唯一的量化口径
+    expect('显示了已等与剩余时间', /已等\s*\d+s/.test(apprText) && /还剩\s*\d+s/.test(apprText))
+    // "超时按拒绝处理"必须写出来：这一块最容易出的错不是批错了，而是没人知道不理它会怎样
+    expect('写明了超时按拒绝处理', /超时按.{0,2}拒绝.{0,2}处理/.test(apprText))
+    // 两种决定对模型意味着相反的事，界面上必须分开说
+    expect('说明了拒绝之后模型该做什么', /不要再重新发起/.test(apprText))
+
+    // 决定人是**每条自己的**输入框：共用一个会让"写给 A 的理由"跑到 B 上，而且不报错
+    const byInput = approvalCard.locator('[data-testid="approval-decided-by"]')
+    expect('有"谁做的决定"输入框（审计要记人）', (await byInput.count()) > 0)
+    if ((await byInput.count()) > 0) await byInput.first().fill('自检机器人')
+
+    const rejectBtn = approvalCard.locator('button.approval-reject').first()
+    const approveBtn = approvalCard.locator('button.approval-approve').first()
+    expect('有批准按钮', (await approveBtn.count()) > 0)
+    expect('有拒绝按钮', (await rejectBtn.count()) > 0)
+
+    // ---- 先试一次"拒绝"（这一步验证的是"拒绝不是一键动作"）----
+    //
+    // 拒绝理由会**原样回填给模型**，是模型换方案的唯一依据。所以界面刻意不让人一键拒绝：
+    // 第一次点只展开理由输入框，第二次点才真的提交。
+    // 不这么做的话，页面上会稳定地产生一堆"没有理由的拒绝"，而那种审计记录几乎没有价值。
+    if ((await rejectBtn.count()) > 0) {
+      await rejectBtn.click()
+      await page.waitForTimeout(300)
+      // 断言"理由输入框出现了"而不是"页面上出现了『拒绝的理由』这几个字"。
+      //
+      // 【为什么不用文案】placeholder 是**辅助文本**，它在 DOM 里是属性、在
+      // `innerText` 里**不出现** —— 拿 `innerText` 去匹配 placeholder 会永远为假，
+      // 而失败信息看起来像"这个交互没做"。
+      // 这条与本项目踩坑库 #48（antd 把两个汉字渲染成「关 闭」）同族：
+      // **界面文案的一个渲染细节，能让一个看起来完全合理的定位永远失效**。
+      // 判据要落在**结构**上（有没有那个 textarea），而不是落在文案上。
+      const rejectBox = approvalCard.locator('.approval-reject-box textarea')
+      expect('第一次点「拒绝」只展开理由框，不直接提交', (await rejectBox.count()) > 0)
+      // 同时再确认"理由框的提示文案确实在"——用 placeholder 属性读，而不是 innerText
+      const placeholder = (await rejectBox.count()) > 0 ? await rejectBox.first().getAttribute('placeholder') : ''
+      expect('理由框提示了它会回填给模型', /回填给模型/.test(placeholder ?? ''), placeholder ?? '(无)')
+    }
+
+    // ---- 批准它 ----
+    await approveBtn.click()
+    const decided = await waitFor(async () => {
+      const t = await approvalCard.innerText()
+      return /已批准/.test(t) || /没有被采纳/.test(t)
+    }, 30000)
+    expect('批准之后给了明确的结论条', decided)
+
+    const afterText = (await approvalCard.innerText()).trim()
+    // `awakened` / `resumed` 必须显示：这几种处境的下一步动作完全不同 ——
+    // 有线程在等 → 任务当场跑完；没人等 → 从检查点接着跑；都没有 → 任务还停着
+    expect('显示了"唤醒等待线程 / 从检查点接着跑"', /唤醒等待线程/.test(afterText))
+    expect('给了这两个布尔的实际取值（而不是只有标题）', /从检查点接着跑：/.test(afterText))
+
+    // 待批必须消失：它已经决过了
+    const gone = await waitFor(async () => (await page.locator('.approval-item').count()) === 0, 15000)
+    expect('决定之后那条待批从列表里消失了（轮询捡到了状态转移）', gone)
+
+    // ---- 再跑一次任务：这次写操作**真的执行了** ----
+    //
+    // 这是整节最值钱的一条断言：它把"闸门放行"与"闸门真的生效"分开了 ——
+    // 前者只是状态变了，后者是**那个副作用真的发生了**。
+    await agentCard.locator('button', { hasText: /跑\s*一\s*次/ }).first().click()
+    await agentCard.locator('.stat-cell', { hasText: '停因' }).first().waitFor({ state: 'visible', timeout: 150000 })
+    await page.waitForTimeout(800)
+    const approvedAsk = (await agentCard.innerText()).trim()
+    expect('批准之后写操作真的执行了（出现成功建单的回填）', /工单已提交成功|RV-0001/.test(approvedAsk))
+    expect('写操作那一步的 stage 显示为成功', /成功/.test(approvedAsk))
+    expect('未再出现"停在等人确认"', !/正在等人确认/.test(approvedAsk))
+
+    await page.screenshot({ path: `${SHOT_DIR}/agent-approval-approved.png`, fullPage: true })
+
+    // ---- 复位 → 拒绝 → 验证"没执行" ----
+    //
+    // 「拒绝之后那个副作用真的没发生」是 HITL 唯一有意义的验收口径。
+    // 在界面上它对应的是：模型收到一条**不可重试**的拒绝回填，并换了个说法回答。
+    const reset2 = await page.request.post(`${URL}/api/agent/__reset-approval`).catch(() => null)
+    expect('复位成功（第二次：走拒绝分支）', !!reset2 && reset2.ok())
+    const backAgain = await waitFor(async () => (await page.locator('.approval-item').count()) === 1, 20000)
+    expect('复位之后待批又出现了（轮询把它捡回来了）', backAgain)
+
+    await approvalCard.locator('button.approval-reject').first().click()
+    await page.waitForTimeout(300)
+    await approvalCard.locator('.approval-reject-box textarea').first().fill('这条已经有对应的工单了，别重复建')
+    await approvalCard.locator('button.approval-reject').first().click()
+    const rejected = await waitFor(async () => {
+      const t = await approvalCard.innerText()
+      return /已拒绝/.test(t) || /没有被采纳/.test(t)
+    }, 30000)
+    expect('拒绝之后给了明确的结论条', rejected)
+    expect('结论条写明"那个写操作不会执行"', /不会执行/.test(await approvalCard.innerText()))
+
+    // 再跑一次：这次写操作**没有执行**，模型收到拒绝回填后换了做法
+    await agentCard.locator('button', { hasText: /跑\s*一\s*次/ }).first().click()
+    await agentCard.locator('.stat-cell', { hasText: '停因' }).first().waitFor({ state: 'visible', timeout: 150000 })
+    await page.waitForTimeout(800)
+    const deniedAsk = (await agentCard.innerText()).trim()
+    expect('拒绝之后写操作没有建单（没有出现"提交成功"）', !/工单已提交成功/.test(deniedAsk))
+    expect('显示了"人工拒绝"这个 stage', /人工拒绝/.test(deniedAsk))
+    // 拒绝理由必须原样回填 —— 它是人给出的唯一一条新信息
+    expect('拒绝理由原样回填给了模型', /别重复建/.test(deniedAsk))
+    // 拒绝是"不要再试了"，与执行异常不同：回填里必须说的就是这句话
+    expect('回填里带了"不要再重新发起"这句不可重试的说明', /不要再重新发起/.test(deniedAsk))
+
+
+    // 【在这里记下"时间线在不在"】给最后那条"切模式不丢结果"用。
+    //
+    // 【为什么记的是此刻，而不是更早】踩过一次：第一版把它记在"批准之前"，
+    // 而那时假后端返回的是"停在等人确认"分支（steps 为空）→ 记下来是 false。
+    // 而走到最后那条断言时，"跑一个任务"已经被点过三次（三份不同的结果），
+    // 于是"现在有没有时间线"与"记下来的那个"根本不是同一件事，断言必然误报。
+    //
+    // 规则一句话：**要跨段复用某个状态快照，就必须在"它已经稳定"的时刻取，
+    // 而不是在"它恰好还没被后面几次动作改掉"的时刻取。**
+    timelineWasThere = (await page.locator('.agent-timeline').count()) > 0
+
+    // ---- 运行详情里的审批历史 ----
+    //
+    // 【为什么先复位】复位之后待批那条运行会被放进列表首位，于是"点第一行"点到的
+    // 就是**确实有审批记录**的那一次 —— 否则这条断言只能写得很松（"有表格或有空状态"），
+    // 而那种断言在两种情况下都通过，等于没测。
+    await page.request.post(`${URL}/api/agent/__reset-approval`).catch(() => null)
+    await runsCard.locator('button', { hasText: /刷\s*新/ }).first().click()
+    await page.waitForTimeout(700)
+    await runsCard.locator('.ant-table-tbody tr').first().click()
+    const hitlDetail = page.locator('.diag-card', { hasText: '运行详情' }).first()
+    await hitlDetail.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {})
+    await page.waitForTimeout(500)
+    const hitlDetailText = (await hitlDetail.innerText()).trim()
+    expect('运行详情里有"人工确认"这一节', /人工确认（HITL）/.test(hitlDetailText))
+    expect('运行详情里有"人工确认"这一节', /人工确认（HITL）/.test(hitlDetailText))
+    // 「谁决定的」与「等了多久」是审计闭环的两半：一个回答"谁批的"，一个回答"拖了多久"
+    expect('详情里能看到"谁决定的"与"等了多久"', /谁决定的/.test(hitlDetailText) && /等了多久/.test(hitlDetailText))
+    // 待批的 stage 也要在工具调用表里可见（否则"死在等人"这件事在详情里没有痕迹）
+    expect('详情里能看到"等人工确认"这个 stage', /等人工确认/.test(hitlDetailText))
+    expect('详情里说明了超时与人工拒绝为什么要分开', /流程没接上/.test(hitlDetailText))
+    await page.screenshot({ path: `${SHOT_DIR}/agent-approval-detail.png`, fullPage: true })
+    await hitlDetail
+      .locator('button')
+      .filter({ hasText: /关\s*闭/ })
+      .first()
+      .click()
+    await page.waitForTimeout(300)
+    // 最后复位一次，让下面的"模式往返"看到的是初始的待批状态
+    await page.request.post(`${URL}/api/agent/__reset-approval`).catch(() => null)
+  } else {
+    // ================= 真后端：验证"没有待批时必须解释清楚" =================
+    //
+    // 真后端上没有待批 —— 那不是缺陷，而是"这次还没有危险操作"。
+    // 但**空列表必须被解释**：它有三种原因（确实没有写操作 / 写操作还没被发起 / 闸门被关掉），
+    // 混起来读会得出完全相反的结论 —— 把"闸门没装"看成"系统很安全"。
+    expect('空列表时说明了它为什么是空的', /有三种原因|确实没有|闸门被关掉/.test(apprText))
+    expect('说明了只读工具按规矩不需要审批', /只读/.test(apprText))
+    expect('说明了闸门的当前状态', /当前闸门状态/.test(apprText))
+    timelineWasThere = (await page.locator('.agent-timeline').count()) > 0
+  }
+}
+if ((await agentCard.count()) > 0) {
+
+// 【先把这个假后端的审批状态置成已批准】
+//
+// 这一段要验证的是**批准之后那条完整四步轨迹**（写操作执行成功 + 自愈过程）。
+// 而 HITL 那一节最后停在"已拒绝"上（它刚验证完"拒绝之后不能建单"）。
+// 若不再置一次，这里同样会落到"停在等人确认"分支 —— 那也是一种正确的行为，
+// 但不是这一段要断言的东西。
+//
+// 为什么不"再点一次批准按钮"：那时界面上那条待批已经决过了，再点会被后端明确拒绝
+// （"不能重复决定"），而真后端上那条路径根本不存在。自检要验证的是**行为**，
+// 不是"想办法绕过我们自己的守卫"。
+if (EXPECT_REFLECTION) {
+  const setApproved = await page.request
+    .post(URL + '/api/agent/__set-approval', { data: { decision: 'APPROVED' } })
+    .catch(() => null)
+  expect('把假后端置为已批准（让这一段的前提确定）', !!setApproved && setApproved.ok())
+}
+
+  // 整张页面上只有这一个按钮有外部代价，必须明确标出来：
+  // 不标的话用户点它和点"刷新"的心理预期是一样的
+  const askText = (await agentCard.innerText()).trim()
+  expect('标出了"会调模型 · 花钱"', /花钱/.test(askText))
+
+  // 跑一次。
+  //
+  // **等待方式按路径分**（这是实测出来的必要区分）：
+  //   - 假后端：会给出一条"含失败与自愈"的四步轨迹，所以能等到 .agent-timeline；
+  //   - 真后端：本机 key 是假的，模型调用会 401 失败 → 那次运行**一步都没有**，
+  //     于是 .agent-timeline 根本不会渲染（组件在 steps 为空时返回 null）。
+  //     所以真路径要等"停因"那一格出现 —— 它在成功与失败两种情况下都会有。
+  //
+  // 这不是"把断言放宽"，而是**两条路径本来就跑在不同的场景里**：
+  // 假后端能确定性地产出完整轨迹，真后端（假 key）只能产出一次分类明确的失败。
+  // 硬等 .agent-timeline 会让真路径必然超时，而失败原因看起来像"界面没渲染"。
+  await agentCard.locator('button', { hasText: /跑\s*一\s*次/ }).first().click()
+  await agentCard.locator('.stat-cell', { hasText: '停因' }).first().waitFor({ state: 'visible', timeout: 150000 })
+  await page.waitForTimeout(800)
+
+  const resultText = (await agentCard.innerText()).trim()
+  expect('显示了停因与成本', /停因/.test(resultText) && /token/.test(resultText))
+  expect('显示了工具调用汇总', /工具调用/.test(resultText))
+
+  // 「停因」这一格在每个路径上都该是**真实的枚举名**，而不是空 ——
+  // 它是"这一页回答了为什么"的最小证据
+  expect('停因是真实的枚举名', /ANSWERED|MODEL_ERROR|MAX_STEPS|MAX_TOKENS|MAX_DURATION|DUPLICATE_ACTION|EMPTY_RESPONSE/.test(resultText))
+
+  if (EXPECT_REFLECTION) {
+    // ================= 假后端路径：验证完整的执行过程 =================
+    expect('显示了最终答案', (await agentCard.locator('.agent-answer-text').count()) > 0)
+
+    const steps = await agentCard.locator('.agent-step').count()
+    expect('渲染了执行过程时间线', steps >= 3, `${steps} 步`)
+    expect('每步标出了"调工具"还是"作答"', /调工具/.test(resultText) && /作答/.test(resultText))
+
+    const toolCalls = await agentCard.locator('.agent-tool-call').count()
+    expect('渲染了每次工具调用', toolCalls >= 3, `${toolCalls} 次`)
+    expect('显示了模型的 think 段', (await agentCard.locator('.agent-thought').count()) > 0)
+    // 回填文本是"模型当时看到了什么"的唯一凭据，必须能被看到
+    expect('显示了回填给模型的内容', (await agentCard.locator('.agent-tool-feedback pre').count()) >= 3)
+    // 被拒绝的那次必须也在（否则"想调几次"这个数字永远偏小）
+    expect('被拒绝的调用也在页面上', /工具不存在/.test(resultText))
+    expect('回填里带了可用工具列表', /可用工具/.test(resultText))
+    // stage 用中文短语显示，但枚举名要能查到（放在 title 里）—— 排查时要能和日志对上
+    expect('stage 的枚举名可查到', (await agentCard.locator('[title="UNKNOWN_TOOL"]').count()) > 0)
+    expect('工具调用的参数可见', (await agentCard.locator('.agent-tool-args code').count()) >= 3)
+  } else {
+    // ================= 真后端路径（假 key）：验证失败被如实说明 =================
+    //
+    // 这条路径**恰好是"失败细分"那个功能的真实验证**：
+    // 本机 key 是假的 → 上游 401 → 分类必须是 UPSTREAM_AUTH，
+    // 而不是笼统的 MODEL_ERROR。这正是本轮修掉的那个问题的核心场景。
+    expect('把失败原因分类显示出来了', /UPSTREAM_AUTH|MODEL_ERROR/.test(resultText))
+    expect('显示了对这一页失败的处置建议', /重试没有意义|下一步|API Key|鉴权/.test(resultText))
+    // 没有答案时不能显示"最终答案"那一块 —— 空答案框会让人以为"答了但是空的"
+    expect('没有答案时不显示答案块', (await agentCard.locator('.agent-answer-text').count()) === 0)
+  }
+
+  await page.screenshot({ path: `${SHOT_DIR}/agent-ask.png`, fullPage: true })
+}
+
+
 // ---------- 切回流式：历史不能被清掉 ----------
 console.log('[7] 模式往返')
 await page.locator('label', { hasText: 'SSE 流式' }).click()
@@ -691,11 +1022,28 @@ await page.waitForTimeout(400)
 const ragStillThere = (await page.locator('.rag-metric-table').count()) > 0
 expect('切回 RAG 后对照结果仍在（没有重跑）', ragStillThere)
 
-// 切回 Agent：任务结果必须还在（它会**真的调模型花钱**，丢了就要再花一次钱重跑）
+// 切回 Agent：任务结果必须还在（它会**真的调模型花钱**，丢了就要再花一次钱重跑）。
+//
+// ⚠️ 这里断言的是**在 HITL 那一节里、轨迹稳定之后记下来的状态**（`timelineWasThere`），
+// 而不是"现在有没有时间线" —— 因为 HITL 那一节会再跑两次任务，
+// 那两次的轨迹（批准后 / 拒绝后）与原来那次不同。理由见那个变量的注释。
+//
+// ⚠️⚠️ 切回来之后**必须轮询等待面板重新挂起来再数**：
+// 面板是按模式条件渲染的，切换之后它要重新渲染一次，而**那个渲染不是同步的**。
+// 第一版写的是 `waitForTimeout(400)` 然后立刻数 `.agent-timeline` ——
+// 真后端上这条因此红过一次，而**功能完全正常**（切回去之后时间线确实还在）。
+// 这正是"界面自检里的固定 sleep"最典型的失效形态：
+// **等待时长与它要等的东西没有关系**，而失败信息看起来像"结果丢了"。
+// 改成"轮询它出现"之后，两条路径都稳定 ——
+// 这与本轮 HITL 断言里用的 `waitFor` 是同一套做法（理由见那个函数的注释）。
 await page.locator('label', { hasText: 'Agent 工具调用' }).click()
-await page.waitForTimeout(400)
-const agentStillThere = (await page.locator('.agent-timeline').count()) > 0
-expect('切回 Agent 后任务结果仍在（没有重跑、没有再花钱）', agentStillThere)
+const timelineNow =
+  timelineWasThere && (await waitFor(async () => (await page.locator('.agent-timeline').count()) > 0, 3000))
+expect(
+  '切回 Agent 后任务结果仍在（没有重跑、没有再花钱）',
+  timelineNow === timelineWasThere,
+  timelineWasThere ? '（原来有时间线，切回来也应有）' : '（原来就没有时间线 —— 本次运行 0 步，属正常）',
+)
 
 // ---------- 控制台必须干净 ----------
 console.log('[8] 控制台')

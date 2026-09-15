@@ -1248,3 +1248,112 @@ body {
   font-size: 12.5px;
   line-height: 1.7;
 }
+
+/* ---------------------------------------------------------------------------
+   人工确认（HITL）—— 第九轮
+   ---------------------------------------------------------------------------
+   这一块是全页唯一需要"人动手"的东西，所以它的视觉必须与只读信息区分开：
+
+   - 有待批时整张卡片**变红边**，而不是只在小标签上改个颜色 ——
+     一块"红标签但白底"的区域在读页面的人眼里仍然属于"信息"，不属于"待办"；
+   - 「还剩多久超时」在时间紧张时**整条变红底**（`.is-urgent`）：
+     这一条的存在理由是"它自己会失败"，而这一点必须一眼可见；
+   - 「批准」按钮刻意**不用 primary 样式**：列表本身对"批"是有吸引力的
+     （点一下就继续），所以视觉上不该再加强它。拒绝也不预填理由 —— 不诱导任何方向。
+
+   ⚠️ 一个 `.approval-args pre` 上不能省的属性：`max-height` + `overflow: auto`。
+   工具参数可能是几 KB 的 JSON，不限高会把整张卡片撑成一条细长条，
+   而那会让"批准"按钮跑到屏幕外面 —— 一个按钮找不到的审批界面等于没有审批界面。
+   --------------------------------------------------------------------------- */
+
+.approval-card.has-pending {
+  border-color: #ffa39e;
+  border-left: 4px solid #ff4d4f;
+}
+
+.approval-count {
+  font-weight: 600;
+}
+
+.approval-item {
+  border: 1px solid #ffccc7;
+  border-radius: 8px;
+  background: #fffbfb;
+  padding: 10px 12px;
+}
+
+/* 时间紧（剩余不足 1/4 或 15 秒）时整条加红底：这一块必须能被一眼看见 */
+.approval-item.is-urgent {
+  background: #fff1f0;
+  border-color: #ff7875;
+}
+
+.approval-head {
+  margin-bottom: 6px;
+}
+
+/* 已等 / 还剩：审核里最要紧的两个数字，用等宽字体让人能直接比大小 */
+.approval-waited {
+  font-variant-numeric: tabular-nums;
+}
+
+.approval-run {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.approval-summary {
+  font-size: 13px;
+  color: #434343;
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.approval-hints {
+  background: #fff2f0;
+  border: 1px solid #ffccc7;
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.approval-args {
+  font-size: 12.5px;
+  margin-top: 6px;
+}
+
+/* 参数原样展示、可滚动：人批的就是这一份，看到一半就批等于批了个没看清的操作 */
+.approval-args pre {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid #ffccc7;
+  border-radius: 6px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.approval-actions {
+  margin-top: 10px;
+}
+
+/* 「谁做的决定」固定一个不宽的宽度：它会随窗口变宽而把两个按钮挤走 */
+.approval-by {
+  width: 200px;
+}
+
+.approval-reject-box {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px dashed #ffccc7;
+  border-radius: 6px;
+}
+
+/* 任务停在等人确认时的那条提示：与"失败"和"成功"两条分支在视觉上都要分得开 */
+.agent-waiting {
+  border-left: 4px solid #faad14;
+}

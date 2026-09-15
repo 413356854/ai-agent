@@ -1,5 +1,5 @@
 /**
- * Agent 端点的**假数据**（阶段三第 5 件）。
+ * Agent 端点的**假数据**（阶段三第 5 件，第九轮补 HITL）。
  *
  * ---------------------------------------------------------------------------
  * 为什么这些假数据要"照着真后端的形状写"，而不是随便编几个数字
@@ -8,22 +8,60 @@
  * 所以这里的规则也是**数字是假的，形状是真的**：
  *   - `stage` 必须是真后端 `ToolCallStage` 里真有的值
  *     （`OK` / `UNKNOWN_TOOL` / `PARSE_ERROR` / `VALIDATION_ERROR` / `EXECUTION_ERROR`
- *      / `REQUEST_REJECTED` / `CIRCUIT_OPEN`）——
+ *      / `REQUEST_REJECTED` / `CIRCUIT_OPEN` / `AWAITING_APPROVAL` / `APPROVAL_DENIED`
+ *      / `APPROVAL_TIMEOUT`）——
  *     编一个不存在的 stage，界面会走到"认不出的 stage"分支，而那条分支在真后端上永远不会走；
  *   - `countsAsToolFailure` 必须与后端的判据一致（**只有 `EXECUTION_ERROR` 是 true**）——
  *     假数据里把它写反，界面上"计入熔断"那一列的着色就是错的，
  *     而自检断言不了"颜色对不对"，只有人工看才会发现；
- *   - `failureCause` 必须是真后端 `AgentFailureCause` 里真有的值。
+ *   - `failureCause` 必须是真后端 `AgentFailureCause` 里真有的值；
+ *   - 审批的 `status` 必须是真后端 `ApprovalStatus` 里真有的值
+ *     （`PENDING` / `APPROVED` / `DENIED` / `TIMED_OUT` / `EXPIRED`）。
  *
  * ---------------------------------------------------------------------------
- * 数值直接取自真后端的一次实测结构（四步：列目录 → 检索失败 → 修正 → 作答）
+ * 第九轮：待批是**有状态**的，所以这个假后端带一个内存状态机
  * ---------------------------------------------------------------------------
- * 这个脚本刻意造出一条**包含失败与自愈的**轨迹，而不是一条"一次就成功"的：
- *   - 一次就成功的轨迹，界面上看不出"过程"这一块到底有没有在工作
- *     （时间线只有一步，看起来和"没实现"差不多）；
- *   - 而"编错工具名 → 回填 → 改对 → 作答"这条轨迹正好把这一页要讲的东西全串起来：
- *     模型怎么选、失败在哪一步、回填长什么样、几次调用分别花了多久。
+ * 别处的假数据都是"每次都返回同一份"，而 HITL 不行 —— 因为它的界面自检要验证的是
+ * **一条状态转移**：点「批准」→ 那条待批从列表里消失、并且下一次 `/ask` 返回的
+ * 轨迹是"写操作执行成功"而不是"停在等人"。
+ *
+ * 所以这里刻意做成一个极小的状态机（`approvalState`）：
+ *   - 初始：有一条 PENDING 的写操作待批（由 `propose_review` 发起）；
+ *   - 点「批准」：它变成 APPROVED，并且 `/ask` 的返回切到"批准之后"那条分支；
+ *   - 点「拒绝」：它变成 DENIED，`/ask` 的返回切到"被拒绝后自愈"那条分支。
+ *
+ * 三条纪律仍然是"形状是真的"：状态取值、字段名、字段类型**全部照真后端**；
+ * 只是转移规则被简化成确定性的（真后端的转移由 `AgentApprovalService` 的
+ * `CompletableFuture` + 库里的 `WHERE status='PENDING'` 保证）。
  */
+
+// ---------------------------------------------------------------------------
+//  第九轮：HITL 的假状态（一个极小的状态机，理由见文件头注释）
+// ---------------------------------------------------------------------------
+
+/** 等人时限。与真后端 `ai.agent.approval.timeout` 同一个量纲（真后端默认 120s，假后端给个短的便于演示） */
+const TIMEOUT_SECONDS = 120
+
+/**
+ * 一条待批的写操作。
+ *
+ * `arguments` 是**同一个字符串**在待批列表、`/ask` 返回、以及批准后执行的那一步里复用 ——
+ * 这是刻意的：真后端里"人批的参数"与"执行的参数"必须逐字相同
+ * （`ApprovalGrant` 就是按逐字匹配的），假数据也不该出现两者不一致的形态。
+ */
+const approvalState = {
+  id: 'ap-demo-0001',
+  runId: 'run-demo-pending',
+  stepIndex: 1,
+  toolName: 'propose_review',
+  arguments: '{"title":"台账二·六节：正文 token 数大于总数","severity":"MEDIUM"}',
+  hints: '写（非幂等，需人工确认），可能破坏性',
+  summary: '向人工审查队列提交一条待处理工单（写操作：会在系统里创建一条记录，需要人工确认）。',
+  /** null = 还没人处理；'APPROVED' / 'DENIED' = 已决定。初始为 null，也就是"有待批在等人" */
+  decision: null,
+  decidedBy: null,
+  decisionNote: null,
+}
 
 /** 造一条"含失败与自愈"的四步轨迹 */
 const SCRIPTED_STEPS = [
@@ -306,34 +344,180 @@ const LIMITS = {
  * 但别睡太久：真后端要十几秒，自检每次多等十几秒并不值得（超时是 180 秒，0.9 秒和 15 秒都在余量内）。
  */
 function askResponse(question) {
+  /**
+   * 【第九轮】`/ask` 的返回按**审批状态**分三条分支。
+   *
+   * 这不只是为了好看：真后端上这三条分支的行为完全不同，而它们恰好是
+   * "HITL 到底有没有拦住东西"的唯一可观察证据 ——
+   * 界面自检要能分别验证"停在等人""批准后执行""拒绝后没执行"三种结局。
+   *
+   * 用一个局部变量取一次快照（而不是在几个分支里各读一次全局状态）：
+   * 那样在"人正好在这中间点了批准"时会读到两种状态，构造出一个真后端不可能出现的响应。
+   */
+  const decision = approvalState.decision
   const detail = detailFromScript('run-demo-live', question)
-  return {
+  const base = {
     ok: true,
     runId: detail.run.id,
     question,
-    answered: true,
-    finalAnswer: detail.run.finalAnswer,
-    stopReason: 'ANSWERED',
-    failureCause: '',
-    failureAdvice: '',
     totalTokens: detail.run.totalTokens,
     elapsedMs: detail.run.elapsedMs,
     toolCallCount: detail.run.toolCalls,
-    toolCallSummary: '工具调用 3 次：UNKNOWN_TOOL=1 OK=2 ｜工具侧总耗时 62ms',
     stepSummaries: [
       '第 1 步：调用 [list_documents] ×1（1222 tokens, 1420ms）',
       '第 2 步：调用 [doc_search] ×1（1675 tokens, 1680ms）',
       '第 3 步：调用 [search_docs] ×1（1941 tokens, 1920ms）',
       '第 4 步：直接作答（2396 tokens, 2380ms）',
     ],
-    steps: detail.steps,
   }
+
+  // ---- 分支 ①：还没人做过决定 → 任务停在写操作上等人确认 ----
+  //
+  // 【这一条分支必须存在】它是 HITL 界面的**主场景**：如果假后端只造"批准之后"的结局，
+  // 那"待我确认"那张卡片在自检里永远不会被渲染到 —— 而它正是这一轮全部工作的落点。
+  if (decision === null) {
+    return {
+      ...base,
+      answered: false,
+      finalAnswer: '',
+      stopReason: 'WAITING_FOR_APPROVAL',
+      failureCause: '',
+      failureAdvice: '',
+      toolCallSummary: '工具调用 1 次：AWAITING_APPROVAL=1 ｜工具侧总耗时 8ms',
+      waitingApproval: true,
+      approvalId: approvalState.id,
+      approvalToolName: 'propose_review',
+      approvalArguments: approvalState.arguments,
+      approvalHints: approvalState.hints,
+      approvalTimeoutSeconds: TIMEOUT_SECONDS,
+      // 停在写操作上的那一步**不落进 steps**（它还没有结束）—— 真后端也是这样，
+      // 于是时间线只有前面几步（这里造的是"第 1 步就提出写操作"的形态，所以是空的）
+      steps: [],
+    }
+  }
+
+  // ---- 分支 ②：批准之后 → 写操作真的执行了 ----
+  if (decision === 'APPROVED') {
+    /*
+      【这里刻意返回"原来的四步轨迹 + 写操作那一步"，而不是只有写操作那一步】
+
+      踩过一次，值得记：第一版只返回了写操作那一步，于是界面上
+      "执行过程时间线"只有 1 步、"被拒绝的调用还在不在"这类断言全红 ——
+      而它们**本来是这一页最该被验证的东西**（模型怎么选、失败在哪一步、回填长什么样）。
+
+      这里的选择是**保留那条含失败与自愈的轨迹**，再把它与"人在闸门上的介入"接在一起。
+      理由不只是"让断言通过"，而是它更接近真后端上会发生的事：
+      模型先查文档（可能编错工具名、自愈），查到问题之后再决定建工单。
+      一条只有"建工单"一步的轨迹，反而看不出 Agent 到底会不会判断。
+    */
+    return {
+      ...base,
+      answered: true,
+      finalAnswer:
+        '工单已经建好了（id: RV-0001，标题「台账二·六节：正文 token 数大于总数」，级别 MEDIUM）。\n\n' +
+        '这是一次**写操作**，按规矩它先停在了人工确认闸门上；有人在界面上点了批准之后它才真正执行 —— ' +
+        '执行结论里带着那条审批的 id，所以事后可以从工单倒查到"是哪一次审批放行了它"。',
+      stopReason: 'ANSWERED',
+      failureCause: '',
+      failureAdvice: '',
+      // 四步轨迹 + 写操作那一步 = 五步。前四步里含一次"编错工具名被拒 → 改对"的自愈过程
+      toolCallSummary: '工具调用 4 次：UNKNOWN_TOOL=1 OK=3 ｜工具侧总耗时 70ms',
+      steps: [...atScriptedSteps(), WRITE_APPROVED_STEP],
+    }
+  }
+
+  // ---- 分支 ③：拒绝之后 → 写操作**没有执行**，模型换了方案 ----
+  return {
+    ...base,
+    answered: true,
+    finalAnswer:
+      '没有建工单 —— 人工确认被拒绝了，理由是「这条已经有对应的工单了，别重复建」。\n\n' +
+      '我按回填的提示改了做法：把这个问题直接写在这里，而不是再建一条记录。',
+    stopReason: 'ANSWERED',
+    failureCause: '',
+    failureAdvice: '',
+    toolCallSummary: '工具调用 1 次：APPROVAL_DENIED=1 ｜工具侧总耗时 8ms',
+    steps: [WRITE_DENIED_STEP],
+  }
+}
+
+/** 原来的四步轨迹（列目录 → 编错工具名被拒 → 改对 → 作答），供各分支复用。 */
+function atScriptedSteps() {
+  return SCRIPTED_STEPS
+}
+
+/**
+ * 写操作在三种结局下的那一步。
+ *
+ * 三条都保留**同一份参数**（`approvalState.arguments`）—— 这是刻意的：
+ * 它让"人批的就是被执行的那一份"这件事在假数据里也成立，
+ * 而不是"批准之后模型换了个参数"（那在真后端会触发**重新审批**，是另一条路径）。
+ */
+const WRITE_APPROVED_STEP = {
+  index: 5,
+  thoughtText: '文档里那个自相矛盾的地方值得让人跟进一下，我提交一条审查工单。',
+  promptTokens: 1520,
+  completionTokens: 64,
+  elapsedMs: 2140,
+  usedTools: true,
+  toolCalls: [
+    {
+      toolName: 'propose_review',
+      arguments: approvalState.arguments,
+      stage: 'OK',
+      elapsedMs: 8,
+      fixableByModel: true,
+      countsAsToolFailure: false,
+      feedback:
+        '【工具「propose_review」的返回结果｜call_id=call_1】\n工单已提交成功（记录已写入）。\n' +
+        '- 工单 id：RV-0001\n- 标题：台账二·六节：正文 token 数大于总数\n- 级别：MEDIUM\n' +
+        '请在最终回答里告诉用户这个 id —— 那是他后续跟进这件事的凭据。',
+    },
+  ],
+}
+
+const WRITE_DENIED_STEP = {
+  index: 1,
+  thoughtText: '文档里那个自相矛盾的地方值得让人跟进一下，我提交一条审查工单。',
+  promptTokens: 1520,
+  completionTokens: 64,
+  elapsedMs: 8430,
+  usedTools: true,
+  toolCalls: [
+    {
+      toolName: 'propose_review',
+      arguments: approvalState.arguments,
+      stage: 'APPROVAL_DENIED',
+      elapsedMs: 8430,
+      /**
+       * ⚠️ `fixableByModel: false` 是**真后端的判据**，不是随手写的：
+       * 人工拒绝属于"原样重提会被再拦一次"，所以它**不值得再给模型一轮**。
+       * 假数据里写成 true，界面上就不会体现这个区别，
+       * 而"哪一类失败值得再给一轮"正是这一页要讲的东西之一。
+       */
+      fixableByModel: false,
+      countsAsToolFailure: false,
+      feedback:
+        '工具「propose_review」的人工确认**被拒绝**，所以这次**没有执行**（审批编号：ap-demo-0001）。\n' +
+        '原因：这条已经有对应的工单了，别重复建\n' +
+        '⚠️ 不要再重新发起同样的调用：它会被**再次拦住**，需要人再确认一次，' +
+        '而这不会比现在更快得到批准。\n' +
+        '请改用只读工具收集更多信息、换一个不涉及写操作的方案，' +
+        '或者直接把情况告诉用户（说明你本来打算做什么、为什么被拦下）。',
+    },
+  ],
 }
 
 /**
  * 安装 Agent 假端点。返回 true 表示这个请求已被接管。
  *
  * 与 `rag-routes.mjs` 同一个模式：单独一个函数，避免主文件的 if 链被数据淹没。
+ *
+ * ⚠️ **匹配顺序有讲究**，而它踩过一次的那种坑很典型：
+ * 下面 `/api/agent/runs/{id}` 用的是 `startsWith` 前缀匹配，所以
+ * `/api/agent/runs/{id}/approvals` 会被它**先吃掉**（于是详情端点收到一个带斜杠的 runId，
+ * 返回"没有这个运行"）。所以"更具体的路径必须写在更宽的前缀之前" ——
+ * 这不是风格问题，顺序反了的现象是"子路径永远 404"，而排查方向会跑到前端路由上去。
  */
 export function handleAgentRoutes(req, res, url, json) {
   const pathname = url.pathname
@@ -357,12 +541,125 @@ export function handleAgentRoutes(req, res, url, json) {
     return true
   }
 
+  // ---- HITL：审批闸门的状态 ----
+  //
+  // ⚠️ 这一条必须在 `/api/agent/approvals/{id}/decide` **之前**吗？不必 ——
+  // 那一条是精确匹配，两者不会撞。放在这里只是让 4 个审批端点在文件里连成一片，便于对照。
+  if (req.method === 'GET' && pathname === '/api/agent/approvals/status') {
+    json(res, {
+      enabled: true,
+      timeoutSeconds: TIMEOUT_SECONDS,
+      defaultDecider: 'unknown',
+      pendingCount: approvalState.decision === null ? 1 : 0,
+      describe:
+        approvalState.decision === null
+          ? `已启用：写操作等人确认，最长 ${TIMEOUT_SECONDS}s；当前待批 1 条`
+          : `已启用：写操作等人确认，最长 ${TIMEOUT_SECONDS}s；当前待批 0 条`,
+    })
+    return true
+  }
+
+  if (req.method === 'GET' && pathname === '/api/agent/approvals') {
+    json(res, {
+      // 已决定之后列表就空了 —— 这正是"点批准，那条待批消失"那条状态转移的证据
+      pending: approvalState.decision === null ? [pendingRow()] : [],
+      count: approvalState.decision === null ? 1 : 0,
+      enabled: true,
+      timeoutSeconds: TIMEOUT_SECONDS,
+      note:
+        approvalState.decision === null
+          ? `已启用：写操作等人确认，最长 ${TIMEOUT_SECONDS}s；当前待批 1 条`
+          : `已启用：写操作等人确认，最长 ${TIMEOUT_SECONDS}s；当前待批 0 条`,
+      howToDecide:
+        'POST /api/agent/approvals/{id}/decide  body: {"approve":true|false,"decidedBy":"你的名字","note":"理由（拒绝时必填）"}',
+    })
+    return true
+  }
+
+  if (req.method === 'POST' && /^\/api\/agent\/approvals\/[^/]+\/decide$/.test(pathname)) {
+    const approvalId = decodeURIComponent(pathname.split('/')[4])
+    let body = ''
+    req.on('data', chunk => {
+      body += chunk
+    })
+    req.on('end', () => {
+      let approve = false
+      let decidedBy = 'unknown'
+      let note = ''
+      try {
+        const parsed = JSON.parse(body || '{}')
+        /*
+          【`?? false` 而不是 `?? true`】缺字段时的默认值必须是**拒绝**方向 ——
+          真后端就是这样（`DecideRequest.approve` 是原始 boolean，缺字段 Jackson 按 false）。
+          假后端里写反的话，自检会看到"批准了"，而真后端上同一个请求是拒绝 ——
+          那是最坏的一种假数据：它让测试通过，却掩盖了真实行为。
+        */
+        approve = parsed.approve ?? false
+        decidedBy = parsed.decidedBy || 'unknown'
+        note = parsed.note || ''
+      } catch {
+        // 同 `/ask`：假后端不严格校验输入
+      }
+
+      if (approvalId !== approvalState.id) {
+        json(res, { ok: false, error: `没有这条人工审批记录：${approvalId}` })
+        return
+      }
+      if (approvalState.decision !== null) {
+        // 真后端的这条分支是**抛异常**（"不能重复决定"），
+        // 假后端返回同样的形状，好让界面那条"没有被采纳"的分支也能被验证到
+        json(res, {
+          ok: false,
+          error: `审批 #${approvalId} 已经是 ${approvalState.decision}，不能重复决定（重复决定会让审计记录与真实执行对不上）`,
+        })
+        return
+      }
+
+      approvalState.decision = approve ? 'APPROVED' : 'DENIED'
+      approvalState.decidedBy = decidedBy
+      approvalState.decisionNote = note
+
+      /*
+        【`resumed` 恒为 true、`awakened` 恒为 false】这是假后端与真后端的一处
+        **已知的形状差异**，必须写下来：真后端上如果那个 `/ask` 请求的线程还在等，
+        决定会当场唤醒它（`awakened=true`），任务在同一个请求里跑完。
+        假后端没有"正在等的线程"这个对象（`/ask` 900 毫秒就返回了），
+        所以它模拟的是另一条路径：**没人等 → 从检查点接着跑**。
+        两条分支的字段名与含义一致，界面两种都能渲染。
+      */
+      json(res, {
+        ok: true,
+        approvalId,
+        status: approvalState.decision,
+        awakened: false,
+        resumed: true,
+        stopReason: 'ANSWERED',
+        totalTokens: 1820,
+      })
+    })
+    return true
+  }
+
   if (req.method === 'GET' && pathname === '/api/agent/runs') {
     json(res, {
-      runs: RUNS,
-      count: RUNS.length,
+      // 把那条"停在等人确认"的运行也放进列表 —— 否则界面上那个 magenta 标签
+      // （WAITING_APPROVAL）永远没机会被验证到
+      runs: approvalState.decision === null ? [pendingRunRow(), ...RUNS] : RUNS,
+      count: approvalState.decision === null ? RUNS.length + 1 : RUNS.length,
       // 1 条 INTERRUPTED —— 界面上那条"等待恢复"的告警靠它触发
       awaitingRecovery: 1,
+    })
+    return true
+  }
+
+  // ⚠️ 这一条必须在下面那条更宽的 `startsWith('/api/agent/runs/')` 之前（见函数头注释）
+  if (req.method === 'GET' && pathname.endsWith('/approvals') && pathname.startsWith('/api/agent/runs/')) {
+    const runId = decodeURIComponent(pathname.slice('/api/agent/runs/'.length, -'/approvals'.length))
+    const rows = runApprovals(runId)
+    json(res, {
+      approvals: rows,
+      count: rows.length,
+      pending: rows.filter(r => r.pending).length,
     })
     return true
   }
@@ -370,24 +667,52 @@ export function handleAgentRoutes(req, res, url, json) {
   if (req.method === 'GET' && pathname.startsWith('/api/agent/runs/')) {
     const runId = decodeURIComponent(pathname.slice('/api/agent/runs/'.length))
     const known = RUNS.find(r => r.id === runId)
-    if (!known) {
+    const isPendingRun = runId === approvalState.runId
+    if (!known && !isPendingRun) {
       json(res, { ok: false, error: `没有这个运行：${runId}` })
       return true
     }
-    const detail = detailFromScript(known.id, known.question, {
-      status: known.status,
-      stopReason: known.stopReason ?? '',
-      failureCause: known.failureCause ?? '',
-      totalTokens: known.totalTokens,
-      toolCalls: known.toolCalls,
-      elapsedMs: known.elapsedMs,
+
+    const source = known ?? { id: runId, question: '把台账里那个自相矛盾的地方提交成一条审查工单' }
+    const rows = runApprovals(runId)
+    const detail = detailFromScript(source.id, source.question, {
+      status: known ? known.status : 'WAITING_APPROVAL',
+      stopReason: known ? (known.stopReason ?? '') : 'WAITING_FOR_APPROVAL',
+      failureCause: known ? (known.failureCause ?? '') : '',
+      totalTokens: known ? known.totalTokens : 3310,
+      toolCalls: known ? known.toolCalls : 1,
+      elapsedMs: known ? known.elapsedMs : 8430,
       // 失败那条要带上建议 —— 页面靠它显示"下一步该做什么"
       failureAdvice:
-        known.failureCause === 'LOCAL_CONCURRENCY_LIMIT'
+        known && known.failureCause === 'LOCAL_CONCURRENCY_LIMIT'
           ? '本机并发闸门满了（这是我们自己的限制，不是上游的问题）。稍后重试即可；如果经常出现，按实际配额调大 ai.agent.concurrency.max-concurrent-model-requests。'
           : '',
-      finalAnswer: known.status === 'ANSWERED' ? detailFromScript(known.id, known.question).run.finalAnswer : '',
+      finalAnswer: known && known.status === 'ANSWERED' ? detailFromScript(known.id, known.question).run.finalAnswer : '',
     })
+
+    /*
+      ⚠️ `approvals` 三个字段必须挂在**顶层**，而不是塞进 `run` 里。
+
+      这里踩过一次，而且它是一个典型的"假数据形状不对"的坑：
+      第一版把它们写成了 `detailFromScript(..., { approvals: rows, ... })` ——
+      而那个函数的 overrides 是展开到 `run` 对象上的，于是字段跑到了 `detail.run.approvals`。
+      真后端（`AgentController.runDetail`）把它们放在**顶层**，前端也读顶层 ——
+      结果是界面上"人工确认（HITL）"那一节永远显示
+      "这次运行没有触发人工确认"，而**假数据里明明有审批记录**。
+
+      失败信息看起来像"详情页没渲染审批历史"，排查方向会跑到组件上去；
+      而真相是假后端把字段放错了层级 —— **形状不一致的假数据比没有假数据更坏**：
+      它让自检红在一个与真实代码无关的地方。
+    */
+    detail.approvals = rows
+    detail.approvalCount = rows.length
+    detail.pendingApprovals = rows.filter(r => r.pending).length
+
+    // 停在等人确认的那次运行：它的步骤里应当有那次"等人工确认"的调用
+    if (isPendingRun && approvalState.decision === null) {
+      detail.steps = [PENDING_WRITE_STEP]
+      detail.toolCalls = [{ ...PENDING_WRITE_STEP.toolCalls[0], stepIndex: 1, callIndex: 0, callId: 'call_pending_0' }]
+    }
     json(res, detail)
     return true
   }
@@ -397,5 +722,150 @@ export function handleAgentRoutes(req, res, url, json) {
     return true
   }
 
+  /**
+   * <b>把审批状态复位</b> —— 只给假后端用，真后端**没有**这个端点。
+   *
+   * <h2>为什么必须有它</h2>
+   * HITL 的假状态是**一次性的**：`approvalState.decision` 一旦被写成 `APPROVED`，
+   * 那条待批就永远消失了（这正是真后端的行为）。而界面自检要验证的是
+   * **两条相反的分支**：「批准之后写操作真的执行」与「拒绝之后它没有执行」。
+   *
+   * <p>三条路可走，只有第三条是对的：
+   * <ol>
+   *   <li>只测一条分支 —— 那等于"拒绝之后那个副作用真的没发生"这条最重要的结论没人验证；</li>
+   *   <li>自检里重启一次假后端 —— 脚本要管进程，脆弱且慢；</li>
+   *   <li><b>加一个复位端点</b>（本实现）—— 一次自检里把两条分支都走完，
+   *       而真后端**不受任何影响**（它没有这个路径，请求会 404，
+   *       所以自检在真路径上必须跳过这一段 —— 那也正是它该有的行为）。</li>
+   * </ol>
+   */
+  if (req.method === 'POST' && pathname === '/api/agent/__reset-approval') {
+    approvalState.decision = null
+    approvalState.decidedBy = null
+    approvalState.decisionNote = null
+    json(res, { ok: true, reset: true, pending: 1 })
+    return true
+  }
+
+  /**
+   * <b>直接落一个决定</b>（绕过界面）—— 同样只给假后端用，真后端没有这个端点。
+   *
+   * <h2>为什么"复位"之外还需要"直接落一个决定"</h2>
+   * 界面自检里，"批准"与"拒绝"两条分支都要走一遍，而它们**必须由界面动作触发**才有意义
+   * （那正是在测界面）。所以那两个动作各点了一遍按钮，而不是靠这个端点。
+   *
+   * <p>但自检的最后还有一段要验证**批准之后那条四步轨迹**（`[6.6]`）——
+   * 它需要假后端处在 `APPROVED` 状态，而那时界面已经停在"已拒绝"的结论上了。
+   * 再点一次按钮就变成了"重复决定"，真后端会明确拒绝（"不能重复决定"）。
+   * 所以这里给一个"只改状态、不经过界面"的入口：**它让最后那段断言的前提变得确定**，
+   * 而不是"取决于前面几节留下了什么状态"。
+   *
+   * <p>⚠️ 这也是一条通用的教训：**假后端的可控性要足够支撑断言的顺序无关性**。
+   * 只给一个复位端点的话，`[6.6]` 的前提就依赖于 HITL 那一节最后停在哪个分支上 ——
+   * 而那种耦合不会报错，只会让某一天调整顺序之后突然红一片。
+   */
+  if (req.method === 'POST' && pathname === '/api/agent/__set-approval') {
+    let body = ''
+    req.on('data', chunk => {
+      body += chunk
+    })
+    req.on('end', () => {
+      let decision = 'APPROVED'
+      try {
+        decision = JSON.parse(body || '{}').decision ?? decision
+      } catch {
+        // 同别处：假后端不严格校验输入
+      }
+      approvalState.decision = decision
+      approvalState.decidedBy = '自检机器人'
+      approvalState.decisionNote = decision === 'DENIED' ? '这条已经有对应的工单了，别重复建' : ''
+      json(res, { ok: true, decision })
+    })
+    return true
+  }
+
   return false
+}
+
+/** 待批列表里那一行（形状照 `ToolApprovalRecord` → `AgentApprovalController.pending()`）。 */
+function pendingRow(waitedMs = 12800) {
+  return {
+    id: approvalState.id,
+    runId: approvalState.runId,
+    stepIndex: approvalState.stepIndex,
+    toolName: approvalState.toolName,
+    arguments: approvalState.arguments,
+    hints: approvalState.hints,
+    summary: approvalState.summary,
+    requestedAt: '2026-09-16T10:12:03',
+    waitedMs,
+  }
+}
+
+/** 历史列表里那条"停在等人确认"的运行。 */
+function pendingRunRow() {
+  return {
+    id: approvalState.runId,
+    question: '把台账里那个自相矛盾的地方提交成一条审查工单',
+    status: 'WAITING_APPROVAL',
+    stopReason: 'WAITING_FOR_APPROVAL',
+    failureCause: null,
+    totalTokens: 3310,
+    toolCalls: 1,
+    elapsedMs: 8430,
+    createdAt: '2026-09-16T10:12:03',
+    node: 'local',
+  }
+}
+
+/** 某次运行的人工确认历史（已决 + 待批）。没有就返回空 —— 大多数运行本来就没触发过审批。 */
+function runApprovals(runId) {
+  if (runId !== approvalState.runId) {
+    return []
+  }
+  const decided = approvalState.decision
+  return [
+    {
+      id: approvalState.id,
+      stepIndex: approvalState.stepIndex,
+      toolName: approvalState.toolName,
+      arguments: approvalState.arguments,
+      status: decided ?? 'PENDING',
+      pending: decided === null,
+      requestedAt: '2026-09-16T10:12:03',
+      decidedAt: decided === null ? '' : '2026-09-16T10:12:16',
+      decidedBy: approvalState.decidedBy ?? '',
+      decisionNote: approvalState.decisionNote ?? '',
+      waitedMs: decided === null ? 12800 : 13200,
+    },
+  ]
+}
+
+/** 写操作"停在等人确认"的那一步（stage 是 AWAITING_APPROVAL）。 */
+const PENDING_WRITE_STEP = {
+  index: 1,
+  thoughtText: '文档里那个自相矛盾的地方值得让人跟进一下，我提交一条审查工单。',
+  promptTokens: 1520,
+  completionTokens: 64,
+  elapsedMs: 8430,
+  usedTools: true,
+  toolCalls: [
+    {
+      toolName: 'propose_review',
+      arguments: approvalState.arguments,
+      stage: 'AWAITING_APPROVAL',
+      elapsedMs: 8400,
+      // 待批不是"模型能靠改参数解决的失败"：原样重提还是会被拦，改参数则要重新审批
+      fixableByModel: false,
+      countsAsToolFailure: false,
+      feedback:
+        '工具「propose_review」是一次**写操作**，按规则需要人工确认后才能执行。这次调用已被挂起：\n' +
+        `- 审批编号：${approvalState.id}\n` +
+        `- 它将会执行的参数：${approvalState.arguments}\n` +
+        `- 风险声明：${approvalState.hints}\n` +
+        '它**还没有执行**（也没有失败）。在有人确认之前，请不要重新发起这次调用 —— ' +
+        '重复发起只会产生多条待批记录，而不会让它更快被批准。\n' +
+        '如果你现在无法继续，就把当前进展和"在等什么确认"直接告诉用户。',
+    },
+  ],
 }

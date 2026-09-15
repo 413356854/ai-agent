@@ -5,11 +5,18 @@
  * 这边是"Agent 怎么想的、调了什么、失败在哪一步"的取证入口（阶段三）。
  * 两者共用同一套错误分类与超时约定 —— 从 `diag.ts` 复用 `DiagError` 与 `request`。
  *
- * 端点清单（与 ai.agent.controller.AgentController 一一对应）：
- *   POST /api/agent/ask          跑一个任务（★ 会真的调模型、花钱）
- *   GET  /api/agent/runs         历史运行列表
- *   GET  /api/agent/runs/{id}    一次运行的完整过程
- *   GET  /api/agent/limits       四层保护的当前状态
+ * 端点清单：
+ *   POST /api/agent/ask                     跑一个任务（★ 会真的调模型、花钱）
+ *   GET  /api/agent/runs                    历史运行列表
+ *   GET  /api/agent/runs/{id}               一次运行的完整过程
+ *   GET  /api/agent/runs/{id}/approvals     这一次运行里的人工确认历史
+ *   GET  /api/agent/limits                  四层保护的当前状态
+ *   GET  /api/agent/approvals               现在有哪些写操作在等人确认（第九轮）
+ *   POST /api/agent/approvals/{id}/decide   批准 / 拒绝（第九轮）
+ *   GET  /api/agent/approvals/status        审批闸门的当前状态（第九轮）
+ *
+ * ⚠️ 第九轮加的四个端点不与上面四个同源：它们对应
+ * `ai.agent.controller.AgentApprovalController` + `AgentApprovalService`。
  */
 import { DiagError, request } from './diag'
 
@@ -29,6 +36,35 @@ export const AGENT_ASK_TIMEOUT_MS = 180_000
 
 /** 只读端点的超时：它们不调模型，只是读库，秒级足够。 */
 export const AGENT_READ_TIMEOUT_MS = 30_000
+
+/**
+ * **待批列表的轮询间隔**（第九轮 HITL）。
+ *
+ * <h2>为什么这一块必须轮询，而别的块不需要</h2>
+ * 这个项目在其他地方都刻意避免轮询（进面板拉一次、点刷新再拉一次）。
+ * 但待批列表不一样，它有一个别处没有的性质：**有人在等它**。
+ *
+ * 写操作被闸门拦住时，发起那个 `/ask` 请求的线程**正停在那里等**（最长
+ * `ai.agent.approval.timeout`，默认 120 秒）。也就是说：
+ * "待办出现了但界面没刷新"这件事的后果不是"看到旧数据"，
+ * 而是**那个任务会一直停到超时、然后按拒绝处理** —— 人明明在页面前坐着，却因为它没看见而失败。
+ *
+ * <p>所以这一块的刷新语义与别处相反：**别的块是"用户想看才拉"，这一块是"不拉就会出事"**。
+ *
+ * <h2>为什么是 2.5 秒</h2>
+ * 取值要同时满足两头：
+ * <ul>
+ *   <li><b>不能太长</b>：人看到待办的延迟直接等于任务的额外等待时间。
+ *       5 秒意味着最坏情况下每个写操作白白多等 5 秒；</li>
+ *   <li><b>不能太短</b>：这是一个纯读库的端点（H2 本地查询，毫秒级），
+ *       但每 200 毫秒一次只会在人盯着页面不动时白烧 CPU 与日志。</li>
+ * </ul>
+ * 2.5 秒是"人几乎察觉不到延迟"与"请求量可忽略"之间的量级选择。
+ *
+ * <p>只在**面板处于激活状态**时轮询（见 `useAgent`）—— 切走就停，
+ * 这与"进面板才发请求"那条既有规矩不冲突：这里多出来的不是"别的面板的代价"，而是这个面板该有的活性。
+ */
+export const AGENT_APPROVAL_POLL_MS = 2_500
 
 // ---------------------------------------------------------------------------
 //  与后端契约对应的类型。
@@ -109,6 +145,127 @@ export interface AgentAskResponse {
   toolCallSummary: string
   stepSummaries: string[]
   steps: AgentStep[]
+
+  // ---- 第九轮新增：HITL（人工确认）----
+  /**
+   * **这次任务停在一次写操作上等人确认**（`stopReason === 'WAITING_FOR_APPROVAL'` 的便捷布尔）。
+   *
+   * 它由后端给而不是前端比字符串：停因到"是不是在等人"的映射属于后端语义，
+   * 前端再判一次就是第二份判据。
+   */
+  waitingApproval?: boolean
+  /** 在等哪一条审批（拿它去下面那张待办卡片里对上） */
+  approvalId?: string
+  /** 等的是哪把工具 */
+  approvalToolName?: string
+  /** 它将会执行的参数 —— **人批的就是这一份**，所以必须显示 */
+  approvalArguments?: string
+  /** 风险声明的可读描述（例如「写（非幂等，需人工确认），可能破坏性」） */
+  approvalHints?: string
+  /** 等人时限（秒），用于显示"还有多久就按拒绝处理" */
+  approvalTimeoutSeconds?: number
+  /** 停因说是等审批、但待办里查不到对应记录 —— 这是**必须报出来的不一致** */
+  approvalMissing?: boolean
+}
+
+/**
+ * 一条待批的人工确认（`GET /api/agent/approvals` 里的一行）。
+ *
+ * 对应后端 `ai.agent.agent.approval.ToolApprovalRecord`。
+ */
+export interface AgentApprovalRow {
+  id: string
+  /** 属于哪次运行；来自外部 MCP 客户端那条链路的调用为空串（它没有"运行"这个对象） */
+  runId: string
+  /** 第几步；-1 表示未知 */
+  stepIndex: number
+  toolName: string
+  /**
+   * **它将会执行的参数（原样，未加工）。**
+   *
+   * 后端刻意不脱敏、不摘要，理由写在 `ToolApprovalRecord` 的注释里：
+   * 一旦"展示的参数"与"执行的参数"是两次不同的序列化，就存在两者不一致的可能 ——
+   * 而**人批的是他看到的那份**。
+   */
+  arguments: string
+  /** 风险声明的可读描述，来自 `ToolHints.describe()` */
+  hints: string
+  /** 工具自己的一句话摘要（来自四段描述） */
+  summary: string
+  requestedAt: string
+  /** 已经等了多久（毫秒）—— 它是"审批有没有拖慢任务"的唯一量化口径 */
+  waitedMs: number
+}
+
+/** `GET /api/agent/approvals` 的响应 */
+export interface AgentApprovalsResponse {
+  pending: AgentApprovalRow[]
+  count: number
+  /**
+   * **闸门开着没有。**
+   *
+   * 一个空的待办列表有**两种**含义：确实没有危险操作，或者审批功能压根没开。
+   * 不区分的话，界面上的空列表看起来像一切正常 —— 而那正是踩坑 #67 的形状
+   * （"我配了保护"与"保护真的装着"是两件事）。
+   */
+  enabled: boolean
+  /** 等人时限（秒） */
+  timeoutSeconds: number
+  /** 闸门当前状态的可读说明（后端 `AgentApprovalService.describe()`） */
+  note: string
+  howToDecide: string
+}
+
+/**
+ * `POST /api/agent/approvals/{id}/decide` 的响应。
+ *
+ * `awakened` / `resumed` 是这里最重要的两个字段，而它们回答的是**两个不同的问题**：
+ * - `awakened`：有没有唤醒一个**正在等**的线程 → 有的话任务当场继续跑完；
+ * - `resumed`：有没有真的**从检查点接着跑**起来（进程重启过、或没人等的时候走这条）。
+ *
+ * 两者都是 false 且 `runId` 非空时，说明决定已记录、**但任务还没能继续** ——
+ * 界面必须明确提示这件事，否则"点了批准、显示成功、任务却停着"与
+ * "批准根本没生效"在使用者眼里完全一样。
+ */
+export interface AgentApprovalDecisionResponse {
+  ok: boolean
+  error?: string
+  approvalId: string
+  /** `APPROVED` / `DENIED`，或**没有被采纳**时的实际状态（`TIMED_OUT` 等） */
+  status: string
+  awakened: boolean
+  resumed: boolean
+  stopReason?: string
+  finalAnswer?: string
+  totalTokens?: number
+  /** 恢复失败时的原因（审批已记录，但任务没能继续） */
+  resumeError?: string
+  note?: string
+}
+
+/** `GET /api/agent/approvals/status` 的响应 */
+export interface AgentApprovalStatusResponse {
+  enabled: boolean
+  timeoutSeconds: number
+  defaultDecider: string
+  pendingCount: number
+  describe: string
+}
+
+/** `/runs/{id}` 详情里的一条人工确认历史（已决 + 待批）。 */
+export interface AgentRunApprovalRow {
+  id: string
+  stepIndex: number
+  toolName: string
+  arguments: string
+  /** `PENDING` / `APPROVED` / `DENIED` / `TIMED_OUT` / `EXPIRED` */
+  status: string
+  pending: boolean
+  requestedAt: string
+  decidedAt: string
+  decidedBy: string
+  decisionNote: string
+  waitedMs: number
 }
 
 /** `/runs` 列表里的一行 */
@@ -153,6 +310,16 @@ export interface AgentRunDetail {
   }
   steps: AgentStep[]
   toolCalls: AgentToolCall[]
+  /**
+   * 这次运行里人一共被问过几次、结果如何、各等了多久。
+   *
+   * 与 `approvals` 那张**待办**列表分开：待办回答"现在要我批什么"（当下），
+   * 这里回答"这次任务里我被问过几次"（历史）。混在一起人分不清
+   * "这条是要我处理的"还是"这条是已经处理过的"。
+   */
+  approvals?: AgentRunApprovalRow[]
+  approvalCount?: number
+  pendingApprovals?: number
 }
 
 /** 模型侧闸门的快照。`available=false` 表示这一层**没装上**，不是"没有流量"。 */
@@ -239,6 +406,68 @@ export function getAgentLimits(): Promise<AgentLimitsResponse> {
 }
 
 // ---------------------------------------------------------------------------
+//  HITL：人工确认（第九轮）
+// ---------------------------------------------------------------------------
+
+/**
+ * 现在有哪些写操作在等人确认。
+ *
+ * **它会被轮询**（每隔 `AGENT_APPROVAL_POLL_MS`），理由见那个常量的注释：
+ * 有人在等它，所以"界面没刷新"的后果是任务白白超时。
+ *
+ * <p>超时用只读的那个值（30 秒）而不是 `/ask` 的 180 秒：它只查一次库，
+ * 而如果它慢到 30 秒，轮询本身已经失去意义了。
+ */
+export function getAgentApprovals(): Promise<AgentApprovalsResponse> {
+  return getJson<AgentApprovalsResponse>('/api/agent/approvals', '待确认的写操作')
+}
+
+/**
+ * 批准或拒绝。
+ *
+ * <h2>这个调用的超时给多长，以及为什么它必须 ≥ 审批时限</h2>
+ * 后端在"有线程正在等"时是**当场唤醒**它并在**同一个请求里**把任务跑完的
+ * （见 `AgentApprovalController.decide` 的注释）—— 所以这个请求的耗时可能是
+ * 「一次完整的收尾」而不是"写一行库"。
+ *
+ * <p>反过来说：**如果这里给太短**，我们会看到"批准了但界面显示失败"，
+ * 而后端其实正在成功返回的路上 —— 那正是阶段一踩过的那类假故障
+ * （钉住实验 19~26 秒 vs 前端 20 秒超时）。所以它复用一个足够宽的额度。
+ *
+ * <p>但**不能**用 `/ask` 的 180 秒：一旦超过审批时限（默认 120 秒），
+ * 那个等待的线程已经按超时收尾了，这里再等就是纯等一个不会来的结果。
+ * 取 `AGENT_APPROVAL_DECIDE_TIMEOUT_MS` = 150 秒，等于"时限 120 秒 + 30 秒余量"。
+ */
+export const AGENT_APPROVAL_DECIDE_TIMEOUT_MS = 150_000
+
+export function decideAgentApproval(
+  approvalId: string,
+  approve: boolean,
+  decidedBy: string,
+  note: string,
+): Promise<AgentApprovalDecisionResponse> {
+  return postJson<AgentApprovalDecisionResponse>(
+    `/api/agent/approvals/${encodeURIComponent(approvalId)}/decide`,
+    // `approve` 是**必填的布尔**：后端不给默认值（缺字段时 Jackson 按 false 处理 = 拒绝）。
+    // 一个"缺字段就当批准"的默认值会在一次漏传字段的调用里静默放行一个写操作 ——
+    // 那是这一层最不能有的默认值，所以前端也显式传
+    { approve, decidedBy, note },
+    '人工确认',
+    AGENT_APPROVAL_DECIDE_TIMEOUT_MS,
+  )
+}
+
+/** 审批闸门的当前状态（开关、时限、待批数）。 */
+export function getAgentApprovalStatus(): Promise<AgentApprovalStatusResponse> {
+  return getJson<AgentApprovalStatusResponse>('/api/agent/approvals/status', '人工确认状态')
+}
+
+/** 某次运行里经历过的全部人工确认（历史，不是待办）。 */
+export function getAgentRunApprovals(runId: string): Promise<{ approvals: AgentRunApprovalRow[]; count: number; pending: number }> {
+  return getJson(`/api/agent/runs/${encodeURIComponent(runId)}/approvals`, '这次运行的人工确认记录')
+}
+
+// ---------------------------------------------------------------------------
 //  内部工具
 // ---------------------------------------------------------------------------
 
@@ -247,8 +476,8 @@ async function getJson<T>(path: string, what: string, timeoutMs = AGENT_READ_TIM
   return parseBody<T>(response, what)
 }
 
-async function postJson<T>(path: string, body: unknown, what: string): Promise<T> {
-  const response = await request(path, what, 'POST', AGENT_ASK_TIMEOUT_MS, JSON.stringify(body))
+async function postJson<T>(path: string, body: unknown, what: string, timeoutMs = AGENT_ASK_TIMEOUT_MS): Promise<T> {
+  const response = await request(path, what, 'POST', timeoutMs, JSON.stringify(body))
   return parseBody<T>(response, what)
 }
 
