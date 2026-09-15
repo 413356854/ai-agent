@@ -17,13 +17,16 @@ import type {
   PinExperiment,
   ThreadResponse,
 } from '../api/diag'
+import type { Remote } from '../types'
 
-/** 一次远端读取的界面状态；三者互斥，所以用一个联合而不是三个平行字段 */
-export type Remote<T> =
-  | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'ok'; data: T }
-  | { status: 'error'; error: string }
+/**
+ * 重新导出通用的异步状态类型。
+ *
+ * 定义已经搬到 `types.ts`（RAG 面板也要用它，而"线程面板的 hook"
+ * 不该成为另一个面板的类型来源）。这里保留再导出是为了不破坏既有引用，
+ * 也免得为了一个类型去改一堆 import。
+ */
+export type { Remote }
 
 /** 面板上各块实验区的固定参数。学习点 7 要的是"对照"，所以这些值刻意写在界面上 */
 export const CARRIER_TASKS = 16

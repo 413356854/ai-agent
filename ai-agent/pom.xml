@@ -29,6 +29,15 @@
 	<properties>
 		<java.version>21</java.version>
 		<spring-ai.version>2.0.1</spring-ai.version>
+		<!--
+		  阶段二（RAG）新增的解析/检索依赖。
+		  版本显式管理而不是留给 Boot 的 BOM：这四个库都不在 Boot 的依赖管理清单里，
+		  不写版本号 Maven 会直接报 'dependencies.dependency.version is missing'。
+		-->
+		<!-- 见下方 dependency 处关于「Tika 4.0.0 在 Central 上缺 jar」的踩坑记录 -->
+		<tika.version>3.3.2</tika.version>
+		<lucene.version>10.5.1</lucene.version>
+		<flexmark.version>0.64.8</flexmark.version>
 	</properties>
 	<dependencies>
 		<!--
@@ -60,6 +69,166 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-validation</artifactId>
+		</dependency>
+
+		<!--
+		  ============================================================
+		   阶段二（RAG）：文档解析
+		  ============================================================
+
+		  为什么必须有它："把文档读成文本"这件事看着简单，真做起来是一堆格式兼容问题
+		  （DOCX 的段落藏在 XML 里、PDF 的换行由坐标决定、PPT 要按页/按框取）。
+		  自己写等于把职业生涯耗在格式兼容上，而这跟 RAG 的能力毫无关系。
+		  Tika 把这些统一成一种输出，我们只关心"怎么切"。
+
+		  【关键选择：用 tika-parsers-standard-package，不是自己挑 parser】
+		  它把 PDF（PDFBox）、Office（POI）、HTML、纯文本等一并带齐 ——
+		  实测本项目**没有**显式声明 pdfbox / poi，它们由它传递依赖带入。
+		  自己逐个挑的最大风险不是漏 jar，是"挑了不匹配的版本组合"，
+		  而 PDF 解析的报错通常长得像"文档损坏"，根本联想不到是依赖版本问题。
+
+		  【关键选择：走 XHTML 结构，不走纯文本】
+		  Tika 的 BodyContentHandler 默认吐纯文本，标题层级、表格、列表全被拍平 ——
+		  而结构化分块的全部依据就是这些结构。
+		  所以本项目用 ToXMLContentHandler 取 XHTML，再按 DOM 结构还原成块
+		  （见 ai.agent.rag.parse.TikaDocumentParser）。这是阶段二"按标题层级切分"的前提。
+		-->
+		<!--
+		  【踩坑·依赖版本】Tika 用 3.3.2，不用它的"最新版" 4.0.0
+
+		  现象：声明 org.apache.tika:tika-parsers-standard-package:4.0.0 后构建直接失败：
+		      Could not find artifact org.apache.tika:tika-parsers-standard-package:jar:4.0.0
+		          in central (https://repo.maven.apache.org/maven2)
+
+		  但 maven-metadata.xml 里 release 与 latest **都写着 4.0.0**，
+		  看上去"最新版就是它，依赖写错了才找不到"。实际去列目录才看清真相：
+		      tika-parsers-standard-package/4.0.0/  只有 .pom/.asc/.md5/.sha1，**没有 .jar**
+		  也就是说：这个版本在 Central 上只发布了 POM，没有发布 jar
+		  （tika-parsers-standard-package 的 4.0.0-alpha-1 / -beta-1 目录同样只有 pom）。
+		  而 tika-core:4.0.0 的 jar 是齐的 —— 所以这**不是**"网络/镜像问题"，
+		  是那个子模块的 4.0.0 确实没传齐。
+
+		  教训（可复用）：**"最新版"和"可用的最新版"是两件事**。
+		  排障时不要停在"版本号写错了？"，要去看那个版本目录里到底有什么文件 ——
+		  一行 `Invoke-WebRequest <dir>` 就能看完，
+		  比反复猜版本号、换镜像、清本地仓库快得多。
+		  顺带说明"跟着 latest 走"是有代价的：自动化升级会稳定地选到一个装不上的版本。
+
+		  最终选 3.3.2：这是 tika-parsers-standard-package 最新一个 **jar 齐备**的版本。
+		  core 与 parsers 必须同版本（Tika 的模块之间是强耦合的，混版会出现
+		  运行时才暴露的 NoSuchMethodError —— 那种错很难联想到"版本没对齐"）。
+		-->
+		<!--
+		  【踩坑·依赖必须显式声明】tika-core 不会被传递依赖带进来，必须自己写
+
+		  现象：只声明 tika-parsers-standard-package，编译期直接报
+		      "程序包 org.apache.tika.sax 不存在"
+		  —— 而那个 aggregator 的**直接子依赖里根本没有 tika-core**。
+
+		  根因：Tika 3.x 把每个格式都拆成了独立的 *-module，而这些模块把
+		  tika-core 声明为 **provided** 作用域（"运行环境会提供它"）。
+		  所以 aggregator → module → core 这条链在 Maven 里是断的，
+		  `dependency:tree -Dincludes=org.apache.tika:*` 打出来能看得很清楚：
+		  22 个 module 全在，tika-core 一行都没有。
+
+		  为什么这个坑值得记：它违反了"加一个 aggregator 就什么都有了"的直觉，
+		  而且报错指向的是"包不存在"，第一反应会是"版本选错了"或"依赖写错了名字"，
+		  于是去猜版本、换镜像 —— 方向全错。**正确做法是打一次依赖树看它到底在不在**，
+		  这比对着报错猜快得多（和上面 Tika 4.0.0 缺 jar 那条是同一类问题的两种形态：
+		  前者是"制品没发布"，这里是"依赖没传递"）。
+		-->
+		<dependency>
+			<groupId>org.apache.tika</groupId>
+			<artifactId>tika-core</artifactId>
+			<version>${tika.version}</version>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.tika</groupId>
+			<artifactId>tika-parsers-standard-package</artifactId>
+			<version>${tika.version}</version>
+		</dependency>
+
+		<!--
+		  ============================================================
+		   阶段二（RAG）：检索评测用的检索引擎
+		  ============================================================
+
+		  为什么评测阶段就需要一个检索器：因为**分块策略的好坏，只有一个办法量化** ——
+		  切完之后拿去检索，看正确答案所在的块能不能被召回、排在第几位。
+		  没有检索就无法回答"换分块策略提升了多少"（这正是阶段二的验收口径）。
+
+		  为什么用 Lucene 而不是自己写一个 BM25：见台账踩坑库 #31 ——
+		  "压测客户端必须比被测系统更不容易成为瓶颈，否则测出来的是客户端的上限"。
+		  评测器同理：自己写的 BM25 一旦有 bug（分词语料统计、长度归一化、IDF 取错），
+		  量出来的差异就分不清是"分块策略的差异"还是"我 BM25 写错了"。
+		  用成熟实现，把变量的个数降到最低。
+
+		  为什么只用 lucene-core + lucene-analysis-common + lucene-queryparser：
+		  analysis-common 提供 CJKBigramFilter —— 中文不装分词器也能检索的通行做法
+		  （把"虚拟线程"切成"虚拟""拟线""线程"这样的二元组）。
+		  这样中文检索不需要引入 IK/jieba 这类分词依赖，少一个会出错的环节。
+
+		  【踩坑·又一个"必须显式声明"】queryparser 是独立制品，core 里没有它
+		  现象：`import org.apache.lucene.queryparser.classic.QueryParser` 编译报
+		      "程序包 org.apache.lucene.queryparser.classic 不存在"。
+		  根因：Lucene 从 9 起把查询解析器拆成了独立的 lucene-queryparser
+		  模块，lucene-core 只含索引/搜索内核。
+		  这与上面 tika-core 那条是同一类坑：**"核心包"不等于"所有子包"**，
+		  而报错只说"包不存在"，很容易被误读成版本不对。
+		  可靠的判断方式始终是看那个 jar 里到底有什么类，或者看依赖树有没有它。
+		-->
+		<dependency>
+			<groupId>org.apache.lucene</groupId>
+			<artifactId>lucene-core</artifactId>
+			<version>${lucene.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.lucene</groupId>
+			<artifactId>lucene-analysis-common</artifactId>
+			<version>${lucene.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.lucene</groupId>
+			<artifactId>lucene-queryparser</artifactId>
+			<version>${lucene.version}</version>
+		</dependency>
+
+		<!--
+		  ============================================================
+		   阶段二（RAG）：Markdown 解析
+		  ============================================================
+
+		  【为什么必须单独引一个库 —— 本阶段最值钱的一条踩坑】
+
+		  第一版实现让 Tika 统一处理所有格式（包括 .md）。实测结果：
+		      输入：一篇 13KB 的 Markdown，含 19 个 ## / ### 标题、2 张表格
+		      输出：**1 个 <p> 元素、0 个 <h1>~<h6>、0 个 <table>**
+		           整篇变成一个块，正文里还留着字面的 "#" 号
+
+		  根因：Tika 把 .md 识别成 text/markdown，而
+		  tika-parsers-standard-package 里**根本没有 Markdown 解析器**，
+		  于是退回 TextAndCSVParser 当**纯文本**处理 —— 在它眼里这份文档
+		  和 .txt 没有区别，结构信息从来就没进过 Tika。
+
+		  为什么这个失败比"解析报错"危险得多：整条链路一声不响。
+		  文档读进来了、块也切出来了、检索也有结果，只是
+		  **"按标题层级分块"这件事根本没发生**，退化成"按段落堆叠"。
+		  分数下降会被归因到"分块策略不好"或"检索不行"，排查方向从一开始就错。
+
+		  正确做法：Markdown → HTML（flexmark）→ 再走与 Tika 同一套结构提取。
+		  见 ai.agent.rag.parse.MarkdownDocumentParser。
+
+		  【为什么选 flexmark】Markdown 的表格、嵌套列表、围栏代码块都有边界情况，
+		  自己写正则会稳定地在"表格分隔行"和"代码块里的 # 号"上出错 ——
+		  而这两处恰好是本项目语料里密度最高的结构（台账里全是表格）。
+		  用 flexmark-all 是因为需要的 TablesExtension 在其中
+		  （标准 Markdown 规范里没有表格，它是 GFM 扩展）。
+		-->
+		<dependency>
+			<groupId>com.vladsch.flexmark</groupId>
+			<artifactId>flexmark-all</artifactId>
+			<version>${flexmark.version}</version>
 		</dependency>
 
 		<dependency>

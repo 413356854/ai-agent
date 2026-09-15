@@ -329,8 +329,21 @@ async function requestText(path: string, what: string): Promise<string> {
  *
  * timeoutMs 必须由调用方给：诊断端点（纯本地计算）和对话端点（等上游模型）
  * 的合理上限差一个数量级，用同一个值必然有一边是错的。
+ *
+ * 导出给 `rag.ts` 复用：RAG 面板的六个端点与这里同属"诊断"性质，
+ * 错误文案与超时约定必须一致。各写一份的结果是两边对"后端没启动"
+ * 的解释慢慢漂移，而用户看到的提示就不一样了。
  */
-async function request(path: string, what: string, method: 'GET' | 'POST', timeoutMs: number): Promise<Response> {
+export async function request(
+  path: string,
+  what: string,
+  method: 'GET' | 'POST',
+  // 给默认值：调用方可以省略，省略时用诊断端点的通用超时。
+  // rag.ts 那边把它当作可选参数往下传，没有默认值就编译不过 ——
+  // 而这正是好事：类型系统逼着"用哪个超时"这件事必须显式决定，
+  // 而不是漏传时静默地拿到 undefined。
+  timeoutMs: number = DIAG_TIMEOUT_MS,
+): Promise<Response> {
   const controller = new AbortController()
   let timedOut = false
 

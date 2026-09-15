@@ -1,0 +1,70 @@
+# RAG 检索评测集（43 条 —— 路线文档要求的区间是 30–50 条，理由是"别只问两三个问题觉得还行"）
+#
+# 列（TSV，\t 分隔）：
+#   source          语料库文件名（AiAgent 评测恒为项目文档，跨源评测时用于区分）
+#   id              用例编号
+#   question        用户提问 —— **必须是自然的提问口吻**，见下方"怎么写出有用的用例"
+#   matchHeadings   标准答案所在的章节标题，多个用 " | " 分隔（子串匹配，不含 # 号）
+#   tag             分组，用于看"哪一类问题最差"（failures / phase1 / phase2 / knowledge / materials）
+#
+# 【为什么用 TSV 而不是 JSON】
+# 这份文件由人维护（会反复改措辞、加用例），TSV 一行一条、改一行不担心括号逗号配对；
+# 而且 Maven 依赖里同时存在 Jackson 2 与 Jackson 3 两套 databind
+# （Boot 4 自动配置的是 Jackson 3 的 tools.jackson），
+# 为一个评测文件去赌哪套 API 不值得 —— 用 String.split("\t") 零风险。
+#
+# 【怎么写出有用的用例（这是这份文件里最值钱的部分）】
+# 用例的措辞决定评测在测什么。刻意混入三类：
+#   ① 词汇不匹配：提问用同义词，正文用的是另一个词。这是"向量检索存在的理由"，
+#      也正是词法检索的短板 —— 不混进来，测出来的分数会虚高，上线才发现召回不行。
+#   ② 口语化/短问句：真实用户就是这么问的（"怎么防止块被切断"），不是照着标题念。
+#   ③ 跨章节问题：答案散在两处（"评测集为什么不能只写几条"）。
+# 【不要做的事】照着标题原文提问。那样每一条都是"把标题复制进搜索框"，
+# 实验组和对照组都会得高分，量不出任何差异 —— 这是评测集最常见的自欺方式。
+
+ledger-progress.md	L01	开发过程中实际踩到的、教程里通常不会写的坑都有哪些？	四、踩坑知识库	failures
+ledger-progress.md	L02	我改了某个文件之后前端服务直接就没了，这是什么原因造成的？	四、踩坑知识库	failures
+ledger-progress.md	L03	批处理脚本里报了错但自动化流程还是判定成功，这种问题怎么解决？	四、踩坑知识库	failures
+ledger-progress.md	L04	脚本里用回调闭包做计时，结果所有请求都算成了零延迟，问题出在哪？	四、踩坑知识库	failures
+ledger-progress.md	L05	用 Task.Run 压测为什么跑不满并发，脚本跑了很久还报客户端超时？	四、踩坑知识库	failures
+ledger-progress.md	L06	写出来的自检脚本明明失败了却没报错，还把失败样本当成数据用了，怎么避免？	四、踩坑知识库	failures
+ledger-progress.md	L07	测并发的时候先启动任务再观察，为什么什么都测不到？	四、踩坑知识库	failures
+ledger-progress.md	L08	线程池大小＝并发上限这个约束，能不能用一个小池子把它快速复现出来？	四、踩坑知识库	failures
+ledger-progress.md	L09	token 估算的系数是怎么标定出来的，第一版为什么会错那么多？	学习点 2 · Token 预算校验	phase1
+ledger-progress.md	L10	用 JDK 的轻量级线程替换容器线程池之后，系统吞吐能提升多少？	学习点 7 · 虚拟线程异步改造	phase1
+ledger-progress.md	L11	怎么判断正在跑的线程到底是轻量级线程还是操作系统线程，有没有现成的接口？	三、基础设施	phase1
+ledger-progress.md	L12	并发改完之后，原来被线程池挡住的瓶颈会转移到哪里去？	六、风险与提醒	phase1
+ledger-progress.md	L13	结构化输出、流式对话、上下文预算校验这些项目，下一步该做什么？	五、下一步计划	phase1
+ledger-progress.md	L14	超时和重试在真实模型上是怎么验证的，空闲超时复现出来了吗？	六、风险与提醒	phase1
+ledger-progress.md	L15	对话记忆重启就丢，多实例部署还有问题，这是怎么回事？	六、风险与提醒	phase1
+ledger-progress.md	L16	开发环境的代理会把流式响应缓冲住，配置上要注意什么？	已移除：SSE 的 Nginx	failures
+ledger-progress.md	L17	Spring Boot 4 里为什么注入不到 ObjectMapper，要用哪一套 JSON 库？	四、踩坑知识库	phase1
+ledger-progress.md	L18	把置信度字段写成基本类型 double 会带来什么后果？	四、踩坑知识库	phase1
+ledger-progress.md	L19	自己构造的 400 错误，文案为什么一个字都到不了前端？	四、踩坑知识库	failures
+ledger-progress.md	L20	聊天记忆的条数窗口和我新加的长度校验，哪个会先触发？	四、踩坑知识库	failures
+
+roadmap-java-to-agent.md	R01	PDF 解析该怎么处理，为什么不能自己写解析器？	阶段二（2–4 周）RAG	phase2
+roadmap-java-to-agent.md	R02	文档分块的时候怎么防止把一段话从中间切断？	阶段二（2–4 周）RAG	phase2
+roadmap-java-to-agent.md	R03	换一个嵌入模型之后，原来已经入库的向量还能继续用吗？	阶段二（2–4 周）RAG	phase2
+roadmap-java-to-agent.md	R04	关键词检索和向量检索的分数不在一个量纲上，怎么把两路结果合起来？	阶段二（2–4 周）RAG	phase2
+roadmap-java-to-agent.md	R05	粗召回大概取多少条，重排之后留几条进上下文比较合适？	阶段二（2–4 周）RAG	phase2
+roadmap-java-to-agent.md	R06	检索回来的内容怎么按用户权限过滤，先检索再过滤有什么风险？	向量检索的权限漏洞	phase2
+roadmap-java-to-agent.md	R07	评测集为什么不能只写几条问题就认为效果还行？	阶段二（2–4 周）RAG	phase2
+roadmap-java-to-agent.md	R08	离线把文档清洗和向量化跑成流水线，用什么来编排？	阶段二（2–4 周）RAG	phase2
+roadmap-java-to-agent.md	R09	向量库想换一个厂商，代码上怎么做才不用大改？	阶段二（2–4 周）RAG	phase2
+roadmap-java-to-agent.md	R10	大模型调用同步阻塞会把 Tomcat 的线程吃光，这个问题怎么根治？	头号坑：同步阻塞调用 LLM 会打满 Tomcat 线程池	phase2
+roadmap-java-to-agent.md	R11	提示词应该写在哪里，为什么不能直接写成 Java 字符串常量？	Prompt 不要硬编码在 Java 字符串里	phase2
+
+knowledge-points-ranked.md	K01	工具的描述该怎么写，模型才不容易选错？	3.1 工具设计	knowledge
+knowledge-points-ranked.md	K02	不依赖任何框架，从零实现智能体的思考-行动-观察循环该怎么做？	3.2 ReAct 循环	knowledge
+knowledge-points-ranked.md	K03	2026 年增长最快、最值得投入的技能是什么，为什么 Java 背景有优势？	3.3 MCP	knowledge
+knowledge-points-ranked.md	K04	哪一块能力直接决定薪资档位，该重点准备什么？	P0-4 评测与可观测	knowledge
+knowledge-points-ranked.md	K05	生产环境可用的检索方案和能跑起来的最小示例，差距在哪里？	P0-5 RAG	knowledge
+knowledge-points-ranked.md	K06	高危的写操作在智能体里应该怎么控制？	P1-1 可靠性与 HITL	knowledge
+knowledge-points-ranked.md	K07	按照重要性排下来，学习顺序应该怎么安排？	学习顺序结论	knowledge
+knowledge-points-ranked.md	K08	哪些方向属于应用岗可以战略性放弃、不必深挖的？	战略性放弃	knowledge
+
+materials-checklist.md	M01	Spring AI 官方推荐的稳定版本是哪一个，和 Spring Boot 的版本怎么搭配？	版本基线	materials
+materials-checklist.md	M02	官方文档和教程大多是英文的，有哪些中文资料可以先看？	2.1 Spring AI Alibaba 生态	materials
+materials-checklist.md	M03	官方文档链接太多了，应该从哪个入口开始看？	官方文档入口	materials
+materials-checklist.md	M04	文档解析和离线管道这块有哪些现成的工具和参考资料？	2.4 文档解析与 ETL 管道	materials

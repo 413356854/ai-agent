@@ -731,3 +731,302 @@ body {
   max-height: 320px;
   overflow-y: auto;
 }
+
+/* ===========================================================================
+   RAG 分块评测面板（阶段二）
+   ===========================================================================
+   这里只加"这张面板独有"的样式。卡片骨架、stat-grid、kv-grid、diag-note、
+   diag-loading 这些全部复用上面线程面板那一套 —— 两张面板长得一样是有意的：
+   它们回答的是同一个问题（"后端这件事到底是怎么工作的"），
+   换个面板就换一套视觉语言，只会让人觉得是两个不相干的功能。
+
+   一条贯穿的约束：**表格必须能横向滚动**（.rag-table-scroll）。
+   对照表有 9 列、分组表是策略数×3 列，窄屏下必然溢出 ——
+   而"横向溢出"正是自检脚本用几何断言（scrollWidth - clientWidth）盯着的东西。
+   把滚动容器放在表格外层，页面本身就不会溢出。
+   --------------------------------------------------------------------------- */
+
+.rag-input {
+  flex: 1 1 320px;
+  min-width: 220px;
+}
+
+.rag-tag-clickable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.rag-tag-clickable:hover {
+  border-color: #1677ff;
+  color: #1677ff;
+}
+
+/* 分词结果：每个 token 一个小方块，让"中文被切成二元组"这件事看得见 */
+.rag-token {
+  display: inline-block;
+  margin: 2px 3px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: #f2f4f7;
+  border: 1px solid #e3e6eb;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.rag-type-tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* ---------------------------------------------------------------------------
+   块预览
+   --------------------------------------------------------------------------- */
+
+.rag-chunk {
+  border: 1px solid #eceef1;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fafbfc;
+}
+
+.rag-chunk-head {
+  margin-bottom: 6px;
+}
+
+/* 面包屑单独一行：它是结构分块相对硬切的核心差异，不该混在正文里 */
+.rag-breadcrumb {
+  font-size: 12px;
+  color: #0958d9;
+  background: #f0f6ff;
+  border-left: 3px solid #91caff;
+  padding: 3px 8px;
+  border-radius: 4px;
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+
+.rag-breadcrumb.is-empty {
+  color: #8c8c8c;
+  background: #f5f5f5;
+  border-left-color: #d9d9d9;
+}
+
+.rag-chunk-text {
+  margin: 0;
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid #eceef1;
+  border-radius: 6px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+/* ---------------------------------------------------------------------------
+   表格（召回结果 / 指标对照 / 分组表现）
+   --------------------------------------------------------------------------- */
+
+.rag-table-scroll {
+  overflow-x: auto;
+}
+
+.rag-hit-table,
+.rag-metric-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.rag-hit-table th,
+.rag-hit-table td,
+.rag-metric-table th,
+.rag-metric-table td {
+  border: 1px solid #eceef1;
+  padding: 5px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.rag-hit-table th,
+.rag-metric-table th {
+  background: #fafbfc;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 指标表列多，数字列不换行才不会串行 */
+.rag-metric-table th,
+.rag-metric-table td {
+  white-space: nowrap;
+}
+
+.rag-metric-table td.is-mono,
+.rag-hit-table td.is-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-align: right;
+}
+
+.rag-hit-table td.is-rank {
+  text-align: right;
+  font-weight: 600;
+}
+
+/* 关键指标（Recall / MRR）加粗，让人一眼看到主指标在哪 */
+.rag-metric-table td.is-key {
+  font-weight: 600;
+  color: #0958d9;
+}
+
+/* 成本列用另一个色系：它和 Recall 是两类东西，不该看起来一样 */
+.rag-metric-table td.is-cost {
+  color: #ad6800;
+}
+
+.rag-metric-table td.is-strategy {
+  font-weight: 600;
+}
+
+/* 对照组整行淡底：读差值时永远要拿它当基准 */
+.rag-metric-table tr.is-baseline td {
+  background: #fafbfc;
+}
+
+.rag-metric-table td.is-dim,
+.rag-hit-table td.is-dim {
+  color: #bfbfbf;
+}
+
+.rag-hit-table td.is-breadcrumb {
+  max-width: 320px;
+  overflow-wrap: anywhere;
+  color: #531dab;
+}
+
+.rag-hit-table td.is-excerpt {
+  max-width: 420px;
+  color: #595959;
+  overflow-wrap: anywhere;
+}
+
+.rag-role-tag {
+  margin-left: 6px;
+  font-size: 11px;
+}
+
+.rag-subtitle {
+  margin: 4px 0 8px !important;
+  font-size: 14px !important;
+}
+
+/* ---------------------------------------------------------------------------
+   差值块
+   --------------------------------------------------------------------------- */
+
+.rag-delta {
+  min-width: 104px;
+  padding: 6px 10px;
+  border: 1px solid #eceef1;
+  border-radius: 8px;
+  background: #fff;
+  text-align: center;
+}
+
+.rag-delta-label {
+  font-size: 12px;
+  color: #8c8c8c;
+}
+
+.rag-delta-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* 方向由每个指标自己声明（见 DELTA_ROWS）：token 类指标"涨"是坏事，
+   所以颜色不能统一按"涨=绿"来上 —— 那会稳定地把读者引向错误结论 */
+.rag-delta-value.is-good {
+  color: #389e0d;
+}
+
+.rag-delta-value.is-bad {
+  color: #cf1322;
+}
+
+.rag-delta-value.is-flat {
+  color: #8c8c8c;
+}
+
+/* ---------------------------------------------------------------------------
+   取舍图
+   --------------------------------------------------------------------------- */
+
+.rag-tradeoff-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.rag-tradeoff-name {
+  flex: 0 0 96px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  padding-top: 2px;
+}
+
+.rag-tradeoff-bars {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.rag-tradeoff-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.rag-tradeoff-cap {
+  flex: 0 0 84px;
+  font-size: 12px;
+  color: #8c8c8c;
+}
+
+.rag-bar-track {
+  flex: 1 1 auto;
+  min-width: 60px;
+  height: 12px;
+  border-radius: 6px;
+  background: #f0f0f0;
+  overflow: hidden;
+}
+
+.rag-bar {
+  display: block;
+  height: 100%;
+  border-radius: 6px;
+}
+
+/* 两个量纲不同，用不同颜色以免被当成同一把尺子 */
+.rag-bar.is-recall {
+  background: #1677ff;
+}
+
+.rag-bar.is-cost {
+  background: #faad14;
+}
+
+.rag-tradeoff-num {
+  flex: 0 0 64px;
+  text-align: right;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+
+.rag-miss-group {
+  margin-bottom: 8px;
+}

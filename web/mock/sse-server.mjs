@@ -12,6 +12,8 @@
  *   - POST /api/chat/structured  结构化输出：返回 { answer, attempts[], degraded }
  *   - GET  /api/chat/async       非流式对话（虚拟线程端点），返回纯文本
  *   - GET  /api/diag/threads*    线程与预算诊断：当前线程 / 统计 / 配置 / 载体复用 / 钉住对照
+ *   - GET  /api/diag/rag*        RAG 诊断：语料 / 分块预览 / 分词 / 召回 / 评测集 / 策略对照
+ *                                （实现在 mock/rag-routes.mjs，见那个文件里为什么假数据要照真形状写）
  *   - GET  /api/chat/ping        连通性
  *
  * 流式部分故意把一段中文和一个 emoji 拆成多个 chunk 发，用来验证「多字节字符被分包切断」不会乱码。
@@ -23,6 +25,7 @@
  * 假后端在这里扮演的是"契约样本"，验证的是界面能不能正确处理这份契约。
  */
 import { createServer } from 'node:http'
+import { handleRagRoutes } from './rag-routes.mjs'
 
 const PORT = Number(process.env.MOCK_PORT ?? 8081)
 
@@ -49,6 +52,12 @@ function sse(res, event, data) {
 }
 
 const server = createServer((req, res) => {
+  // 解析出 pathname 与 query。RAG 那几个端点要读 query 参数
+  // （strategy / text / query），而 req.url 是带 query 的整串，
+  // 直接用 startsWith 比对会把 `/api/diag/rag/tokens?text=...` 也当成 tokens 端点的精确匹配 ——
+  // 所以统一解析一次，按 pathname 分发。
+  const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`)
+
   if (req.method === 'POST' && req.url === '/api/chat/stream') {
     let body = ''
     req.on('data', chunk => {
@@ -275,11 +284,25 @@ const server = createServer((req, res) => {
     return
   }
 
+  // ---------------------------------------------------------------
+  //  RAG 诊断端点（阶段二）
+  //
+  //  单独放在 rag-routes.mjs 里：这一组端点的假数据有真实的多层嵌套
+  //  （指标 → 分组 → 用例、差值 → 指标 → 策略），继续堆在这个文件的 if 链里
+  //  会让"路由"和"数据"彻底混在一起。
+  //
+  //  注意这里必须传 url 对象（new URL），不能传 req.url 字符串 ——
+  //  这几个端点都要读 query 参数（strategy / text / query）。
+  // ---------------------------------------------------------------
+  if (url.pathname.startsWith('/api/diag/rag') && handleRagRoutes(req, res, url, json)) {
+    return
+  }
+
   res.writeHead(404, { 'Content-Type': 'application/json' })
   res.end(
     JSON.stringify({
       message:
-        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/chat/async',
+        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async',
     }),
   )
 })
