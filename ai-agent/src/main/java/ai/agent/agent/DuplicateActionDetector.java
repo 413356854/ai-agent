@@ -74,6 +74,38 @@ public class DuplicateActionDetector {
 		return false;
 	}
 
+	/**
+	 * 忘掉某个动作的历史计数（把它的记录重新置为"出现过一次"）。
+	 *
+	 * <h2>为什么 HITL 需要它（而不是"把整个检测器清空"）</h2>
+	 * 人工审批通过之后，循环会<b>重新让模型提同一个调用</b>。而那个动作在暂停前
+	 * 已经记过一次了 —— 于是"批准后继续"的第一步会被自己人判定成
+	 * {@link AgentStopReason#DUPLICATE_ACTION} 并立刻停住。
+	 * 这个失败很隐蔽：它的表现是"人批准了，但任务还是没往下走"。
+	 *
+	 * <p>清空整个检测器也能让那条路径通过，但代价是丢掉"模型前面是不是已经在打转"
+	 * 这个已经攒下来的证据 —— 而那恰恰是审批之后最需要保留的信息。
+	 * 所以这里只精确地放行<b>那一个</b>被人工批准的动作：
+	 * <b>人的批准是新信息，它让"重复"这个判断的前提不再成立；
+	 * 但它不能顺带把别的重复也洗白。</b>
+	 *
+	 * @param invocation 被人工批准的那次调用
+	 */
+	public void forget(ToolInvocation invocation) {
+		String key = keyOf(invocation);
+		Integer count = counts.get(key);
+		if (count == null) {
+			return;
+		}
+		if (count <= 1) {
+			counts.remove(key);
+		}
+		else {
+			// 留一次：那次"已经发生过"是事实，不该被抹掉
+			counts.put(key, 1);
+		}
+	}
+
 	/** 目前出现过的重复动作（去重、保序）。 */
 	public List<String> repeatedActions() {
 		return List.copyOf(repeatedActions);

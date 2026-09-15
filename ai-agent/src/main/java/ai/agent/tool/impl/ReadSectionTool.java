@@ -6,6 +6,7 @@ import ai.agent.rag.pipeline.CorpusLoader;
 import ai.agent.tool.AgentTool;
 import ai.agent.tool.AgentToolResult;
 import ai.agent.tool.model.AgentToolDefinition;
+import ai.agent.tool.model.ToolHints;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import org.slf4j.Logger;
@@ -68,7 +69,8 @@ public class ReadSectionTool implements AgentTool<ReadSectionTool.Params> {
 						+ "也不要指望它返回整份文档：它只返回一节，且正文有长度上限。",
 				"返回该节的完整正文（过长时截断并说明），以及这一节在文档里的位置。",
 				"文档名不存在会被拒绝，并在回填里列出真实可用的文档名 —— 请照抄那些名字，不要自己推测。"
-						+ "章节名没匹配上时返回的是正常结果（附该文档的真实章节列表），换一个标题再试即可。");
+						+ "章节名没匹配上时返回的是正常结果（附该文档的真实章节列表），换一个标题再试即可。",
+				ToolHints.readOnly());
 	}
 
 	@Override

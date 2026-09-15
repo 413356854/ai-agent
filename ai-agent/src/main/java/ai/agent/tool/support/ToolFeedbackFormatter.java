@@ -2,6 +2,7 @@ package ai.agent.tool.support;
 
 import ai.agent.tool.AgentTool;
 import ai.agent.tool.AgentToolResult;
+import ai.agent.tool.ToolApprovalGate;
 import ai.agent.tool.ToolCallStage;
 import ai.agent.tool.ToolInvocation;
 import org.springframework.beans.factory.annotation.Value;
@@ -112,6 +113,66 @@ public class ToolFeedbackFormatter {
 				可以选择：换一个参数（例如换更宽泛的查询条件）、换一个工具，或者直接用你已有的信息回答。
 				如果这个问题看起来是系统性的（多次都失败），请在回答里说明该工具当前不可用。"""
 				.formatted(tool.name(), reason);
+	}
+
+	/**
+	 * <b>正在等人批</b>（HITL）。
+	 *
+	 * <h2>这段文本有一个反直觉的要求：它不该诱导模型"重试"</h2>
+	 * 其他所有回填都在回答"你下一步该做什么"。这里也一样，但答案很特殊：
+	 * <b>什么都别做，等</b>。而这个答案对模型是有害的 ——
+	 * 如果它把这句读成"稍后再试"，它会在下一轮立刻提出同样的调用，
+	 * 于是界面上堆出一串待批（人批一个、又来一个），
+	 * 而真正该发生的事是"整个任务停在这里，等人"。
+	 *
+	 * <p>所以文本里明确写了"不要重新发起"。而且正常情况下模型看不到这段文本 ——
+	 * 循环在拿到 {@code AWAITING_APPROVAL} 时会<b>直接暂停</b>（见 {@code AgentLoop}）。
+	 * 它出现在这里，是为了覆盖那些异常路径：
+	 * 例如外部 MCP 客户端直接调到一个需要审批的写工具时，
+	 * 那段文本就是返回给客户端的说明。
+	 */
+	public String awaitingApproval(ToolInvocation invocation, AgentTool<?> tool,
+			ToolApprovalGate.ApprovalRequest request) {
+		return """
+				工具「%s」是一次**写操作**，按规则需要人工确认后才能执行。这次调用已被挂起：
+				- 审批编号：%s
+				- 它将会执行的参数：%s
+				- 风险声明：%s
+				它**还没有执行**（也没有失败）。在有人确认之前，请不要重新发起这次调用 ——
+				重复发起只会产生多条待批记录，而不会让它更快被批准。
+				如果你现在无法继续，就把当前进展和"在等什么确认"直接告诉用户。"""
+				.formatted(tool.name(), request.approvalId(), invocation.argumentsForFeedback(500),
+						request.hints().describe());
+	}
+
+	/**
+	 * <b>人工确认未通过</b>（被拒绝，或等到超时）。
+	 *
+	 * <h2>为什么它必须与"执行异常"分开写</h2>
+	 * 两者对模型都是"这次没干成"，但下一步动作完全不同：
+	 * <ul>
+	 *   <li>执行异常 → "换个参数或换个工具再试"；</li>
+	 *   <li>人工拒绝 → <b>"不要再试了"</b>。原样重提会被人再拒一次，
+	 *       而"再拒一次"不该由模型的重试来驱动 —— 那是骚扰审批人。</li>
+	 * </ul>
+	 * 所以这里的措辞是"停下、把情况交给用户"，而不是"改进后重试"。
+	 *
+	 * <p>拒绝理由必须原样带上：它是人给出的<b>唯一一条新信息</b>，
+	 * 也是模型换方案时唯一的依据。吞掉它（只说"被拒绝了"）会让这次审批白做。
+	 */
+	public String approvalRejected(ToolInvocation invocation, AgentTool<?> tool, ToolCallStage stage, String reason,
+			String approvalId) {
+		String headline = stage == ToolCallStage.APPROVAL_TIMEOUT
+				? "人工确认**超时**（在时限内没有人处理）"
+				: "人工确认**被拒绝**";
+		return """
+				工具「%s」的%s，所以这次**没有执行**（审批编号：%s）。
+				原因：%s
+				⚠️ 不要再重新发起同样的调用：它会被**再次拦住**，需要人再确认一次，
+				而这不会比现在更快得到批准。
+				请改用只读工具收集更多信息、换一个不涉及写操作的方案，
+				或者直接把情况告诉用户（说明你本来打算做什么、为什么被拦下）。"""
+				.formatted(tool.name(), headline, approvalId == null ? "未记录" : approvalId, reason);
 	}
 
 	/**

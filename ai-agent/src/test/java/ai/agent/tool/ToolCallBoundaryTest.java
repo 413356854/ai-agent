@@ -52,9 +52,14 @@ class ToolCallBoundaryTest {
 	private ToolFeedbackFormatter formatter;
 
 	@Test
-	@DisplayName("三把工具都被装配进注册表（少一把就说明 @Component 或构造注入断了）")
+	@DisplayName("四把工具都被装配进注册表（少一把就说明 @Component 或构造注入断了）")
 	void allToolsAreRegistered() {
-		assertThat(registry.names()).containsExactlyInAnyOrder("search_docs", "list_documents", "read_section");
+		// 第九轮从三把变成四把：新增的 propose_review 是本项目第一把**写**工具 ——
+		// 它存在的理由见那个类的注释（HITL 没有写操作就没有真实场景可验证）。
+		// 这条断言的价值就在这里：**工具的增减必须是一次显式的改动**，
+		// 而不是"某天某把工具的 @Component 掉了，模型从此再也调不到它"。
+		assertThat(registry.names()).containsExactlyInAnyOrder("search_docs", "list_documents", "read_section",
+				"propose_review");
 	}
 
 	// ------------------------------------------------------------------

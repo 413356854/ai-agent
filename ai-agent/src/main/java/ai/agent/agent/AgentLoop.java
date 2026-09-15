@@ -1,6 +1,8 @@
 package ai.agent.agent;
 
 import ai.agent.config.AgentLoopProperties;
+import ai.agent.tool.ApprovalGrant;
+import ai.agent.tool.ToolCallContext;
 import ai.agent.tool.ToolCallExecutor;
 import ai.agent.tool.ToolCallOutcome;
 import ai.agent.tool.ToolInvocation;
@@ -134,12 +136,42 @@ public class AgentLoop {
 	 */
 	public AgentRun run(String runId, String question, List<Message> resumeMessages, int resumeStepIndex,
 			AgentProgressListener listener, ToolInvocation pendingInvocation) {
+		return run(runId, question, resumeMessages, resumeStepIndex, listener, pendingInvocation, null);
+	}
+
+	/**
+	 * 完整形态：多一个<b>人工批准的通行证</b>（HITL 恢复路径用）。
+	 *
+	 * <h2>为什么通行证是"进循环的输入"，而不是循环自己去查</h2>
+	 * 循环的职责是"跑任务"，它不该知道审批记录存在哪张表、怎么查。
+	 * 服务层在恢复时查好（见 {@code ResumableAgentService}），
+	 * 把"这一次调用已经获批"这件事作为<b>一个事实</b>交给循环 ——
+	 * 循环只负责在合适的时机把它转成 {@code ToolCallContext}，
+	 * 让执行器看见、让闸门放行。
+	 *
+	 * @param grant 上一次被人工批准的调用；没有时为 {@code null}
+	 */
+	public AgentRun run(String runId, String question, List<Message> resumeMessages, int resumeStepIndex,
+			AgentProgressListener listener, ToolInvocation pendingInvocation, ApprovalGrant grant) {
 		long startedAt = System.nanoTime();
 
 		List<Message> messages = new ArrayList<>(resumeMessages);
 		if (messages.isEmpty()) {
 			messages.add(new SystemMessage(loadSystemPrompt()));
 			messages.add(new UserMessage(question));
+		}
+		else if (grant != null) {
+			// 【顺序很关键：先判 grant、再判 pendingInvocation】
+			//
+			// 两者在恢复时**会同时存在**（那个被批准的调用，在"结果未知"这个意义上
+			// 也是一个"没有返回的调用"）。而它们的说明文本是完全相反的：
+			//   - 中断说明说"它可能没执行，别假定成功"；
+			//   - 批准说明说"人已经批准了，请**原样重新提出**这次调用"。
+			// 如果先判 pending，模型会收到"结果未知、请重新发起"——
+			// 那句话在语义上没说错，但它**没有告诉模型"这次已经批过了"**，
+			// 于是模型很可能改一版参数（"既然没成功，我换个写法"）——
+			// 而换参数意味着**重新审批**：人刚点完的那一下白费了。
+			messages.add(new UserMessage(approvalNotice(grant)));
 		}
 		else if (pendingInvocation != null) {
 			// 中断说明：只加文字，不加假的 tool 消息 ——
@@ -231,19 +263,75 @@ public class AgentLoop {
 
 			List<ToolCallOutcome> outcomes = new ArrayList<>();
 			boolean duplicateHit = false;
+			String suspendedApprovalId = null;
 			for (ToolInvocation invocation : reply.toolCalls()) {
 				toolCallCount++;
+
+				// 【通行证：这次调用是不是就是人刚批的那一次】
+				// 判据是"工具名 + 参数"（见 ApprovalGrant），因为恢复之后模型会重新提出
+				// 这个调用、而协议层会给它一个新的 tool_call_id。
+				ApprovalGrant effectiveGrant = grant != null && grant.matches(invocation) ? grant : null;
+
 				// ---- 出口 4：重复动作检测（在真正执行之前判，省掉一次工具执行） ----
+				//
+				// 【带通行证的那一次要先"忘掉"它的历史计数】
+				// 否则刚被人批准、正准备执行的这一次，会被自己人判成"重复动作"并立刻停住 ——
+				// 表现是"人批准了，但任务还是没往下走"。
+				// 只放行这一个动作（而不是清空检测器）：人的批准让"重复"这个判断的前提
+				// 对这一条不再成立，但它不能顺带把别的重复也洗白
+				if (effectiveGrant != null) {
+					duplicates.forget(invocation);
+				}
 				if (duplicates.record(invocation)) {
 					duplicateHit = true;
 					log.warn("检测到重复动作：{}（最多允许 {} 次）", invocation.describe(),
 							properties.maxIdenticalActions());
 					break;
 				}
-				ToolCallOutcome outcome = executor.execute(invocation);
+
+				ToolCallOutcome outcome = executor.execute(invocation,
+						ToolCallContext.ofStep(runId, round, effectiveGrant));
+
+				// ---- 出口 5：停在人工闸门上（HITL） ----
+				//
+				// 【为什么必须在 outcomes.add 与 messages.add 之前就退出】
+				// 待批的那一次调用**没有结果**：它既没成功也没失败，只是停住了。
+				// 如果照常把它放进这一步的 outcomes、并在对话里补一条 tool 消息，
+				// 就等于伪造了一条"工具返回了 X"—— 而那正是本类在别处反复避免的事
+				// （见 interruptionNotice 的注释：伪造工具返回是最危险的做法，模型会当成事实）。
+				//
+				// 于是这一步**不落进 steps 列表**：'这一步'还没有结束。
+				// 循环在开始时补上的那条 assistant(tool_calls) 消息已经进了 messages，
+				// 而它带着一个没有 tool 返回的 tool_call —— 这正是"停在半路"的真实形态，
+				// 也是恢复时能把那次调用找出来的依据（见 ResumableAgentService.findPendingInvocation）。
+				if (outcome.awaitingApproval()) {
+					suspendedApprovalId = outcome.approval().approvalId();
+					log.info("Agent 循环停在第 {} 轮：工具「{}」需要人工确认 #{}（本次运行暂停，等人）", round,
+							invocation.name(), suspendedApprovalId);
+					break;
+				}
+
 				outcomes.add(outcome);
 				// ---- observe：回填进上下文 ----
 				messages.add(toolResponse(invocation, outcome));
+			}
+
+			// ---- 暂停等人：写检查点、交回一份"等待中"的报告 ----
+			if (suspendedApprovalId != null) {
+				// 检查点必须写：恢复要"接着跑"，而"接着跑"靠的就是这份上下文。
+				// 注意 checkpoint 的语义是"这一步之后"—— 而这里严格说是"这一步的中间"。
+				// 仍然这样写是刻意的：它就是"进程现在能保存下来的最新状态"，
+				// 而恢复逻辑不依赖"每步都完整"这个假设（它自己会从对话里找出悬空的 tool_call）
+				AgentRun.Step partialStep = new AgentRun.Step(round, reply.text(), reply.toolCalls(), outcomes,
+						reply.promptTokens(), reply.completionTokens(), elapsedMs(stepStarted));
+				listener.afterStep(runId, round, partialStep, List.copyOf(messages), totalTokens, toolCallCount,
+						elapsedMs(startedAt));
+
+				AgentStopReason reason = AgentStopReason.WAITING_FOR_APPROVAL;
+				AgentRun waiting = new AgentRun(question, steps, null, reason, totalTokens, elapsedMs(startedAt),
+						toolCallCount);
+				listener.onFinish(runId, waiting);
+				return waiting;
 			}
 
 			AgentRun.Step step = new AgentRun.Step(round, reply.text(), reply.toolCalls(), outcomes,
@@ -289,6 +377,32 @@ public class AgentLoop {
 				它可能压根没开始，也可能已经执行完了但结果没来得及记下来。
 				请不要假定它成功或失败。如果需要它的结果，请重新发起调用；
 				如果这个操作看起来可能已经产生副作用，请在回答里明确指出这一点。""".formatted(pending.name());
+	}
+
+	/**
+	 * <b>人工已批准的说明</b>（HITL 恢复路径）。
+	 *
+	 * <h2>为什么这段文本要原样带上工具名与参数</h2>
+	 * 它的任务是让模型<b>重新提出完全相同的那个调用</b>。而"完全相同"是硬要求：
+	 * 参数只要有一个字节不同，就会被判定为"另一件事"、需要<b>重新审批</b> ——
+	 * 人刚点的那一下白费，界面上还会多出一条待批。
+	 *
+	 * <p>怎么让模型可靠地重提出一模一样的调用？<b>把那份参数写在它眼前</b>。
+	 * 这比"请重复你上一次的调用"可靠得多：后者要求模型从自己的上文里精确复制，
+	 * 而它很可能顺手"改进"一下措辞（尤其是它刚被拒过一次的时候）。
+	 * 与 {@code interruptionNotice} 那条一样：<b>把关键事实写成模型能直接读到的东西，
+	 * 而不是让它去推断。</b>
+	 *
+	 * <p>参数带上限（500 字符）：与回填文本同一个量级，避免一次超长参数把上下文顶满。
+	 */
+	private static String approvalNotice(ApprovalGrant grant) {
+		return """
+				【系统提示】你上一次提出的工具调用「%s」已经**经过人工确认通过**，可以执行了：
+				参数：%s
+				请**原样重新提出这次调用**（工具名与参数必须与上面完全一致，不要改写、不要补充字段）。
+				只要参数有一个字不同，就会被当作另一次调用而需要重新审批，那会让人刚才的确认白费。
+				如果这次调用成功，请继续完成原任务；如果它失败了，按失败原因决定下一步。"""
+				.formatted(grant.toolName(), grant.normalizedArguments());
 	}
 
 	/** 三个上限的检查。返回 null 表示可以继续。顺序是按"最便宜的检查先做"排的。 */

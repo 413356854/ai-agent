@@ -38,9 +38,15 @@ import java.util.List;
  * @param fixableByModel 这个失败<u>靠改参数或换工具</u>能不能解决。
  *                       它是"值不值得再给模型一轮"的唯一判据，
  *                       也是 {@code AgentLoop} 停止条件的一部分
+ * @param approval <b>HITL 的记账</b>：这次调用有没有走过人工确认、是谁批的。
+ *                 只读工具与幂等写为 {@link ToolApprovalRef#none()} ——
+ *                 "没走过审批"与"审批通过了"是两件事，不能都写成 null。
+ *                 <p>它是后加的字段，所以放在最后：已有的构造调用不必为了它全部改一遍
+ * @param origin 从哪条链路进来的（模型 / 外部 MCP 客户端）。
+ *               <b>后加字段，同样放在最后</b>，默认 {@link ToolCallOrigin#AGENT_LOOP}
  */
 public record ToolCallOutcome(ToolInvocation invocation, ToolCallStage stage, AgentToolResult toolResult,
-		String feedback, long elapsedMs, boolean fixableByModel) {
+		String feedback, long elapsedMs, boolean fixableByModel, ToolApprovalRef approval, ToolCallOrigin origin) {
 
 	public ToolCallOutcome {
 		if (feedback == null || feedback.isBlank()) {
@@ -48,11 +54,33 @@ public record ToolCallOutcome(ToolInvocation invocation, ToolCallStage stage, Ag
 			// 它只能编一个解释，而这看起来像"模型幻觉"
 			throw new IllegalArgumentException("工具调用结论必须带回填文本（哪怕失败也要说明原因）");
 		}
+		// 两个字段的后加默认值放在这里，而不是"允许 null 让调用方自己小心"：
+		// 一个 null 的 approval 会在页面渲染到那一行时才炸，而那时距离出错的构造点已经很远
+		approval = approval == null ? ToolApprovalRef.none() : approval;
+		origin = origin == null ? ToolCallOrigin.AGENT_LOOP : origin;
+	}
+
+	/** 旧签名（不含 HITL 与来源）：来源按模型链路算 —— 绝大多数调用路径都是它。 */
+	public ToolCallOutcome(ToolInvocation invocation, ToolCallStage stage, AgentToolResult toolResult, String feedback,
+			long elapsedMs, boolean fixableByModel) {
+		this(invocation, stage, toolResult, feedback, elapsedMs, fixableByModel, ToolApprovalRef.none(),
+				ToolCallOrigin.AGENT_LOOP);
 	}
 
 	/** 是否真的执行成功了（注意：工具返回"没查到"也算成功 —— 空结果是正常结果）。 */
 	public boolean succeeded() {
 		return stage == ToolCallStage.OK;
+	}
+
+	/**
+	 * 这次调用是不是<b>停下来等人</b>了（不是失败，也不是成功）。
+	 *
+	 * <p>给它一个方法而不是让调用方去比较枚举：这个判断会出现在循环、持久化、
+	 * 界面三处，而"待批"这个词很容易在某一处被顺手写成"失败"。
+	 * 一个名字明确的入口，比三处各写一遍 {@code stage == AWAITING_APPROVAL} 更难写错。
+	 */
+	public boolean awaitingApproval() {
+		return stage == ToolCallStage.AWAITING_APPROVAL;
 	}
 
 	/** 给报告/日志的一行摘要（不展开长内容）。 */

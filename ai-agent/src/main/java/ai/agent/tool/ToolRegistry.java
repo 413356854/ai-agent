@@ -114,6 +114,8 @@ public class ToolRegistry {
 	 * 而且它<b>幂等</b>：多调几次不会改变状态。
 	 */
 	public final void selfCheck() {
+		int requireApproval = 0;
+		int writeTools = 0;
 		for (AgentTool<?> tool : all()) {
 			AgentToolDefinition definition = tool.description();
 
@@ -140,8 +142,38 @@ public class ToolRegistry {
 				log.warn("工具「{}」的自我描述缺了 {} —— 描述即 prompt，缺一段就少一个约束，模型更容易选错或用错",
 						tool.name(), String.join("、", empty));
 			}
+
+			// ⑤ 风险声明：把"这次装了几把需要审批的写工具"变成一句启动期就能看到的话
+			if (!definition.hints().readOnlyHint()) {
+				writeTools++;
+			}
+			if (definition.requiresApproval()) {
+				requireApproval++;
+			}
 		}
-		log.info("工具注册表就绪：{} 把工具 [{}]", all().size(), String.join("、", names()));
+
+		// ⑥ 【这条只在"确实有写工具、却没有一把要审批"时报警】
+		//
+		// 为什么不无条件检查：大多数测试用的注册表里全是只读替身（AgentConcurrencyTest 就是），
+		// 无条件报警会让每个测试都打一行 WARN —— 而**一个总是在响的警告等于没有警告**。
+		//
+		// 为什么这一条重要：HITL 的失效方向是"静默的"。
+		// 一个写工具只要把 hints 写成 ToolHints.idempotentWrite()（或干脆用那个六参默认构造器，
+		// 它默认为只读），它就会**完全绕过人工确认**，而且：
+		//   ① 编译期没有任何提示（默认值是个合法的值）；
+		//   ② 运行期不报错（免审批本身是合法状态）；
+		//   ③ 界面上看起来一切正常（没有待批记录 = 没人需要批）。
+		// 唯一能接住它的是"启动时说一句"。这与踩坑 #67 是同一个形状：
+		// 「『已完成』这个状态，只在被实际问过一次『装的是哪个实现』之后才算数」。
+		if (writeTools > 0 && requireApproval == 0) {
+			log.warn("注册表里有 {} 把写工具，但**没有任何一把需要人工确认** —— "
+					+ "请确认这是刻意的（幂等写可免审批，见 ToolHints.requiresApproval()），"
+					+ "而不是某把工具的风险声明写漏了：{}", writeTools,
+					all().stream().filter(t -> !t.description().hints().readOnlyHint()).map(AgentTool::name).toList());
+		}
+
+		log.info("工具注册表就绪：{} 把工具 [{}]；其中写工具 {} 把、需人工确认 {} 把", all().size(),
+				String.join("、", names()), writeTools, requireApproval);
 	}
 
 }

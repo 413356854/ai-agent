@@ -1,11 +1,14 @@
 package ai.agent.controller;
 
 import ai.agent.agent.AgentRun;
+import ai.agent.agent.AgentStopReason;
 import ai.agent.agent.ResumableAgentService;
+import ai.agent.agent.approval.AgentApprovalService;
 import ai.agent.agent.limit.AgentConcurrencyLimitsView;
 import ai.agent.agent.store.AgentRunRecord;
 import ai.agent.agent.store.AgentRunStore;
 import ai.agent.agent.store.RunStatus;
+import ai.agent.config.AgentApprovalProperties;
 import ai.agent.tool.ToolCallOutcome;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -65,10 +68,26 @@ public class AgentController {
 
 	private final AgentConcurrencyLimitsView limitsView;
 
-	public AgentController(ResumableAgentService service, AgentRunStore store, AgentConcurrencyLimitsView limitsView) {
+	/**
+	 * 人工审批（HITL）。
+	 *
+	 * <p>界面这一层读它<b>只读不写</b>：待办与决定都在 {@link AgentApprovalController}。
+	 * 之所以这里也要读，是因为"这次运行现在在等什么"属于<b>运行详情</b>的一部分 ——
+	 * 让人在运行页面上直接看到"它在等第 3 步那次写操作被批准"，
+	 * 而不是跳去另一个列表里对着 id 找。
+	 */
+	private final AgentApprovalService approvals;
+
+	/** 审批时限（秒），给界面显示"还剩多久就超时"。 */
+	private final long approvalTimeoutSeconds;
+
+	public AgentController(ResumableAgentService service, AgentRunStore store, AgentConcurrencyLimitsView limitsView,
+			AgentApprovalService approvals, AgentApprovalProperties approvalProperties) {
 		this.service = service;
 		this.store = store;
 		this.limitsView = limitsView;
+		this.approvals = approvals;
+		this.approvalTimeoutSeconds = approvalProperties.timeout().toSeconds();
 	}
 
 	/**
@@ -76,6 +95,18 @@ public class AgentController {
 	 *
 	 * <p><b>它是有成本的操作</b>，所以返回体里必须带上成本（token）与过程（每步、每次工具调用），
 	 * 否则用户只能看到一个答案，而不知道这个答案花了多少钱、绕了几圈。
+	 *
+	 * <h2>返回值里多了一种结局：{@code waitingApproval}</h2>
+	 * 任务可能<b>停在一次需要人工确认的写操作上</b>（HITL）。
+	 * 它不是失败，也不该被渲染成"完成了" —— 所以这里显式给出
+	 * {@code waitingApproval} 与待批的 id，让界面能直接弹出"批准 / 拒绝"两个按钮。
+	 *
+	 * <p>为什么不在这里阻塞等待人的决定（那也是一个能跑的方案）：
+	 * 因为"跑一个任务"与"处理一次待办"是<b>两个不同的交互</b>，
+	 * 而把它们叠在一个长连接里会让"用户关掉页面"直接等于"这次写操作被放弃"——
+	 * 那是把审批的生命周期绑在了浏览器标签页上。
+	 * 现在的做法是：任务明确地停在库里，人从待办列表去处理（见
+	 * {@code /api/agent/approvals}），两边各自独立。
 	 */
 	@PostMapping(path = "/ask", consumes = MediaType.APPLICATION_JSON_VALUE)
 	public Map<String, Object> ask(@RequestBody AskRequest request) {
@@ -178,6 +209,34 @@ public class AgentController {
 			toolCalls.add(row);
 		}
 		body.put("toolCalls", toolCalls);
+
+		// ---- HITL：这次运行里人一共被问过几次、结果如何 ----
+		//
+		// 放在运行详情里（而不是只给一个全局待办列表）：路线文档要能讲清
+		// 「什么时候让人确认」—— 而"什么时候"只有挂在那次运行的时间线上才有意义。
+		// 全局列表回答的是另一个问题："现在有什么在等我"。
+		List<Map<String, Object>> approvals = new ArrayList<>();
+		for (var approval : this.approvals.ofRun(runId)) {
+			Map<String, Object> row = new LinkedHashMap<>();
+			row.put("id", approval.id());
+			row.put("stepIndex", approval.stepIndex() == null ? -1 : approval.stepIndex());
+			row.put("toolName", approval.toolName());
+			row.put("arguments", approval.arguments() == null ? "" : approval.arguments());
+			row.put("status", approval.status().name());
+			row.put("pending", approval.pending());
+			row.put("requestedAt", approval.requestedAt().toString());
+			row.put("decidedAt", approval.decidedAt() == null ? "" : approval.decidedAt().toString());
+			row.put("decidedBy", approval.decidedBy() == null ? "" : approval.decidedBy());
+			row.put("decisionNote", approval.decisionNote() == null ? "" : approval.decisionNote());
+			// 等了多久：审批对任务耗时的影响，唯一可量化的口径。
+			// 台账里那条"熔断每次省约 203ms"就是这种口径 —— 审批同样要给一个数字，
+			// 否则"它有没有拖慢任务"只能靠感觉
+			row.put("waitedMs", approval.waitedMs(java.time.Instant.now()));
+			approvals.add(row);
+		}
+		body.put("approvals", approvals);
+		body.put("approvalCount", approvals.size());
+		body.put("pendingApprovals", approvals.stream().filter(a -> Boolean.TRUE.equals(a.get("pending"))).count());
 		return body;
 	}
 
@@ -209,6 +268,28 @@ public class AgentController {
 		body.put("toolCallCount", run.toolCallCount());
 		body.put("toolCallSummary", ToolCallOutcome.summarize(run.allOutcomes()));
 		body.put("stepSummaries", run.stepSummaries());
+
+		// ---- HITL：这次任务是不是停在一次人工确认上 ----
+		//
+		// 三个字段一起给，因为界面要能直接渲染出"在等谁批什么"：
+		// 只说 waitingApproval=true，用户还得再去待办列表里找是哪一条
+		boolean waiting = run.stopReason() == AgentStopReason.WAITING_FOR_APPROVAL;
+		body.put("waitingApproval", waiting);
+		if (waiting) {
+			approvals.pendingOfRun(runId).ifPresentOrElse(pending -> {
+				body.put("approvalId", pending.id());
+				body.put("approvalToolName", pending.toolName());
+				body.put("approvalArguments", pending.arguments() == null ? "" : pending.arguments());
+				body.put("approvalHints", pending.hints() == null ? "" : pending.hints());
+				body.put("approvalTimeoutSeconds", approvalTimeoutSeconds);
+			}, () -> {
+				// 停因说是等审批，但待办里没有对应记录 —— 这是**必须报出来的不一致**。
+				// 它可能意味着"记录被清理掉了"或"审批被别人抢先处理了"；
+				// 无论哪种，界面都不能显示一个空的待批框让人以为还有救
+				log.warn("运行 {} 的停因是 WAITING_FOR_APPROVAL，但待办里没有对应的审批记录", runId);
+				body.put("approvalMissing", true);
+			});
+		}
 
 		List<Map<String, Object>> steps = new ArrayList<>();
 		for (AgentRun.Step step : run.steps()) {

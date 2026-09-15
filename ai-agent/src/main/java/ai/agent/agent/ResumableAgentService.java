@@ -1,10 +1,14 @@
 package ai.agent.agent;
 
+import ai.agent.agent.approval.AgentApprovalService;
+import ai.agent.agent.approval.ApprovalStatus;
+import ai.agent.agent.approval.ToolApprovalRecord;
 import ai.agent.agent.store.AgentRunRecord;
 import ai.agent.agent.store.AgentRunStore;
 import ai.agent.agent.store.RunStatus;
 import ai.agent.agent.store.support.TranscriptCodec;
 import ai.agent.config.AgentStoreProperties;
+import ai.agent.tool.ApprovalGrant;
 import ai.agent.tool.ToolInvocation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,12 +62,23 @@ public class ResumableAgentService {
 
 	private final AgentStoreProperties properties;
 
+	/**
+	 * 人工审批（HITL）。
+	 *
+	 * <p>依赖方向是 <b>service → approval</b>：服务层负责"把审批结果翻译成循环能吃的输入"
+	 * （查记录、核对、构造成 {@link ApprovalGrant}），而审批服务自己不知道循环的存在。
+	 * 反过来的话，审批服务就得依赖 {@code AgentLoop} —— 那会让"审批"这件与业务无关的事
+	 * 绑死在 Agent 上，将来 MCP 那条链路要复用它时就得先把 Agent 一起拖进来。
+	 */
+	private final AgentApprovalService approvalService;
+
 	public ResumableAgentService(AgentLoop loop, AgentRunStore store, TranscriptCodec codec,
-			AgentStoreProperties properties) {
+			AgentStoreProperties properties, AgentApprovalService approvalService) {
 		this.loop = loop;
 		this.store = store;
 		this.codec = codec;
 		this.properties = properties;
+		this.approvalService = approvalService;
 	}
 
 	/** 新起一次任务（带持久化）。 */
@@ -118,6 +133,11 @@ public class ResumableAgentService {
 	 * @return 恢复结果列表（每次恢复一条）；没有可恢复的就返回空
 	 */
 	public List<ResumeResult> resumeInterruptedRuns() {
+		// 【先作废"孤儿待批"】进程重启后，内存里那些等人确认的线程都没了，
+		// 但库里还留着 PENDING 的记录。不作废的话，界面会一直显示一条
+		// **永远点不动**的待批（点了也没人接），而对应运行早已是中断状态。
+		// 注意顺序：先作废再认领，否则新认领出来的记录会和旧的混在一起
+		expireOrphanApprovals();
 		List<AgentRunRecord> interrupted = store.markInterruptedRuns(properties.node());
 		if (interrupted.isEmpty()) {
 			return List.of();
@@ -128,6 +148,48 @@ public class ResumableAgentService {
 			results.add(resume(record));
 		}
 		return List.copyOf(results);
+	}
+
+	/**
+	 * 把"没有人在等"的待批作废。
+	 *
+	 * <h2>为什么"作废"而不是"继续等"</h2>
+	 * 一条 PENDING 的审批有三种含义，而它们对界面是完全不同的指令：
+	 * <ol>
+	 *   <li><b>有线程正在等它</b> → 人点一下，任务立刻继续（正常路径）；</li>
+	 *   <li><b>没人等了，但运行还活着</b> → 人点一下，决定落库，任务要靠恢复才继续；</li>
+	 *   <li><b>没人等了，运行也已经中断</b> → 这条待批<b>已经没有意义</b>：
+	 *       它指向的那次执行永远不会发生。留在界面上只会让人困惑"这到底要不要批"。</li>
+	 * </ol>
+	 * 本方法处理第 3 种。判据刻意用"运行不是 WAITING_APPROVAL"而不是"有没有线程在等"——
+	 * 后者是内存态，重启之后必然是"没有"，而那会把第 2 种也一起误伤掉。
+	 */
+	private void expireOrphanApprovals() {
+		try {
+			int expired = 0;
+			for (ToolApprovalRecord pending : approvalService.pending()) {
+				if (pending.runId() == null) {
+					// 没有 runId 的待批来自外部 MCP 客户端那条链路：它没有"运行"这个对象，
+					// 所以"运行还在不在"这个判据对它不成立。保持原样，让人自己处理
+					continue;
+				}
+				Optional<AgentRunRecord> run = store.find(pending.runId());
+				if (run.isPresent() && run.get().status() == RunStatus.WAITING_APPROVAL) {
+					continue;
+				}
+				if (approvalService.expire(pending.id(), "进程重启后作废：对应的运行已不在等待人工确认")) {
+					expired++;
+				}
+			}
+			if (expired > 0) {
+				log.warn("作废了 {} 条已经没有人等的待批记录（进程重启遗留）", expired);
+			}
+		}
+		catch (RuntimeException e) {
+			// 不让"清理遗留"这件事挡住正常启动：它失败了顶多是界面上多几条点不动的记录，
+			// 而抛出去会让整个应用起不来 —— 代价完全不成比例
+			log.error("清理遗留待批记录失败（不影响启动）", e);
+		}
 	}
 
 	/** 恢复一次运行（也可以手工调用某一次）。 */
@@ -153,11 +215,100 @@ public class ResumableAgentService {
 					pending.describe());
 		}
 
+		return continueRun(record, checkpoint, pending);
+	}
+
+	/**
+	 * <b>人工批准之后接着跑</b>（HITL 的恢复入口）。
+	 *
+	 * <h2>它为什么与 {@link #resume} 分开，而不是加一个布尔参数</h2>
+	 * 两者的语义差别大到不该共用一个入口：
+	 * <ul>
+	 *   <li>{@link #resume} 的前提是"上一次是<b>意外</b>中断的"，所以模型要被告知
+	 *       "那个调用结果未知，别假定成功"；</li>
+	 *   <li>本方法的前提是"上一次是<b>按计划</b>停在人工闸门上的"，所以模型要被告知
+	 *       "那次调用已经获批，请原样重新提出"。</li>
+	 * </ul>
+	 * 这两句话是相反的。用一个布尔去切换，很容易在某条路径上传错 ——
+	 * 而传错的后果很具体：模型会以为"没成功"从而改写参数，
+	 * 于是**人刚点的批准作废、界面又弹一条待批**。
+	 *
+	 * <h2>三件必须一起做的事</h2>
+	 * <ol>
+	 *   <li>确认那条审批记录<b>真的是 APPROVED</b>（不是"调用方说它批了"）——
+	 *       这是本方法唯一信任的来源；</li>
+	 *   <li>把审批记录转成 {@link ApprovalGrant} 交给循环。按"工具名 + 参数"匹配
+	 *       （见那个类的注释：恢复后模型会重新提出调用，tool_call_id 变了）；</li>
+	 *   <li>确认那条待批的调用就是检查点里悬空的那一个。不确认的话，
+	 *       批准 A 却可能放行了 B。</li>
+	 * </ol>
+	 *
+	 * @param runId 运行 id
+	 * @param approvalId 刚刚被批准的审批 id
+	 */
+	public ResumeResult resumeAfterApproval(String runId, String approvalId) {
+		ToolApprovalRecord approval = approvalService.find(approvalId)
+				.orElseThrow(() -> new IllegalArgumentException("没有这条人工审批记录：" + approvalId));
+		if (approval.status() != ApprovalStatus.APPROVED) {
+			throw new IllegalStateException(
+					"审批 #%s 的状态是 %s，不是 APPROVED —— 只有被批准的调用才能继续执行"
+							.formatted(approvalId, approval.status()));
+		}
+		if (approval.runId() != null && !approval.runId().equals(runId)) {
+			throw new IllegalArgumentException(
+					"审批 #%s 属于运行 %s，与传入的 %s 不是同一次".formatted(approvalId, approval.runId(), runId));
+		}
+
+		AgentRunRecord record = store.find(runId)
+				.orElseThrow(() -> new IllegalArgumentException("没有这次运行：" + runId));
+		Optional<AgentRunRecord.Checkpoint> loaded = store.loadCheckpoint(runId);
+		if (loaded.isEmpty() || !loaded.get().hasTranscript()) {
+			// 没有检查点意味着"第 1 步都没跑完"。那说明这次运行并没有真的走到审批那一步 ——
+			// 报出来让人看，而不是悄悄从头重跑（重跑会把暂停前的工作全丢一遍）
+			throw new IllegalStateException(
+					"运行 %s 没有可用检查点，无法接着跑（它可能在第 1 步就被中断了）".formatted(runId));
+		}
+		AgentRunRecord.Checkpoint checkpoint = loaded.get();
+
+		// 悬空的那次调用 = 检查点里"提出了但没拿到结果"的 tool_call。
+		// 审批是绑在那一次调用上的，所以这里必须能对上；对不上就说明库里的状态不干净
+		ToolInvocation pending = findPendingInvocation(checkpoint.latestStep().transcriptJson());
+		if (pending == null) {
+			throw new IllegalStateException(
+					"运行 %s 的检查点里找不到悬空的工具调用，与审批 #%s 对不上（拒绝在不清楚状态的情况下继续）"
+							.formatted(runId, approvalId));
+		}
+
+		ApprovalGrant grant = ApprovalGrant.of(approval.id(), approval.toolName(), approval.arguments());
+		if (!grant.matches(pending)) {
+			// 【这一条是最重要的防线】审批针对的是"工具名 + 参数"。
+			// 如果检查点里悬空的那次调用与审批记录对不上（有人手工改过库、
+			// 或者审批记录被错误地挂到了另一次运行上），**必须失败**。
+			// 放行它的后果是"批的是 A，执行的是 B"—— 审批制度最严重的失效形态
+			throw new IllegalStateException(
+					"审批 #%s 针对的是「%s %s」，而运行 %s 悬空的调用是「%s」，两者对不上 —— 拒绝继续"
+							.formatted(approvalId, approval.toolName(), approval.arguments(), runId, pending.describe()));
+		}
+
+		log.info("运行 {} 带着人工批准 #{} 继续执行：{}", runId, approvalId, pending.describe());
+		return continueRun(record, checkpoint, pending, grant);
+	}
+
+	/** 从检查点接着跑（共用实现：恢复 与 批准后继续 都走这里）。 */
+	private ResumeResult continueRun(AgentRunRecord record, AgentRunRecord.Checkpoint checkpoint,
+			ToolInvocation pending) {
+		return continueRun(record, checkpoint, pending, null);
+	}
+
+	private ResumeResult continueRun(AgentRunRecord record, AgentRunRecord.Checkpoint checkpoint,
+			ToolInvocation pending, ApprovalGrant grant) {
 		List<Message> messages = codec.decode(checkpoint.latestStep().transcriptJson());
 		PersistingListener listener = new PersistingListener(record.id());
-		AgentRun run = loop.run(record.id(), record.question(), messages, checkpoint.resumeFromStep(), listener, pending);
+		AgentRun run = loop.run(record.id(), record.question(), messages, checkpoint.resumeFromStep(), listener, pending,
+				grant);
 		store.persistCompletedRun(record.id(), run);
-		log.info("运行 {} 已从第 {} 步恢复并结束：{}", record.id(), checkpoint.resumeFromStep(), run.stopReason());
+		log.info("运行 {} 已从第 {} 步{}结束：{}", record.id(), checkpoint.resumeFromStep(),
+				grant == null ? "恢复并" : "（人工批准后）接着跑，", run.stopReason());
 		return ResumeResult.resumed(record.id(), checkpoint.resumeFromStep(), run, pending);
 	}
 

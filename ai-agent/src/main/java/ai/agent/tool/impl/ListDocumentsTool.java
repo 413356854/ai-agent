@@ -4,6 +4,7 @@ import ai.agent.rag.pipeline.CorpusLoader;
 import ai.agent.tool.AgentTool;
 import ai.agent.tool.AgentToolResult;
 import ai.agent.tool.model.AgentToolDefinition;
+import ai.agent.tool.model.ToolHints;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -51,7 +52,8 @@ public class ListDocumentsTool implements AgentTool<ListDocumentsTool.NoParams> 
 						+ "典型用法是先调它看一眼，再用 search_docs 去具体检索。",
 				"不要在一次任务里反复调用它 —— 语料是固定的快照，结果不会变。调一次就够。",
 				"返回每份文档的名字、解析出的块数、字符数，以及它覆盖的顶层章节名（便于判断该去哪份文档里找）。",
-				"如果语料目录读取失败会返回明确说明；正常情况下不会失败，本工具无参数因此不存在参数错误。");
+				"如果语料目录读取失败会返回明确说明；正常情况下不会失败，本工具无参数因此不存在参数错误。",
+				ToolHints.readOnly());
 	}
 
 	@Override

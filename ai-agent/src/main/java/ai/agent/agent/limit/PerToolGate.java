@@ -73,7 +73,7 @@ public class PerToolGate {
 	/**
 	 * 归还许可并记录结果。
 	 *
-	 * <h2>{@code PARSE_ERROR} / {@code VALIDATION_ERROR} 不参与熔断记账 —— 这一条是测试逼出来的</h2>
+	 * <h2>哪些 stage 不参与熔断记账 —— 这一条是测试逼出来的</h2>
 	 * 第一版的实现里，闸门放在"参数解析之后"，理由是"参数错是毫秒级的、为它排队没意义，
 	 * 而且会污染排队统计"。那个理由听起来对，但<b>它带来一个更糟的后果</b>：
 	 * 解析失败的调用会因为"压根没抢过闸门"而不进熔断窗口 —— 这本身没问题，
@@ -81,16 +81,19 @@ public class PerToolGate {
 	 * 而不是"执行那几毫秒"），解析失败的调用就会走到这里，
 	 * 于是它们会以"成功"的身份进窗口，把失败率<b>稀释掉</b>。
 	 *
-	 * <p>所以这里显式排除这两类：它们既不是工具的成功、也不是工具的失败，
-	 * <b>根本不该出现在"这把工具健不健康"的样本里</b>。
+	 * <p>判据本身<b>不在这里</b>：它由 {@link ToolCallStage#countsAsCircuitSample()} 回答
+	 * （谁的经历、谁自己说算不算样本）。这里只做转发 ——
+	 * 因为当初把判据写成这里的一个 {@code if} 时，新增 stage 的默认走向是
+	 * "进窗口并记成成功"，也就是<b>忘了改它不会报错</b>。
+	 * 移到枚举上之后，每一个取值都必须显式回答这个问题。
 	 *
 	 * <p>被拒绝的两类（{@code REQUEST_REJECTED} / {@code CIRCUIT_OPEN}）走不到这里
 	 * —— 它们是在 {@link #tryAcquire} 里被拒的，压根没拿到许可，所以不会调 release。
 	 */
 	public void release(String toolName, ToolCallStage stage) {
 		gate(toolName).release();
-		if (stage == ToolCallStage.PARSE_ERROR || stage == ToolCallStage.VALIDATION_ERROR) {
-			// 模型写错参数：不算工具的成败，不进熔断窗口
+		if (!stage.countsAsCircuitSample()) {
+			// 工具压根没被调用过（参数错 / 正等人批 / 人没批）：不算工具的成败，不进熔断窗口
 			return;
 		}
 		// 用 stage 自己的判断，而不是"这次没成功" —— 这是本轮最关键的一个决定，

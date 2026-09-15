@@ -1,6 +1,8 @@
 package ai.agent;
 
+import ai.agent.config.AgentApprovalProperties;
 import ai.agent.config.ChatCallProperties;
+import ai.agent.config.ReviewProperties;
 import ai.agent.rag.config.RagProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -15,9 +17,25 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
  *
  * <p>阶段二新增 {@link RagProperties}（前缀 {@code ai.rag}）：
  * 分块与评测参数需要反复试，必须能改配置就生效，不能每次改完重新编译。
+ *
+ * <p>阶段三第 9 件（HITL + MCP）新增两个：
+ * <ul>
+ *   <li>{@link AgentApprovalProperties}（{@code ai.agent.approval}）——
+ *       等人确认的时限与总开关。⚠️ 它的 {@code timeout} 在<b>构造期</b>就拒绝 0/负数
+ *       （那表示"永远等下去"），所以一个写错的配置会在启动时就暴露，
+ *       而不是在第一次有人需要审批时表现为"页面一直转圈"；</li>
+ *   <li>{@link ReviewProperties}（{@code ai.review}）——
+ *       写工具（建工单）的落盘位置与幂等窗口。</li>
+ * </ul>
+ *
+ * <p><b>MCP 的配置刻意不在这里</b>：它由 Spring AI 自己的
+ * {@code McpServerProperties}（前缀 {@code spring.ai.mcp.server}）管，
+ * 我们只在 {@code application.properties} 里写值。包一层自己的 properties
+ * 会多出一处"这个字段到底谁说了算"的歧义。
  */
 @SpringBootApplication
-@EnableConfigurationProperties({ ChatCallProperties.class, RagProperties.class })
+@EnableConfigurationProperties({ ChatCallProperties.class, RagProperties.class, AgentApprovalProperties.class,
+		ReviewProperties.class })
 public class AiAgentApplication {
 
 	public static void main(String[] args) {

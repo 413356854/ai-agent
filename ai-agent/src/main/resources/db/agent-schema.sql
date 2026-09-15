@@ -74,3 +74,44 @@ CREATE TABLE IF NOT EXISTS agent_tool_invocation (
 
 -- 恢复时最常见的查询是"这个实例上还有哪些没跑完的运行"
 CREATE INDEX IF NOT EXISTS idx_agent_run_status ON agent_run (status, updated_at);
+
+-- ============================================================================
+--  人工审批记录（阶段三第 9 件：HITL）
+--
+--  【它为什么必须落库，而不是只放在内存里】
+--  内存里的审批状态够用（一个 future 就能让阻塞的虚拟线程醒来），
+--  但"够用"与"能审计"是两件事，而 HITL 的全部价值在后一半：
+--    ① 路线文档的验收要能回答「**什么时候让人确认**」—— 没有记录时这句话只能靠回忆；
+--    ② 写操作出事之后的第一个问题是"**这是谁批的**"，而那时内存里那个 future 早就不在了；
+--    ③ 审批记录是**唯一能证明"闸门真的拦下过东西"**的证据。一张空表既可能表示
+--       "从没有过危险操作"，也可能表示"闸门没装" —— 这正好是踩坑 #67 的形状。
+--
+--  【状态取值】PENDING / APPROVED / DENIED / TIMED_OUT / EXPIRED
+--  后两个刻意与 DENIED 分开：它们对执行是同一个结果（不执行），
+--  但要通知的人完全不同 —— "人不批准"是业务判断，"没人搭理"是流程没接上。
+--
+--  【decided_* 三列为空表示"还没人处理"】
+--  TIMED_OUT / EXPIRED 时 decided_by 也是 NULL：**它们没有"决定人"** ——
+--  写一个 "system" 进去会让"谁批的"这个问题得到一个是又不是的答案。
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS agent_tool_approval (
+  id            VARCHAR(64)  NOT NULL,               -- 审批 id（界面拿它批准/拒绝）
+  run_id        VARCHAR(64)  NULL,                   -- 属于哪次运行；外部 MCP 链路的调用为 NULL
+  step_index    INT          NULL,                   -- 第几步（审计要能回答"它挂在哪一步"）
+  tool_name     VARCHAR(128) NOT NULL,
+  arguments     TEXT         NULL,                   -- **真正会被执行的那份参数**（人批的就是它）
+  hints         VARCHAR(128) NULL,                   -- 风险声明的可读描述（展示用，故存字符串）
+  summary       VARCHAR(512) NULL,                   -- 工具自己的一句话摘要
+  status        VARCHAR(32)  NOT NULL,               -- PENDING / APPROVED / DENIED / TIMED_OUT / EXPIRED
+  requested_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  decided_at    TIMESTAMP    NULL,
+  decided_by    VARCHAR(128) NULL,                   -- 谁做的决定（超时/作废时为空）
+  decision_note TEXT         NULL,                   -- 决定说明（拒绝理由会回填给模型）
+  PRIMARY KEY (id)
+);
+
+-- 待办列表的查询是"所有还没处理的，先来的在前"
+CREATE INDEX IF NOT EXISTS idx_agent_tool_approval_status ON agent_tool_approval (status, requested_at);
+
+-- 运行详情里要按 run 取全部审批记录
+CREATE INDEX IF NOT EXISTS idx_agent_tool_approval_run ON agent_tool_approval (run_id, requested_at);

@@ -39,9 +39,16 @@ import java.util.List;
  * @param whenNotToUse 何时<b>不</b>该用它。留空的代价是模型会拿它去干别的工具的活
  * @param returns 返回什么形状的数据（让模型知道怎么读 observation）
  * @param onFailure 常见失败与含义（让模型知道失败后该改什么）
+ * @param hints <b>风险与副作用声明</b>（{@link ToolHints}）。
+ *              它不是"补充信息" —— 它同时决定三件事：要不要人工审批（HITL）、
+ *              通过 MCP 暴露时填什么 {@code annotations}、启动期自检拦下哪些自相矛盾。
+ *              <p><b>为什么放在最后一位</b>：与 {@code AgentRun.failureCause} 同一个理由 ——
+ *              这样已有的六参构造调用不需要改动就能编译，新信息通过重载构造器补上。
+ *              但<b>新增写工具时必须显式传它</b>：默认值是只读，
+ *              一个忘了声明的写操作不会报错，只会静默地免掉人工审批。
  */
 public record AgentToolDefinition(String name, String summary, String whenToUse, String whenNotToUse, String returns,
-		String onFailure) {
+		String onFailure, ToolHints hints) {
 
 	public AgentToolDefinition {
 		if (name == null || name.isBlank()) {
@@ -53,11 +60,39 @@ public record AgentToolDefinition(String name, String summary, String whenToUse,
 			// 这类"静默的坏描述"必须在注册期就拦下（见 ToolRegistry 的启动自检）
 			throw new IllegalArgumentException("工具「" + name + "」必须写明 whenToUse：描述即 prompt，空描述=让模型猜");
 		}
+		if (hints == null) {
+			// 显式写 null 的人多半是想说"没有风险"，那就该写 ToolHints.readOnly()。
+			// 给个默认值会把"我忘了写"和"我确认它只读"合并成同一件事
+			throw new IllegalArgumentException("工具「" + name + "」必须声明 ToolHints（只读就写 ToolHints.readOnly()）");
+		}
+		if (hints.selfContradictory()) {
+			// 在构造期就抛，而不是留给 ToolRegistry 自检：
+			// 越早失败，"是谁声明错了"这个问题的答案越明确
+			throw new IllegalArgumentException(
+					"工具「%s」的风险声明自相矛盾：%s。只读的工具不可能同时是破坏性的或不幂等的".formatted(name,
+							hints.describe()));
+		}
 	}
 
-	/** 三段可空描述的简洁构造（只有 summary + whenToUse 时用）。 */
+	/**
+	 * 六段构造，风险声明默认为<b>只读</b>。
+	 *
+	 * <p>保留它是为了"描述变了但风险没变"这类改动只改一处；
+	 * 但要注意它的默认值意味着<b>写工具不能用它</b> —— 见类注释里关于默认值的那一段。
+	 */
+	public AgentToolDefinition(String name, String summary, String whenToUse, String whenNotToUse, String returns,
+			String onFailure) {
+		this(name, summary, whenToUse, whenNotToUse, returns, onFailure, ToolHints.readOnly());
+	}
+
+	/** 三段可空描述的简洁构造（只有 summary + whenToUse 时用；风险声明为只读）。 */
 	public static AgentToolDefinition of(String name, String summary, String whenToUse) {
-		return new AgentToolDefinition(name, summary, whenToUse, "", "", "");
+		return new AgentToolDefinition(name, summary, whenToUse, "", "", "", ToolHints.readOnly());
+	}
+
+	/** 这次调用要不要先经过人工确认（转发给 {@link ToolHints#requiresApproval()}）。 */
+	public boolean requiresApproval() {
+		return hints.requiresApproval();
 	}
 
 	/**

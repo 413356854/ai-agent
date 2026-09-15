@@ -7,6 +7,7 @@ import ai.agent.rag.retrieve.RetrievalHit;
 import ai.agent.tool.AgentTool;
 import ai.agent.tool.AgentToolResult;
 import ai.agent.tool.model.AgentToolDefinition;
+import ai.agent.tool.model.ToolHints;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -79,7 +80,9 @@ public class SearchDocsTool implements AgentTool<SearchDocsTool.Params> {
 				"返回若干条片段，每条带：名次、所属章节（标题路径）、估算 token 数、片段开头截断。"
 						+ "结果按相关度从高到低排列；如果一条都没有，说明没有匹配的文档。",
 				"查询词过长或为空会被拒绝（会在回填里说明原因）；"
-						+ "返回 0 条时不是错误，而是提示你换更宽泛或同义的词再试一次。");
+						+ "返回 0 条时不是错误，而是提示你换更宽泛或同义的词再试一次。",
+				// 【风险声明，显式写出来而不是靠默认值】见下面对 hints 的说明
+				ToolHints.readOnly());
 	}
 
 	@Override

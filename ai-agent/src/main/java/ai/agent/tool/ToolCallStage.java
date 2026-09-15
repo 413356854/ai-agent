@@ -74,6 +74,43 @@ public enum ToolCallStage {
 	 */
 	CIRCUIT_OPEN,
 
+	/**
+	 * <b>这次调用是写操作，需要人工确认，而现在还没等到。</b>
+	 *
+	 * <h2>它不是"失败" —— 这一个区别决定了整个 HITL 的形态</h2>
+	 * 失败要重试或放弃，而待批只需要有人点一下。所以：
+	 * <ul>
+	 *   <li>它<b>不计入</b> {@link #countsAsToolFailure()}（人还没表态，工具的健康状况无从谈起）；</li>
+	 *   <li>它<b>不是</b> {@code fixableByModel} 意义上的"可修正失败"——
+	 *       模型再调一次还是会被拦住，改参数也没用（改参数得重新审批，见下）；</li>
+	 *   <li>它对应循环的一个独立出口 {@code AgentStopReason.WAITING_FOR_APPROVAL}，
+	 *       而不是任何一个"停下来了"的出口。</li>
+	 * </ul>
+	 * 把这些合并成"失败"的代价很具体：报告里会出现一批"失败的写操作"，
+	 * 而它们其实一条都没执行过 —— 于是"这周有多少写操作被拦下"这个数字永远算不对。
+	 */
+	AWAITING_APPROVAL,
+
+	/**
+	 * 人工确认<b>没有通过</b>（有人在界面上点了拒绝，并可能写了理由）。
+	 *
+	 * <p>与 {@link #APPROVAL_TIMEOUT} <b>必须分开</b>：两者对模型是同一个结果（不执行），
+	 * 但要去问的是完全不同的人 —— 前者问"他为什么不同意"（业务判断），
+	 * 后者问"为什么没人看到这条待批"（流程与值班）。
+	 * 合并之后，一个"审批流压根没接上"的系统会表现得像"业务上一直不同意"。
+	 */
+	APPROVAL_DENIED,
+
+	/**
+	 * 等待人工确认<b>超时</b>了（在时限内没有人处理）。
+	 *
+	 * <p>归到"拒绝"而不是"默认通过"是一个刻意的取向：
+	 * 没人管事时系统应该<b>停下来</b>，而不是照常写数据 ——
+	 * 因为"没人管事"恰恰是审批流失效最常见的形态，
+	 * 而"默认通过"会让这道闸门在最需要它的时候自动消失。
+	 */
+	APPROVAL_TIMEOUT,
+
 	/** 工具正常执行完并返回了结果 —— <b>包括工具返回"没查到"这种情况</b>。 */
 	OK;
 
@@ -92,9 +129,49 @@ public enum ToolCallStage {
 	 * <p>这是本轮最值得单独记下来的一个判断：
 	 * <b>"失败率"这个词听起来没有歧义，但它的分母和分子都要按"归因"来定，
 	 * 而不是按"没成功"来定。</b>
+	 *
+	 * <h2>HITL 那一类为什么也不能算进来</h2>
+	 * {@link #APPROVAL_DENIED} / {@link #APPROVAL_TIMEOUT} / {@link #AWAITING_APPROVAL}
+	 * 都不算工具失败，理由与限流那条一样，而且更直接：
+	 * <b>人点两次"拒绝"就能把一把完全健康的工具熔断掉。</b>
+	 * 更糟的是，那会让熔断器去惩罚一把"正因为被严格管控而显得失败很多"的工具 ——
+	 * 于是安全措施自己制造了一次可用性故障。
 	 */
 	public boolean countsAsToolFailure() {
 		return this == EXECUTION_ERROR;
+	}
+
+	/**
+	 * 这个 stage 该不该进入<b>熔断器的观察窗口</b>（作为一次"工具调用的样本"）。
+	 *
+	 * <h2>为什么"算不算失败"和"进不进窗口"是两个不同的问题</h2>
+	 * {@link #countsAsToolFailure()} 只在<b>进窗口之后</b>才被用到（它决定这次样本
+	 * 记成成功还是失败）。而本方法问的是更前面一步：<b>这次经历算不算工具的一次经历？</b>
+	 *
+	 * <p>四类不进的，理由是同一条 —— <b>工具压根没被调用过</b>：
+	 * <ul>
+	 *   <li>{@link #PARSE_ERROR} / {@link #VALIDATION_ERROR}：参数在到达工具之前就被拦下；</li>
+	 *   <li>{@link #AWAITING_APPROVAL}：正在等人批，工具没执行；</li>
+	 *   <li>{@link #APPROVAL_DENIED} / {@link #APPROVAL_TIMEOUT}：人没批，工具没执行。</li>
+	 * </ul>
+	 * 它们如果按"成功"进窗口，会把失败率<b>稀释</b>掉（一个正在被严格审批的工具
+	 * 会因为"每次都成功"而永远不会被熔断）；如果按"失败"进窗口，会<b>凭空制造失败</b>
+	 * （人点两次拒绝就能熔断一把健康的工具）。
+	 * 两种都错，所以它们干脆不该出现在"这把工具健不健康"的样本里。
+	 *
+	 * <h2>为什么把这个判断放在 stage 上，而不是留在 PerToolGate 里的一个 if</h2>
+	 * 那个 if 原本只排除两类（解析/校验）。新增 HITL 的三类时，
+	 * 它的默认分支是"进窗口并记成成功"—— 也就是说<b>忘了改它不会报错</b>，
+	 * 只会让熔断率慢慢失真。
+	 * 移到枚举上之后，"这一类的经历算不算样本"成了每个取值<b>必须显式回答</b>的问题：
+	 * 将来再有人加一个 stage，编译器会逼着他回答。
+	 * 这与本项目把 {@code fixableByModel} 写成 switch 而不是 default 是同一种做法。
+	 */
+	public boolean countsAsCircuitSample() {
+		return !switch (this) {
+			case PARSE_ERROR, VALIDATION_ERROR, AWAITING_APPROVAL, APPROVAL_DENIED, APPROVAL_TIMEOUT -> true;
+			default -> false;
+		};
 	}
 
 }

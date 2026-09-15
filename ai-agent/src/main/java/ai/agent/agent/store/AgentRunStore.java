@@ -137,16 +137,38 @@ public interface AgentRunStore {
 	 * 不必在每一步都写一遍 transcript（那是恢复才需要的）。
 	 */
 	default void persistCompletedRun(String runId, AgentRun run) {
-		RunStatus status = switch (run.stopReason()) {
-			case ANSWERED -> RunStatus.ANSWERED;
-			case MAX_STEPS, MAX_TOKENS, MAX_DURATION, DUPLICATE_ACTION, EMPTY_RESPONSE -> RunStatus.STOPPED;
-			case MODEL_ERROR -> RunStatus.FAILED;
-		};
+		RunStatus status = statusOf(run);
 		// 失败原因要落库：页面靠它回答"是上游挂了还是我们自己太挤"，
 		// 而那正是 MODEL_ERROR 这一个出口分不开的两件事
 		String error = run.failureCause() == null ? null : ModelFailureClassifier.advice(run.failureCause());
 		finish(runId, status, run.stopReason(), run.finalAnswer(), run.totalTokens(), run.toolCallCount(),
 				run.elapsedMs(), error, run.failureCause());
+	}
+
+	/**
+	 * 停因 → 库状态。<b>抽成静态方法，是为了让这条映射规则能被单独断言。</b>
+	 *
+	 * <p>理由很实际：要真的跑出 {@code WAITING_FOR_APPROVAL}，审批时限必须长于
+	 * 整个测试的时间预算（那意味着用分钟级的等待去验证一条 if-else）。
+	 * 把规则抽出来之后，测试可以对它逐条断言，而<b>运行时走的还是同一段代码</b>
+	 * （{@link #persistCompletedRun} 就是调它）—— 这与本项目
+	 * "把判据放在能被单独验证的地方"的一贯做法一致。
+	 *
+	 * <p>另一条同样重要：这个 switch <b>没有 default</b>。
+	 * 将来给 {@code AgentStopReason} 加一个新出口时，编译器会逼着这里回答
+	 * "它算哪种状态"—— 而不是静默落进一个默认分支（那种漏法表现为
+	 * "新出口的运行在界面上显示成正在跑"）。
+	 */
+	static RunStatus statusOf(AgentRun run) {
+		return switch (run.stopReason()) {
+			case ANSWERED -> RunStatus.ANSWERED;
+			case MAX_STEPS, MAX_TOKENS, MAX_DURATION, DUPLICATE_ACTION, EMPTY_RESPONSE -> RunStatus.STOPPED;
+			// 【HITL】停在人工闸门上：既不是结束也不是故障，而是一个**活着的等待状态**。
+			// 写成 RUNNING 的话，下次启动的认领逻辑会把它当"上次没跑完"去自动恢复，
+			// 于是同一个写调用会被重新提出、产生第二条待批（理由见 RunStatus 的注释）
+			case WAITING_FOR_APPROVAL -> RunStatus.WAITING_APPROVAL;
+			case MODEL_ERROR -> RunStatus.FAILED;
+		};
 	}
 
 }

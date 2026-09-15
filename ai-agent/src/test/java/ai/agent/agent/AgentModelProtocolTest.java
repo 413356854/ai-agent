@@ -95,13 +95,13 @@ class AgentModelProtocolTest {
 		JsonNode tools = request.get("tools");
 		assertThat(tools).as("请求里必须有 tools 数组").isNotNull();
 		assertThat(tools.isArray()).isTrue();
-		assertThat(tools.size()).as("三把工具都要发出去").isEqualTo(3);
+		assertThat(tools.size()).as("四把工具都要发出去").isEqualTo(4);
 
 		// 把工具名收出来对照 —— 用集合断言而不是按下标取，
 		// 因为 SDK 对 tools 数组的元素顺序不作保证，按下标取会让断言变得脆弱
 		List<String> names = new java.util.ArrayList<>();
 		tools.forEach(t -> names.add(t.path("function").path("name").asText()));
-		assertThat(names).containsExactlyInAnyOrder("search_docs", "list_documents", "read_section");
+		assertThat(names).containsExactlyInAnyOrder("search_docs", "list_documents", "read_section", "propose_review");
 
 		// 找到 search_docs，核对描述与参数
 		JsonNode searchDocs = null;

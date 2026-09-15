@@ -49,12 +49,29 @@ public record AgentRunRecord(String id, String question, RunStatus status, Agent
 		return failureCause == null ? null : ai.agent.agent.ModelFailureClassifier.advice(failureCause);
 	}
 
-	/** 这次运行是不是已经结束（结束的才不该被恢复）。 */
+	/**
+	 * 这次运行是不是已经结束（结束的才不该被恢复）。
+	 *
+	 * <p>{@code WAITING_APPROVAL} 算"已结束"—— 这里的"结束"是
+	 * 「<b>这一次执行已经交出了结论</b>」，而不是"这个任务再也不会动了"。
+	 * 待批的运行确实交出了结论：它说"我停在一次需要人确认的写操作上"。
+	 *
+	 * <p>把它算进来有一个很实际的作用：页面与恢复逻辑都用本方法筛
+	 * "哪些运行还在进行中"，而待批的运行<b>并没有在进行中</b>（没有线程在跑它）。
+	 * 不算进来的话，一次待批的运行会在界面上显示成"正在运行"，
+	 * 而人会一直等一个根本不会自己动的东西。
+	 */
 	public boolean finished() {
-		return status == RunStatus.ANSWERED || status == RunStatus.STOPPED || status == RunStatus.FAILED;
+		return status == RunStatus.ANSWERED || status == RunStatus.STOPPED || status == RunStatus.FAILED
+				|| status == RunStatus.WAITING_APPROVAL;
 	}
 
-	/** 这一步是不是"可以接着跑"（只有中断的才值得恢复）。 */
+	/**
+	 * 这一步是不是"可以接着跑"（只有中断的才值得恢复）。
+	 *
+	 * <p>待批的<b>不算</b>：它已经在正确的等待里了，不需要任何人去"救"它 ——
+	 * 硬恢复它只会重新提出那个写调用、产生第二条待批。见 {@link RunStatus#WAITING_APPROVAL}。
+	 */
 	public boolean resumable() {
 		return status == RunStatus.INTERRUPTED;
 	}

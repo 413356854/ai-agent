@@ -288,6 +288,38 @@
 			<version>${flexmark.version}</version>
 		</dependency>
 
+		<!--
+		  ============================================================
+		   阶段三（第九轮）：把工具封成 MCP Server（路线文档标注「本项目最大亮点」）
+		  ============================================================
+
+		  用它做什么：让**外部的 MCP 客户端**（Claude Desktop、IDE、别的 Agent）
+		  能连上本项目、列出并调用这里的工具。这是"把已有能力变成可被别人消费的能力"。
+
+		  【为什么选 webmvc 而不是 webflux starter】
+		  本项目已经跑在 Servlet 栈（内嵌 Tomcat）上 —— 阶段一的 SSE 要求如此。
+		  拉一个 WebFlux starter 会引入第二套 Web 运行时，两个栈同时存在时
+		  "哪个端点跑在哪个栈上"会变成一个新问题，而且它与本项目已有的
+		  `spring-boot-starter-web` 是互斥的典型冲突组合。
+		  `spring-ai-starter-mcp-server-webmvc` 提供的正是 Servlet 栈上的
+		  **Streamable HTTP** 传输（MCP 2025-06-18 规范的主推传输方式），与本项目栈一致。
+
+		  【这一步是"先验证再写代码"】
+		  台账里对这件留过一句警告：「先确认 MCP 的 Java 依赖在离线仓库里拿得到」——
+		  H2 那次因为"BOM 指定的版本本地没有"踩过一次（见下面的 h2.version），
+		  依赖作用域那次也因为"代码里直接引用了它"翻过车（踩坑 #59/#60）。
+		  所以本依赖是先实测 `mvn dependency:get` 成功、并确认
+		  `io.modelcontextprotocol.sdk:mcp-core:2.0.0` 已进入本地仓库之后才写进来的。
+
+		  ⚠️ 版本由 spring-ai-bom（2.0.1）统一管理，**不写死版本号** ——
+		  它必须与 spring-ai-starter-model-openai 走的同一份 bom，
+		  否则会出现"两个不同版本的 spring-ai-model 同时在 classpath 上"。
+		-->
+		<dependency>
+			<groupId>org.springframework.ai</groupId>
+			<artifactId>spring-ai-starter-mcp-server-webmvc</artifactId>
+		</dependency>
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-test</artifactId>
