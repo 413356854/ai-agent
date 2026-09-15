@@ -1,0 +1,379 @@
+package ai.agent.agent;
+
+import ai.agent.config.AgentLoopProperties;
+import ai.agent.tool.ToolCallExecutor;
+import ai.agent.tool.ToolCallOutcome;
+import ai.agent.tool.ToolInvocation;
+import ai.agent.tool.ToolRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.Resource;
+import org.springframework.stereotype.Component;
+import org.springframework.util.StreamUtils;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * <b>手写 ReAct 循环</b>（阶段三学习点 1）：think → act → observe，直到给出答案或撞上上限。
+ *
+ * <h2>为什么"不用框架先写一遍"（路线文档的原话）</h2>
+ * Spring AI 自带工具执行：给 {@code ChatClient} 传 {@code toolCallbacks}，
+ * 它就会<b>自动</b>解析工具调用、执行、把结果塞回上下文、再问一次模型，
+ * 直到模型不再要工具 —— 整个过程对你的代码是透明的。
+ *
+ * <p>那样能跑，但它把下面这些<b>全部藏起来了</b>，而它们恰恰是要在面试里讲清楚的东西：
+ * <ul>
+ *   <li><b>循环了几轮、每轮花了多少 token</b> —— 不算出来就不知道成本花在哪；</li>
+ *   <li><b>工具失败了会怎样</b> —— 谁来兜异常、失败结果怎么措辞、模型有没有机会改；</li>
+ *   <li><b>什么时候该强行停下</b> —— 没有上限的话，一个打转的模型会一直烧钱；</li>
+ *   <li><b>重复动作怎么发现</b> —— 框架不管这个，它会老老实实把同一个调用执行 6 遍。</li>
+ * </ul>
+ * 所以本类的立场是：<b>把 think/act/observe 这三步以及停止条件全部显式写出来</b>，
+ * 每一步都可观测、每个上限都可配置、每条失败路径都有测试。
+ * 框架的能力（工具定义、schema、协议序列化）照样用 —— 用不着自己重写 HTTP 协议；
+ * <b>但"循环"这件事自己做</b>。
+ *
+ * <h2>它<b>不</b>自己执行工具，这是关键</h2>
+ * 工具执行一律走 {@link ToolCallExecutor}（白名单 → 解析 → 校验 → 执行 → 分类 → 回填）。
+ * 本类只负责"把意图交给它、把回填放回上下文"。
+ * 这样做的直接好处是：{@code AgentTool.call(String)} 被实现成<b>故意抛异常</b>，
+ * 于是"绕过边界"这条路在代码层面是走不通的 —— 它不会在某天被悄悄打开。
+ *
+ * <h2>停止条件：三个上限 + 一个检测，各拦一种死法</h2>
+ * <table border="1">
+ *   <caption>循环的出口</caption>
+ *   <tr><th>出口</th><th>拦的是什么</th></tr>
+ *   <tr><td>{@link AgentStopReason#ANSWERED}</td><td>模型不再要工具，给了文字（正常结束）</td></tr>
+ *   <tr><td>{@link AgentStopReason#MAX_STEPS}</td><td>往返轮数用完</td></tr>
+ *   <tr><td>{@link AgentStopReason#MAX_TOKENS}</td><td>累计 token 用完</td></tr>
+ *   <tr><td>{@link AgentStopReason#MAX_DURATION}</td><td>墙上时间用完</td></tr>
+ *   <tr><td>{@link AgentStopReason#DUPLICATE_ACTION}</td><td>同一个工具 + 同一份参数重复太多次（打转）</td></tr>
+ * </table>
+ *
+ * <h2>为什么"检查上限"必须在调用模型<b>之前</b></h2>
+ * 放在之后的话，第 N 轮已经花掉了钱才判定"超预算" —— 而那一轮的结果根本不会被用。
+ * 同理，时间上限在调用前检查，可以避免"发起一次注定要超时的请求、白等 30 秒"。
+ * 这是一个很便宜的规则，但它决定了超支是"最多超一轮"还是"每轮都超"。
+ */
+@Component
+public class AgentLoop {
+
+	private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
+
+	private final ToolRegistry registry;
+
+	private final ToolCallExecutor executor;
+
+	private final ModelTurn modelTurn;
+
+	private final AgentLoopProperties properties;
+
+	/** 系统提示词（外置资源）。与阶段一的做法一致：提示词不进 Java 字符串。 */
+	private final Resource systemPrompt;
+
+	public AgentLoop(ToolRegistry registry, ToolCallExecutor executor, ModelTurn modelTurn,
+			AgentLoopProperties properties,
+			@Value("${ai.agent.loop.system-prompt-location:classpath:prompts/system-agent-tools.st}") Resource systemPrompt) {
+		this.registry = registry;
+		this.executor = executor;
+		this.modelTurn = modelTurn;
+		this.properties = properties;
+		this.systemPrompt = systemPrompt;
+	}
+
+	/**
+	 * 跑一次任务（不持久化）。
+	 *
+	 * <p>本方法<b>不抛异常</b>（模型调用失败也会变成 {@link AgentStopReason#MODEL_ERROR} 的
+	 * 一份报告）：一次 Agent 运行是有成本的，把已经花掉的那几轮结果连同失败原因一起返回，
+	 * 比抛出去丢掉更有用 —— 用户至少能看到"它查了两次文档然后模型挂了"。
+	 */
+	public AgentRun run(String question) {
+		return run(UUID.randomUUID().toString(), question, List.of(), 0, AgentProgressListener.NOOP, null);
+	}
+
+	/**
+	 * 跑一次任务，并<b>带上进度回调</b>（断点恢复的挂载点）。
+	 *
+	 * @param listener 每一步结束后的回调；不需要持久化时传 {@link AgentProgressListener#NOOP}
+	 */
+	public AgentRun run(String runId, String question, AgentProgressListener listener) {
+		return run(runId, question, List.of(), 0, listener, null);
+	}
+
+	/**
+	 * 从检查点<b>接着跑</b>（断点恢复的入口）。
+	 *
+	 * <h2>三个必须由调用方给出的东西，以及为什么</h2>
+	 * <ol>
+	 *   <li>{@code resumeMessages}：上一次跑到最后一步时的完整对话。
+	 *       <b>不能靠"重放前面几步"来重建</b> —— 重放会重新执行工具，
+	 *       而对写操作那是重复副作用，对读操作也会拿到与当时不同的数据；</li>
+	 *   <li>{@code resumeStepIndex}：已经跑完几步。它决定步数上限从哪算起 ——
+	 *       不传的话，一个被杀过 3 次的任务每次都能再跑 6 步，上限形同虚设；</li>
+	 *   <li>{@code pendingInvocation}：被杀时**意图已提出但结果未知**的那次调用。
+	 *       它必须显式传进来，因为这是整条链路里唯一一个"状态不明"的东西：</li>
+	 * </ol>
+	 *
+	 * <h2>为什么 resumedFromStep &gt; 0 时要往上下文里补一条说明</h2>
+	 * 模型不知道"上一次进程死了"。如果不告诉它，它看到的历史会停在
+	 * "我要求调用某个工具"那一句，而**永远等不到那个工具的结果** ——
+	 * 于是它下一轮很可能原样再要一次（表现就是"卡住"）。
+	 * 补一条说明是<b>把中断这件事变成模型能看见的事实</b>，而不是让它去猜。
+	 */
+	public AgentRun run(String runId, String question, List<Message> resumeMessages, int resumeStepIndex,
+			AgentProgressListener listener, ToolInvocation pendingInvocation) {
+		long startedAt = System.nanoTime();
+
+		List<Message> messages = new ArrayList<>(resumeMessages);
+		if (messages.isEmpty()) {
+			messages.add(new SystemMessage(loadSystemPrompt()));
+			messages.add(new UserMessage(question));
+		}
+		else if (pendingInvocation != null) {
+			// 中断说明：只加文字，不加假的 tool 消息 ——
+			// 伪造一条"工具返回了 X"是最危险的做法：模型会把它当成事实
+			messages.add(new UserMessage(interruptionNotice(pendingInvocation)));
+		}
+
+		List<AgentRun.Step> steps = new ArrayList<>();
+		DuplicateActionDetector duplicates = new DuplicateActionDetector(properties.maxIdenticalActions());
+		int totalTokens = 0;
+		int toolCallCount = 0;
+
+		// 恢复时步数从"已跑过的"接着数：不这么做的话，被杀 N 次的任务能跑 N×maxSteps 步，
+		// 而"最大步数"这个上限就失去意义了
+		int firstRound = resumeStepIndex + 1;
+
+		for (int round = firstRound; round <= properties.maxSteps(); round++) {
+			// ---- 出口 1/2/3：三个上限，全部在调模型之前判定（理由见类注释） ----
+			AgentStopReason blocked = checkLimits(round, totalTokens, startedAt);
+			if (blocked != null) {
+				log.warn("Agent 循环在第 {} 轮前停止：{}（已用 {} tokens / {}ms）", round, blocked, totalTokens,
+						elapsedMs(startedAt));
+				AgentRun stopped = new AgentRun(question, steps, null, blocked, totalTokens, elapsedMs(startedAt),
+						toolCallCount);
+				listener.onFinish(runId, stopped);
+				return stopped;
+			}
+
+			// ---- think：问模型一轮 ----
+			long stepStarted = System.nanoTime();
+			ModelTurn.ModelReply reply;
+			try {
+				reply = modelTurn.chat(messages);
+			}
+			catch (RuntimeException e) {
+				// 模型调用失败：把已有步骤带回去，而不是抛掉已经花掉的成本
+				log.error("Agent 循环第 {} 轮调用模型失败", round, e);
+				steps.add(new AgentRun.Step(round, "", List.of(), List.of(), 0, 0, elapsedMs(stepStarted)));
+				AgentRun failed = new AgentRun(question, steps, null, AgentStopReason.MODEL_ERROR, totalTokens,
+						elapsedMs(startedAt), toolCallCount);
+				listener.onFinish(runId, failed);
+				return failed;
+			}
+			totalTokens += reply.tokens();
+
+			// ---- 模型没要工具 → 这是最终回答 ----
+			if (!reply.wantsTools()) {
+				AgentRun.Step step = new AgentRun.Step(round, reply.text(), List.of(), List.of(),
+						reply.promptTokens(), reply.completionTokens(), elapsedMs(stepStarted));
+				steps.add(step);
+				if (reply.text() == null || reply.text().isBlank()) {
+					// 既没文字也没工具调用：不是"模型的回答"，是上游异常。
+					// 归到 ANSWERED 会让报告里出现一条"成功但答案是空的"记录 —— 那是最坏的观测
+					log.warn("Agent 第 {} 轮收到空响应（无文字、无工具调用）", round);
+					AgentRun empty = new AgentRun(question, steps, null, AgentStopReason.EMPTY_RESPONSE, totalTokens,
+							elapsedMs(startedAt), toolCallCount);
+					listener.onFinish(runId, empty);
+					return empty;
+				}
+				// 【作答这一步也要写检查点】这一条是测试逼出来的：
+				// 第一版只在"调了工具之后"写检查点，于是**最后一步（给出答案那步）永远不落库**。
+				// 后果很具体：完成后的 trace 少了最后一步，"还原执行过程"时看不到模型是怎么收尾的；
+				// 而且如果进程死在 `onFinish` 与 `store.persistCompletedRun` 之间，
+				// 库里就只有过程没有结论 —— 恢复出来还得再问一次模型（多花一次钱）。
+				//
+				// 放这里还有第二个好处：它让"检查点"的定义变成**"每一步之后"**，
+				// 而不是"每一次工具调用之后"—— 后者在纯文字回答的任务上一次都不写。
+				messages.add(new AssistantMessage(reply.text()));
+				listener.afterStep(runId, round, step, List.copyOf(messages), totalTokens, toolCallCount,
+						elapsedMs(startedAt));
+				log.info("Agent 在 {} 轮后给出答案，共 {} tokens / {}ms", round, totalTokens, elapsedMs(startedAt));
+				AgentRun answered = new AgentRun(question, steps, reply.text(), AgentStopReason.ANSWERED, totalTokens,
+						elapsedMs(startedAt), toolCallCount);
+				listener.onFinish(runId, answered);
+				return answered;
+			}
+
+			// ---- act：把意图交给执行器（本类不自己执行工具） ----
+			// 先记下 assistant 消息：它带着 tool_calls，是后续 tool 消息的"被回复对象"。
+			// OpenAI 协议要求 tool 消息必须能对应到前面某条 assistant 的 tool_call_id，
+			// 缺了这条消息，请求会被上游以 400 拒绝 —— 而错误信息通常不会说清是这个原因
+			messages.add(assistantWithToolCalls(reply));
+
+			List<ToolCallOutcome> outcomes = new ArrayList<>();
+			boolean duplicateHit = false;
+			for (ToolInvocation invocation : reply.toolCalls()) {
+				toolCallCount++;
+				// ---- 出口 4：重复动作检测（在真正执行之前判，省掉一次工具执行） ----
+				if (duplicates.record(invocation)) {
+					duplicateHit = true;
+					log.warn("检测到重复动作：{}（最多允许 {} 次）", invocation.describe(),
+							properties.maxIdenticalActions());
+					break;
+				}
+				ToolCallOutcome outcome = executor.execute(invocation);
+				outcomes.add(outcome);
+				// ---- observe：回填进上下文 ----
+				messages.add(toolResponse(invocation, outcome));
+			}
+
+			AgentRun.Step step = new AgentRun.Step(round, reply.text(), reply.toolCalls(), outcomes,
+					reply.promptTokens(), reply.completionTokens(), elapsedMs(stepStarted));
+			steps.add(step);
+
+			// ---- 检查点：这一步已经完整结束，上下文可以落库了 ----
+			// 位置很讲究：放在 `if (duplicateHit)` 之前。
+			// 重复动作是一个"正常出口"，它这一步的上下文是完整可用的 ——
+			// 放后面的话，恰恰在最需要看到"它在原地打转"的那次运行里会丢掉最后一步
+			listener.afterStep(runId, round, step, List.copyOf(messages), totalTokens, toolCallCount,
+					elapsedMs(startedAt));
+
+			if (duplicateHit) {
+				// 不把"重复"当成正常一步继续：模型已经证明它没有新信息可用，
+				// 再给它一轮只会得到第三次相同的调用
+				AgentRun duplicated = new AgentRun(question, steps, null, AgentStopReason.DUPLICATE_ACTION,
+						totalTokens, elapsedMs(startedAt), toolCallCount);
+				listener.onFinish(runId, duplicated);
+				return duplicated;
+			}
+		}
+
+		// 循环正常跑满（每一轮都在调工具）—— 这是 MAX_STEPS
+		log.warn("Agent 循环达到最大步数 {}，未给出最终答案", properties.maxSteps());
+		AgentRun exhausted = new AgentRun(question, steps, null, AgentStopReason.MAX_STEPS, totalTokens,
+				elapsedMs(startedAt), toolCallCount);
+		listener.onFinish(runId, exhausted);
+		return exhausted;
+	}
+
+	/**
+	 * 中断说明。
+	 *
+	 * <p>措辞刻意有两部分：<b>发生了什么</b>（上一次执行被中断、那个工具的结果未知）
+	 * 与<b>你该怎么做</b>（不要假定它成功、也不要假定失败）。
+	 * 只说前一半，模型会自己去猜结果；而它对"未知"的默认处理往往是当成"没发生"然后重试 ——
+	 * 于是同一个写操作可能被执行两次。
+	 */
+	private static String interruptionNotice(ToolInvocation pending) {
+		return """
+				【系统提示】上一次执行在调用工具「%s」的过程中被中断了，所以那个调用**没有结果**：
+				它可能压根没开始，也可能已经执行完了但结果没来得及记下来。
+				请不要假定它成功或失败。如果需要它的结果，请重新发起调用；
+				如果这个操作看起来可能已经产生副作用，请在回答里明确指出这一点。""".formatted(pending.name());
+	}
+
+	/** 三个上限的检查。返回 null 表示可以继续。顺序是按"最便宜的检查先做"排的。 */
+	private AgentStopReason checkLimits(int round, int totalTokens, long startedAt) {
+		// 步数：第 maxSteps+1 轮不该开始（循环条件已经保证，这里是显式的一道）
+		if (round > properties.maxSteps()) {
+			return AgentStopReason.MAX_STEPS;
+		}
+		// 时间：用 >= 而不是 >，"刚好到点"就算超
+		if (elapsedMs(startedAt) >= properties.maxDurationMs()) {
+			return AgentStopReason.MAX_DURATION;
+		}
+		// token：累计值达到上限就不再发起新的模型调用。
+		// 注意判据是"已经花掉的"，不是"预测下一次会花多少"——
+		// 预测需要估算器且必然有误差，而这里的目标只是"别无限烧"，不是"精确花满预算"
+		if (totalTokens >= properties.maxTokens()) {
+			return AgentStopReason.MAX_TOKENS;
+		}
+		return null;
+	}
+
+	/**
+	 * 把模型的工具调用意图转成 assistant 消息。
+	 *
+	 * <p>必须把 {@code tool_calls} 原样带上：它是后续 tool 消息的<b>被回复对象</b>。
+	 * 只放文字、丢掉 tool_calls 的话，请求在协议层就是不成立的
+	 * （tool 消息找不到对应的 call id），而多数网关的报错信息不会指出这一点。
+	 */
+	private static AssistantMessage assistantWithToolCalls(ModelTurn.ModelReply reply) {
+		List<AssistantMessage.ToolCall> toolCalls = new ArrayList<>();
+		for (ToolInvocation invocation : reply.toolCalls()) {
+			toolCalls.add(new AssistantMessage.ToolCall(invocation.id(), "function", invocation.name(),
+					invocation.arguments()));
+		}
+		return AssistantMessage.builder()
+				.content(reply.text() == null ? "" : reply.text())
+				.toolCalls(toolCalls)
+				.build();
+	}
+
+	/**
+	 * 把执行结论转成 tool 消息（observe 那一步）。
+	 *
+	 * <p>回填的内容用 {@code outcome.feedback()} —— 那是
+	 * {@code ToolFeedbackFormatter} 精心写过的文本，包含"错在哪、可用值是什么、能不能重试"。
+	 * <b>这里不要自己拼一句话</b>：一旦在这里另写一份措辞，
+	 * 模型看到的东西就与测试断言的那份不一样了（而测试断言的是 feedback）。
+	 */
+	private static ToolResponseMessage toolResponse(ToolInvocation invocation, ToolCallOutcome outcome) {
+		return ToolResponseMessage.builder()
+				.responses(List.of(new ToolResponseMessage.ToolResponse(invocation.id(), invocation.name(),
+						outcome.feedback())))
+				.build();
+	}
+
+	/** 读系统提示词。与工具目录拼在一起 —— 见 {@code ToolRegistry.renderCatalog} 的注释。 */
+	private String loadSystemPrompt() {
+		try {
+			String base = StreamUtils.copyToString(systemPrompt.getInputStream(), StandardCharsets.UTF_8);
+			String catalog = registry.renderCatalog();
+			if (catalog.isBlank()) {
+				return base;
+			}
+			return base + "\n\n## 你当前可以使用的工具\n\n" + catalog;
+		}
+		catch (IOException e) {
+			// 提示词读不到就不该继续跑：没有提示词的 Agent 会用模型的默认人格乱答，
+			// 而这看起来像"模型不听话"，实际是部署问题
+			throw new UncheckedIOException("Agent 系统提示词读取失败：" + systemPrompt, e);
+		}
+	}
+
+	private static long elapsedMs(long startedAt) {
+		return (System.nanoTime() - startedAt) / 1_000_000;
+	}
+
+	/** 当前配置（诊断端点与报告要能显示"这套上限是多少"）。 */
+	public AgentLoopProperties properties() {
+		return properties;
+	}
+
+	/**
+	 * 换一个模型，其余装配照旧 —— 返回一个<b>新实例</b>，不改动自己。
+	 *
+	 * <p>{@code AgentLoop} 是<b>无状态</b>的：所有可变状态（消息列表、步数、累计 token、重复检测器）
+	 * 都在 {@code run(...)} 的方法局部变量里。所以"换模型"可以安全地 new 一个新实例，
+	 * 而不是在一个共享对象上改字段 —— 后者在虚拟线程下会串味
+	 * （这个坑阶段一的钉住实验踩过：一个"只在第一次算"的字段在真并发下会互相干扰）。
+	 */
+	public AgentLoop withModelTurn(ModelTurn otherModel) {
+		return new AgentLoop(registry, executor, otherModel, properties, systemPrompt);
+	}
+
+}

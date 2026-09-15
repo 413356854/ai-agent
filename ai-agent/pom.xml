@@ -38,6 +38,15 @@
 		<tika.version>3.3.2</tika.version>
 		<lucene.version>10.5.1</lucene.version>
 		<flexmark.version>0.64.8</flexmark.version>
+		<!--
+		  阶段三（Agent 状态持久化）新增的 H2。
+		  ⚠️ 必须显式钉版本：Boot 4.1.1 的 BOM 管理的是 **2.4.240**，而本地仓库里只有 **2.3.232** ——
+		  不钉版本就报 "Cannot access central in offline mode and the artifact
+		  com.h2database:h2:jar:2.4.240 has not been downloaded from it before"。
+		  这与 Tika 那次是同一个坑的两个版本：**"BOM 说要用哪个"和"本地/仓库里真的有哪个"是两件事**
+		  （Tika 那次是 4.0.0 在 Central 上只有 pom 没有 jar，见下方 dependency 的注释）。
+		-->
+		<h2.version>2.3.232</h2.version>
 	</properties>
 	<dependencies>
 		<!--
@@ -69,6 +78,54 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-validation</artifactId>
+		</dependency>
+
+		<!--
+		  ============================================================
+		   阶段三：Agent 状态的持久化（H2，MODE=MySQL）
+		  ============================================================
+
+		  用它做什么：把一次 Agent 运行的完整 trace（问题 / 每一步 / 每次工具调用）
+		  与"进行到哪一步"的检查点落库，于是进程被杀之后能**从检查点恢复**，
+		  而不是把已经查过的两次工具和花掉的 token 全丢掉。
+
+		  【为什么是 H2 而不是 Postgres/MySQL】
+		  它是**内嵌**的（一个 jar，随应用启动，不需要装服务），所以本地与 CI 都能真跑；
+		  而 `MODE=MySQL` 让 SQL 尽量贴着 MySQL 的写法，将来换真 MySQL 时改动最小。
+		  这条路在阶段二已经用过一次：pgvector 装不上时选了内嵌方案，并把边界写清楚
+		  （见 ai-agent/docs/向量库环境记录.md）。
+
+		  【为什么用纯 JDBC，没有引 spring-boot-starter-jdbc】
+		  实测（`mvn -o dependency:tree` 与本地仓库核对）：
+		    - 本地仓库里 **没有** spring-boot-starter-jdbc 的 4.1.1（只有到 3.4.7）；
+		    - spring-jdbc 本地只到 **6.2.8**，而本项目跑在 **Spring Framework 7.0.9** 上。
+		  混用 Spring 6 的 spring-jdbc 与 Spring 7 的 core 是"编译可能过、运行期才炸"的组合，
+		  所以刻意不引 —— 宁可写几十行 java.sql，也不制造一个只在运行期暴露的版本冲突。
+		  H2 自带 `JdbcConnectionPool`，连接池的事就不用再找一个依赖。
+
+		  ⚠️ **这是一个明确的临时选择，代价写在这里**：
+		  `JdbcTemplate` 的异常翻译、`@Transactional` 的声明式事务、以及 Boot 的
+		  DataSource 自动配置**都没有**。所以这里的事务是手写的
+		  （`setAutoCommit(false)` + 显式 commit/rollback），异常是自己包的。
+		  等 spring-boot-starter-jdbc 4.x 发布到可获取的仓库时，应当换过去 ——
+		  换的时候替换面只有 `JdbcAgentRunStore` 一个类（接口 `AgentRunStore` 不变）。
+		-->
+		<dependency>
+			<groupId>com.h2database</groupId>
+			<artifactId>h2</artifactId>
+			<version>${h2.version}</version>
+			<!--
+			  作用域用 compile（默认）而**不是** runtime —— 这一条是编译报错逼出来的：
+			  第一版写的 runtime，结果 `import org.h2.jdbcx.JdbcConnectionPool` 直接编译失败
+			  （"程序包 org.h2.jdbcx 不存在"）。
+
+			  根因是个容易被忽略的区别：**"JDBC 驱动"和"代码里直接引用的数据库 API"不是一回事**。
+			  驱动只需要 runtime（JDBC 是用类名反射加载的），所以网上到处都写 runtime；
+			  但本项目要在代码里直接用 H2 自带的连接池（因为不引 spring-jdbc，没有别的池子可用），
+			  那就必须让它出现在编译期 classpath 上。
+
+			  教训：**依赖作用域要按"代码里引用它没有"来定，不能按"它是什么类型的库"来定。**
+			-->
 		</dependency>
 
 		<!--
