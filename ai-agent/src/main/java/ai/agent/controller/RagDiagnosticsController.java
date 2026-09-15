@@ -2,6 +2,7 @@ package ai.agent.controller;
 
 import ai.agent.rag.chunk.Chunk;
 import ai.agent.rag.config.RagProperties;
+import ai.agent.rag.eval.AlignmentExperiment;
 import ai.agent.rag.eval.ChunkingComparison;
 import ai.agent.rag.eval.EvalCase;
 import ai.agent.rag.eval.EvalSetLoader;
@@ -9,6 +10,7 @@ import ai.agent.rag.parse.BlockType;
 import ai.agent.rag.parse.ParsedBlock;
 import ai.agent.rag.parse.ParsedDocument;
 import ai.agent.rag.pipeline.CorpusLoader;
+import ai.agent.rag.pipeline.RagAlignmentService;
 import ai.agent.rag.pipeline.RagEvaluationService;
 import ai.agent.rag.retrieve.LexicalRetriever;
 import ai.agent.rag.retrieve.RetrievalHit;
@@ -57,13 +59,16 @@ public class RagDiagnosticsController {
 
 	private final RagEvaluationService evaluationService;
 
+	private final RagAlignmentService alignmentService;
+
 	private final RagProperties properties;
 
 	public RagDiagnosticsController(CorpusLoader corpusLoader, EvalSetLoader evalSetLoader,
-			RagEvaluationService evaluationService, RagProperties properties) {
+			RagEvaluationService evaluationService, RagAlignmentService alignmentService, RagProperties properties) {
 		this.corpusLoader = corpusLoader;
 		this.evalSetLoader = evalSetLoader;
 		this.evaluationService = evaluationService;
+		this.alignmentService = alignmentService;
 		this.properties = properties;
 	}
 
@@ -253,6 +258,21 @@ public class RagDiagnosticsController {
 
 	/** 对照请求体。 */
 	public record CompareRequest(List<String> strategies, int topK) {
+	}
+
+	/**
+	 * <b>块大小对齐实验</b>：把原始对照里那个混杂因素消掉。
+	 *
+	 * <p>为什么单开一个端点而不是给 {@code /compare} 加参数：它跑的东西不一样 ——
+	 * 尺寸扫描 + 二分收敛 + 4 组对照 + 6 档预算归纳，
+	 * 是 {@code /compare} 的 4 倍工作量。混在一个端点里，
+	 * 前端就没法为"轻量对照"和"重量实验"分别设超时，
+	 * 而超时给错正是台账踩坑库 #38 那个坑（实验正常、等待时间配错）。
+	 */
+	@GetMapping(value = "/align", produces = MediaType.APPLICATION_JSON_VALUE)
+	public AlignmentExperiment align(@RequestParam(required = false) List<Integer> budgets,
+			@RequestParam(defaultValue = "0") int points) {
+		return alignmentService.run(budgets, points);
 	}
 
 	private static String excerpt(String text) {

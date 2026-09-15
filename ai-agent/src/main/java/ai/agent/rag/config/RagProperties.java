@@ -1,5 +1,6 @@
 package ai.agent.rag.config;
 
+import ai.agent.rag.vector.EmbeddingProperties;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
@@ -30,6 +31,24 @@ public class RagProperties {
 
 	@NestedConfigurationProperty
 	private Evaluation evaluation = new Evaluation();
+
+	/**
+	 * 向量检索（{@code ai.rag.vector.*}）。
+	 *
+	 * <p>放在这里而不是单独注册一个 {@code @ConfigurationProperties}：
+	 * RAG 的参数应当只有一个来源，而"嵌套字段"让外部键自然变成
+	 * {@code ai.rag.vector.*}，与 {@code ai.rag.retrieval.*} 平级。
+	 */
+	@NestedConfigurationProperty
+	private EmbeddingProperties vector = new EmbeddingProperties();
+
+	public EmbeddingProperties getVector() {
+		return vector;
+	}
+
+	public void setVector(EmbeddingProperties vector) {
+		this.vector = vector;
+	}
 
 	public Corpus getCorpus() {
 		return corpus;

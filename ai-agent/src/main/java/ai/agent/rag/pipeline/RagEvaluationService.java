@@ -8,12 +8,8 @@ import ai.agent.rag.config.RagProperties;
 import ai.agent.rag.eval.ChunkingComparison;
 import ai.agent.rag.eval.EvalCase;
 import ai.agent.rag.eval.EvalSetLoader;
-import ai.agent.rag.eval.RetrievalMetrics;
 import ai.agent.rag.eval.SectionLocator;
 import ai.agent.rag.parse.ParsedDocument;
-import ai.agent.rag.retrieve.LexicalRetriever;
-import ai.agent.rag.retrieve.RetrievalHit;
-import ai.agent.token.TokenEstimator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -22,6 +18,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.ToDoubleFunction;
 
 /**
  * 分块策略对照评测：<b>把"语义分块更好"变成一句能被追问的话</b>。
@@ -41,18 +38,13 @@ import java.util.Map;
  * {@link ChunkingComparison.TokenCost#duplicationRatio} 就是这一项。
  * 只看召回率容易得出"块切得越小越好"的结论，而加上 token 成本就未必了。
  *
- * <h2>关于"块数不同会不会让对比不公平"</h2>
- * 会，而且这是本实验最大的一个混杂因素，必须说清：
- * 结构分块的块通常<b>更多</b>（每节独立成块），块多意味着候选多、更容易捞到答案，
- * 所以 Recall 的上升里有一部分只是"块变多了"的功劳。
- * 两个处理方式：
- * <ul>
- *   <li>报告里同时给 <b>MRR</b> 和 <b>token 成本</b> —— 块碎而多时 MRR 与成本会变差，
- *       三个指标一起看才能判断得失；</li>
- *   <li>把 <b>maxTokens 调到接近</b>（本项目的默认参数就是这么选的），
- *       让两种策略的"块大小量级"可比，差异主要来自"切在哪"而不是"切多大"。</li>
- * </ul>
- * 这一点在报告里以 {@code notes} 的形式写给读者，而不是藏在实现里。
+ * <h2>已知的混杂因素（本轮起由 {@link RagAlignmentService} 处理）</h2>
+ * 这个"原始对照"里两组的块大小并不相同（实测 234.8 vs 200.9 token），
+ * 而判定标准是"块有没有覆盖答案章节"——<b>块越大越容易碰到答案</b>。
+ * 所以原始对照<b>只能</b>得出"结构分块省 token"这一半结论；
+ * 想说"策略本身更好或更差"，必须看对齐实验。
+ * 这个边界写在报告里（{@link #buildNotes}），而不是只存在于文档中 ——
+ * 数字摆在表里，读者会自动脑补方向性结论，不写出来就一定会被误读。
  */
 @Service
 public class RagEvaluationService {
@@ -68,42 +60,46 @@ public class RagEvaluationService {
 
 	private final RagProperties properties;
 
-	private final TokenEstimator estimator;
-
-	private final FixedSizeChunker fixedSizeChunker;
-
-	private final StructuralChunker structuralChunker;
+	private final StrategyEvaluator evaluator;
 
 	/**
-	 * 唯一的构造器，且刻意<b>不注入那两个分块器</b>。
+	 * 只留一个公开构造器。
 	 *
-	 * <p>为什么：如果把它们当依赖注入，Spring 会因为"这个类依赖两个 DocumentChunker"
-	 * 而无法确定装配哪个（两个实现都是 {@code @Component}），
-	 * 需要额外用 {@code @Qualifier} 或 bean 名字去指定。
-	 * 而这里本来就需要"同时拿到两个、按名字选"，直接 new 出来更直白 ——
-	 * 它们都是无状态策略对象，构造代价为零。
-	 *
-	 * <p>（这也顺带避开了台账踩坑库 #27 那个坑：Spring 只在恰有一个构造器时
-	 * 才自动装配，多个构造器会退回"找无参构造器"并报出极具误导性的错。
-	 * 这里只留一个公开构造器。）
+	 * <p>两个分块器都是<b>无状态策略对象</b>，构造代价为零，所以由
+	 * {@link StrategyEvaluator} 按变体参数去造，不注入进容器 ——
+	 * 否则 Spring 会因为"依赖两个 DocumentChunker"而无法确定装配哪个，
+	 * 需要额外的 {@code @Qualifier}。（这也顺带避开了台账踩坑库 #27 那个坑：
+	 * Spring 只在恰有一个构造器时才自动装配，多个构造器会退回"找无参构造器"
+	 * 并报出极具误导性的错。）
 	 */
-	public RagEvaluationService(CorpusLoader corpusLoader, EvalSetLoader evalSetLoader,
-			RagProperties properties, TokenEstimator estimator) {
+	public RagEvaluationService(CorpusLoader corpusLoader, EvalSetLoader evalSetLoader, RagProperties properties,
+			StrategyEvaluator evaluator) {
 		this.corpusLoader = corpusLoader;
 		this.evalSetLoader = evalSetLoader;
 		this.properties = properties;
-		this.estimator = estimator;
-		this.fixedSizeChunker = new FixedSizeChunker(properties, estimator);
-		this.structuralChunker = new StructuralChunker(properties, estimator);
+		this.evaluator = evaluator;
 	}
 
 	/**
-	 * 跑一次完整对照。
+	 * 跑一次原始对照。
+	 *
+	 * <p>注意它<b>不再</b>是"全部结论的来源"：块大小没对齐，所以它只能说
+	 * "谁更省 token"。要回答"策略本身好不好"用 {@link RagAlignmentService}。
 	 *
 	 * @param strategies 参与对照的策略名（空/null 表示用默认的两个）
 	 * @param topK       粗召回条数；小于等于 0 时用配置值
 	 */
 	public ChunkingComparison compare(List<String> strategies, int topK) {
+		return compare(strategies, topK, List.of());
+	}
+
+	/**
+	 * 原始对照（可选带预算对齐档位）。
+	 *
+	 * @param budgets token 预算档位；空表示不算"等成本召回"这一项。
+	 *                它是<b>额外报告</b>的东西，不影响任何按名次算的指标
+	 */
+	public ChunkingComparison compare(List<String> strategies, int topK, List<Integer> budgets) {
 		long started = System.currentTimeMillis();
 
 		List<String> selected = (strategies == null || strategies.isEmpty())
@@ -118,48 +114,23 @@ public class RagEvaluationService {
 		}
 
 		int effectiveTopK = topK > 0 ? topK : properties.getRetrieval().getTopK();
-
 		CorpusLoader.CorpusLoadResult corpus = corpusLoader.load();
 		List<EvalCase> cases = evalSetLoader.load();
 		List<ParsedDocument> documents = corpus.documents();
-		int rawTokens = rawCorpusTokens(documents);
+		int rawTokens = evaluator.rawCorpusTokens(documents);
 
 		// 【两种策略必须共用同一个定位器】判定"这个块算不算命中"的基准一旦不同，
 		// 两次实验就不可比了 —— 而不可比的数字放在一张表里，看起来仍然像是可比的
 		SectionLocator locator = SectionLocator.build(cases, documents);
 
 		List<ChunkingComparison.StrategyReport> reports = new ArrayList<>();
-		// 差值表：指标名 → 策略名 → 相对对照组的百分点差值
-		Map<String, Map<String, Double>> deltas = new LinkedHashMap<>();
-
 		for (String strategyName : selected) {
-			DocumentChunker chunker = chunkerByName(strategyName);
-			List<Chunk> chunks = new ArrayList<>();
-			for (ParsedDocument document : documents) {
-				chunks.addAll(chunker.chunk(document));
-			}
-
-			LexicalRetriever retriever = new LexicalRetriever();
-			retriever.index(chunks);
-
-			Map<String, List<RetrievalHit>> hitsByCase = new LinkedHashMap<>();
-			for (EvalCase evalCase : cases) {
-				hitsByCase.put(evalCase.id(), retriever.retrieve(evalCase.question(), effectiveTopK));
-			}
-
-			double avgChunkTokens = chunks.isEmpty() ? 0
-					: chunks.stream().mapToInt(Chunk::tokenCount).average().orElse(0);
-			RetrievalMetrics metrics = RetrievalMetrics.of(strategyName, cases, hitsByCase,
-					properties.getRetrieval().getReportAtK(), locator, chunks.size(), avgChunkTokens);
-
-			reports.add(new ChunkingComparison.StrategyReport(strategyName, chunks.size(),
-					round(avgChunkTokens), chunks.stream().mapToInt(Chunk::tokenCount).max().orElse(0),
-					metrics, tokenCost(chunks, rawTokens)));
-
-			log.info("策略评测完成 strategy={} chunks={} recall@5={} mrr={}",
-					strategyName, chunks.size(), metrics.recallAt().get(5), metrics.mrr());
+			StrategyEvaluator.ChunkingVariant variant = variantByName(strategyName);
+			reports.add(evaluator.evaluate(documents, cases, locator, variant, effectiveTopK, rawTokens, budgets)
+					.asReport());
 		}
 
+		Map<String, Map<String, Double>> deltas = new LinkedHashMap<>();
 		buildDeltas(reports, deltas);
 
 		List<String> notes = buildNotes(cases, locator);
@@ -175,21 +146,21 @@ public class RagEvaluationService {
 
 	/** 把语料切成块（供诊断端点查看"到底切成了什么样"）。 */
 	public List<Chunk> chunkCorpus(String strategyName) {
-		DocumentChunker chunker = chunkerByName(strategyName);
-		List<Chunk> chunks = new ArrayList<>();
-		for (ParsedDocument document : corpusLoader.load().documents()) {
-			chunks.addAll(chunker.chunk(document));
-		}
-		return chunks;
+		return evaluator.chunkCorpus(corpusLoader.load().documents(), variantByName(strategyName));
 	}
 
 	/** 按名字取分块器。<b>不认识的策略名直接抛</b>，不要静默退回默认值。 */
 	public DocumentChunker chunkerByName(String name) {
+		return evaluator.chunkerFor(variantByName(name));
+	}
+
+	/** 名字 → 变体（用配置里的参数）。 */
+	private StrategyEvaluator.ChunkingVariant variantByName(String name) {
 		if (name == null || name.isBlank() || FixedSizeChunker.NAME.equals(name)) {
-			return fixedSizeChunker;
+			return StrategyEvaluator.ChunkingVariant.configuredFixed(properties);
 		}
 		if (StructuralChunker.NAME.equals(name)) {
-			return structuralChunker;
+			return StrategyEvaluator.ChunkingVariant.configuredStructural(properties);
 		}
 		throw new IllegalArgumentException("未知的分块策略：" + name
 				+ "（可用：" + FixedSizeChunker.NAME + ", " + StructuralChunker.NAME + "）");
@@ -218,6 +189,11 @@ public class RagEvaluationService {
 				+ "不能只拿 Recall 一个数下结论");
 		notes.add("本阶段检索为**词法（BM25）**：它只认词面，对\"块里有没有正确的词\"极其敏感。"
 				+ "这意味着词法下表现好的分块，换成向量检索只会更好 —— 本报告的结论是偏保守的");
+		// 这一条是本轮新增的：原始对照的边界必须写在报告里，
+		// 否则 0.7674 与 0.8140 摆在一起，任何人都会自行脑补一个方向性结论
+		notes.add("⚠ **这份原始对照不能用来判断\"哪个分块策略更好\"**：两组的平均块大小不同"
+				+ "（块越大越容易覆盖答案所在章节），所以 Recall 的差异里混着块大小的差异。"
+				+ "要下这个结论请看**块大小对齐实验**（/api/diag/rag/align）");
 
 		if (!locator.unresolved().isEmpty()) {
 			notes.add("⚠ 有 %d 处标注在语料里找不到对应章节，这些用例必然算作未命中（分数偏低不是检索的问题）：%s"
@@ -236,28 +212,42 @@ public class RagEvaluationService {
 		if (reports.isEmpty()) {
 			return;
 		}
-		RetrievalMetrics baseline = reports.get(0).metrics();
+		ChunkingComparison.StrategyReport baseline = reports.get(0);
 
 		// 每个指标一行，便于前端直接渲染成表格
-		for (int k : baseline.recallAt().keySet()) {
-			deltas.put("recall@" + k, deltaRow(reports, r -> r.metrics().recallAt().getOrDefault(k, 0.0), baseline.recallAt().get(k)));
+		for (int k : baseline.metrics().recallAt().keySet()) {
+			deltas.put("recall@" + k,
+					deltaRow(reports, r -> r.metrics().recallAt().getOrDefault(k, 0.0),
+							baseline.metrics().recallAt().get(k)));
 		}
-		deltas.put("mrr", deltaRow(reports, r -> r.metrics().mrr(), baseline.mrr()));
-		for (int k : baseline.contextPrecisionAt().keySet()) {
+		deltas.put("mrr", deltaRow(reports, r -> r.metrics().mrr(), baseline.metrics().mrr()));
+		for (int k : baseline.metrics().contextPrecisionAt().keySet()) {
 			deltas.put("contextPrecision@" + k, deltaRow(reports,
 					r -> r.metrics().contextPrecisionAt().getOrDefault(k, 0.0),
-					baseline.contextPrecisionAt().get(k)));
+					baseline.metrics().contextPrecisionAt().get(k)));
 		}
-		deltas.put("avgChunkTokens", deltaRow(reports, r -> r.avgChunkTokens(), reports.get(0).avgChunkTokens()));
-		deltas.put("chunkCount", deltaRow(reports, r -> r.chunkCount(), reports.get(0).chunkCount()));
-		deltas.put("firstThreeHitsTokens", deltaRow(reports,
-				r -> r.metrics().firstThreeHitsTokens(), baseline.firstThreeHitsTokens()));
-		deltas.put("duplicationRatio", deltaRow(reports, r -> r.tokenCost().duplicationRatio(),
-				reports.get(0).tokenCost().duplicationRatio()));
+		// 【下面是"量"不是"率"，差值必须是普通减法，不能乘 100】
+		// 这里踩过一次，而且是报告类 bug 里最坏的一种 —— 数字看起来仍然"像那么回事"：
+		// 第一版对**所有**指标统一乘 100（因为 Recall/MRR 这类率要换成百分点），
+		// 于是 topKTokens 的差值印成了 -44320.93（真实差值是 -443.2 token），
+		// avgChunkTokens 印成 -3392.18（真实是 -33.9），chunkCount 印成 7800（真实是 78）。
+		// 一个把 token 成本夸大了 100 倍的对照表，比没有对照表更糟：
+		// "结构分块省了很多钱"会被用来支撑一个根本不成立的结论。
+		// 通用规矩：**差值单位跟着指标的量纲走，而量纲必须写进表头**。
+		deltas.put("avgChunkTokens", plainDeltaRow(reports, ChunkingComparison.StrategyReport::avgChunkTokens,
+				baseline.avgChunkTokens()));
+		deltas.put("chunkCount", plainDeltaRow(reports, r -> r.chunkCount(), baseline.chunkCount()));
+		deltas.put("firstThreeHitsTokens", plainDeltaRow(reports, r -> r.metrics().firstThreeHitsTokens(),
+				baseline.metrics().firstThreeHitsTokens()));
+		deltas.put("topKTokens", plainDeltaRow(reports, r -> r.metrics().topKTokens(),
+				baseline.metrics().topKTokens()));
+		deltas.put("duplicationRatio", plainDeltaRow(reports, r -> r.tokenCost().duplicationRatio(),
+				baseline.tokenCost().duplicationRatio()));
 	}
 
+	/** 量纲是"率"的指标（0~1）：差值 × 100 换成百分点。 */
 	private static Map<String, Double> deltaRow(List<ChunkingComparison.StrategyReport> reports,
-			java.util.function.ToDoubleFunction<ChunkingComparison.StrategyReport> extractor, double baselineValue) {
+			ToDoubleFunction<ChunkingComparison.StrategyReport> extractor, double baselineValue) {
 		Map<String, Double> row = new LinkedHashMap<>();
 		for (ChunkingComparison.StrategyReport report : reports) {
 			double value = extractor.applyAsDouble(report);
@@ -268,30 +258,16 @@ public class RagEvaluationService {
 		return row;
 	}
 
-	/**
-	 * 方案自身的规模代价。
-	 *
-	 * <p>{@code rawTokens} 是"整篇原文当一个块"时的 token 数，
-	 * 作为重复率的基准 —— 用 {@code estimator.estimateMessage} 而不是
-	 * {@code estimate}，因为块在检索时也是按消息包装算的，两侧量纲必须一致
-	 * （量纲不一致的比较是没有意义的，这也是为什么长度类的指标必须写清"算的是什么"）。
-	 */
-	private ChunkingComparison.TokenCost tokenCost(List<Chunk> chunks, int rawTokens) {
-		int total = chunks.stream().mapToInt(Chunk::tokenCount).sum();
-		int min = chunks.stream().mapToInt(Chunk::tokenCount).min().orElse(0);
-		int undersized = (int) chunks.stream()
-				.filter(c -> c.tokenCount() < properties.getChunking().getStructural().getMinTokens())
-				.count();
-		double duplication = rawTokens <= 0 ? 0 : (total / (double) rawTokens) - 1.0;
-		return new ChunkingComparison.TokenCost(total, round(duplication), min, undersized);
-	}
-
-	private int rawCorpusTokens(List<ParsedDocument> documents) {
-		int total = 0;
-		for (ParsedDocument document : documents) {
-			total += estimator.estimateMessage(document.plainText());
+	/** 量纲是"个数 / token 数 / 比值"的指标：差值就是普通减法（不乘 100）。 */
+	private static Map<String, Double> plainDeltaRow(List<ChunkingComparison.StrategyReport> reports,
+			ToDoubleFunction<ChunkingComparison.StrategyReport> extractor, double baselineValue) {
+		Map<String, Double> row = new LinkedHashMap<>();
+		for (ChunkingComparison.StrategyReport report : reports) {
+			double value = extractor.applyAsDouble(report);
+			double delta = report == reports.get(0) ? 0.0 : (value - baselineValue);
+			row.put(report.strategy(), round(delta));
 		}
-		return total;
+		return row;
 	}
 
 	private static double round(double value) {

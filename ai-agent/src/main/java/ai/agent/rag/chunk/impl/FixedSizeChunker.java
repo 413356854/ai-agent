@@ -60,9 +60,30 @@ public class FixedSizeChunker implements DocumentChunker {
 	@Override
 	public List<Chunk> chunk(ParsedDocument document) {
 		RagProperties.Chunking.Fixed cfg = properties.getChunking().getFixed();
-		int size = Math.max(1, cfg.getSize());
+		return chunk(document, cfg.getSize(), cfg.getOverlap());
+	}
+
+	/**
+	 * 用<b>显式尺寸</b>切分，绕过配置。
+	 *
+	 * <h2>为什么对照组必须能改大小（这不是为了方便，是实验的前提）</h2>
+	 * 原始对照（500 字硬切 vs 结构分块）量出的差异里混着一个没被排除的因素：
+	 * <b>两组的块不一样大</b>（实测 234.8 vs 200.9 token）。而本项目的相关性判定是
+	 * "检索到的块有没有覆盖答案所在章节" —— <b>块越大越容易碰到答案</b>。
+	 * 于是"结构分块 Recall 更低"这句话无法归因：是它切得不好，
+	 * 还是它只是块更小？（台账把这条列为阶段二最高优先级的待办）
+	 *
+	 * <p>排除它的唯一办法就是<b>把对照组的块调到与实验组一样大</b>。
+	 * 不能改配置来做这件事：配置是全局的，改一次就得重启、而且会同时影响
+	 * 其它实验结果的可复现性。所以尺寸必须是参数。
+	 *
+	 * @param size    每块的字符数
+	 * @param overlap 相邻块重叠的字符数
+	 */
+	public List<Chunk> chunk(ParsedDocument document, int size, int overlap) {
+		size = Math.max(1, size);
 		// 重叠必须小于块大小，否则步进为 0 或负数 → 死循环
-		int overlap = Math.min(Math.max(0, cfg.getOverlap()), size - 1);
+		overlap = Math.min(Math.max(0, overlap), size - 1);
 		int step = size - overlap;
 
 		List<ParsedBlock> blocks = document.blocks();

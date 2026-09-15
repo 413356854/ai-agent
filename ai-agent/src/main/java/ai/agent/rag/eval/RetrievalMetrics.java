@@ -39,17 +39,19 @@ import java.util.Map;
  * @param contextPrecisionAt 名次 k → ContextPrecision@k
  * @param firstThreeHitsTokens 前 3 条命中的 token 之和的均值（≈真正进上下文的量）
  * @param topKTokens    前 k 条命中的 token 之和的均值（粗召回的成本）
+ * @param budgetAlignment 按<b>固定 token 预算</b>重新归纳的召回（等成本对照，见 {@link BudgetAlignment}）
  * @param misses        Recall@k 为 0 的用例（最该看的部分）
  * @param perTag        按分组聚合的 Recall@k（看哪一类问题最差）
  */
 public record RetrievalMetrics(String strategy, int caseCount, int chunkCount, double avgChunkTokens,
 		Map<Integer, Double> recallAt, double mrr, Map<Integer, Double> contextPrecisionAt,
-		double firstThreeHitsTokens, double topKTokens, List<CaseOutcome> misses,
-		Map<String, TagMetrics> perTag) {
+		double firstThreeHitsTokens, double topKTokens, Map<Integer, BudgetAlignment> budgetAlignment,
+		List<CaseOutcome> misses, Map<String, TagMetrics> perTag) {
 
 	public RetrievalMetrics {
 		recallAt = Map.copyOf(recallAt);
 		contextPrecisionAt = Map.copyOf(contextPrecisionAt);
+		budgetAlignment = Map.copyOf(budgetAlignment);
 		misses = List.copyOf(misses);
 		perTag = Map.copyOf(perTag);
 	}
@@ -96,6 +98,20 @@ public record RetrievalMetrics(String strategy, int caseCount, int chunkCount, d
 	public static RetrievalMetrics of(String strategy, List<EvalCase> cases,
 			Map<String, List<RetrievalHit>> hitsByCase, List<Integer> atK, SectionLocator locator,
 			int chunkCount, double avgChunkTokens) {
+		return of(strategy, cases, hitsByCase, atK, locator, chunkCount, avgChunkTokens, List.of());
+	}
+
+	/**
+	 * 计算指标（带预算对齐）。
+	 *
+	 * @param budgets 需要报告的 token 预算档位（空表示不算这一项）。
+	 *                <b>它必须是"额外报告的东西"，不能改变上面任何按名次算的指标</b> ——
+	 *                两者回答的是不同的问题：按名次是"系统默认行为下好不好"，
+	 *                按预算是"成本相同的情况下好不好"。混成一个数就没法拆开看了
+	 */
+	public static RetrievalMetrics of(String strategy, List<EvalCase> cases,
+			Map<String, List<RetrievalHit>> hitsByCase, List<Integer> atK, SectionLocator locator,
+			int chunkCount, double avgChunkTokens, List<Integer> budgets) {
 
 		// 保证 k 值有序且去重，报告里的列顺序才稳定
 		List<Integer> ks = atK.stream().distinct().sorted().toList();
@@ -105,6 +121,12 @@ public record RetrievalMetrics(String strategy, int caseCount, int chunkCount, d
 		for (int k : ks) {
 			recallSums.put(k, 0.0);
 			precisionSums.put(k, 0.0);
+		}
+		// 预算档位：预算 → 累加器（召回 / 名次倒数 / 实际用掉的 token / 条数）
+		List<Integer> budgetSteps = budgets == null ? List.of() : budgets.stream().distinct().sorted().toList();
+		Map<Integer, double[]> budgetSums = new LinkedHashMap<>();
+		for (int budget : budgetSteps) {
+			budgetSums.put(budget, new double[4]);
 		}
 		double mrrSum = 0;
 		double topKTokensSum = 0;
@@ -154,6 +176,36 @@ public record RetrievalMetrics(String strategy, int caseCount, int chunkCount, d
 			topKTokensSum += tokens;
 			firstThreeSum += hits.stream().limit(3).mapToInt(h -> h.chunk().tokenCount()).sum();
 
+			// 预算对齐：从名次 1 开始装，装到这个预算装不下为止。
+			// 【注意这里不修改上面任何按名次算的量】——两套口径并存但不互相污染
+			for (int budget : budgetSteps) {
+				int used = 0;
+				int count = 0;
+				int firstHitUnderBudget = 0;
+				boolean anyRelevant = false;
+				for (int i = 0; i < hits.size(); i++) {
+					int chunkTokens = hits.get(i).chunk().tokenCount();
+					// 第一条无条件放行：现实中会让一个略超预算的块进上下文，
+					// 而不是"因为这个块太大就什么都不给"。样本数要贴近真实行为
+					if (count > 0 && used + chunkTokens > budget) {
+						break;
+					}
+					used += chunkTokens;
+					count++;
+					if (relevant.get(i)) {
+						anyRelevant = true;
+						if (firstHitUnderBudget == 0) {
+							firstHitUnderBudget = i + 1;
+						}
+					}
+				}
+				double[] acc = budgetSums.get(budget);
+				acc[0] += anyRelevant ? 1.0 : 0.0;
+				acc[1] += firstHitUnderBudget == 0 ? 0.0 : 1.0 / firstHitUnderBudget;
+				acc[2] += used;
+				acc[3] += count;
+			}
+
 			CaseOutcome outcome = new CaseOutcome(evalCase.id(), evalCase.tag(), evalCase.question(),
 					firstRelevantRank, evalCase.matchHeadings(), retrievedTitles, tokens);
 			outcomesByTag.computeIfAbsent(evalCase.tag(), t -> new ArrayList<>()).add(outcome);
@@ -185,9 +237,16 @@ public record RetrievalMetrics(String strategy, int caseCount, int chunkCount, d
 					round(hit5 / tagN), round(tagMrr), round(hit10 / tagN)));
 		}
 
+		Map<Integer, BudgetAlignment> budgetAlignment = new LinkedHashMap<>();
+		for (int budget : budgetSteps) {
+			double[] acc = budgetSums.get(budget);
+			budgetAlignment.put(budget, new BudgetAlignment(budget, round(acc[0] / n), round(acc[1] / n),
+					round(acc[2] / n), round(acc[3] / n)));
+		}
+
 		return new RetrievalMetrics(strategy, cases.size(), chunkCount, round(avgChunkTokens),
 				recallAt, round(mrrSum / n), precisionAt,
-				round(firstThreeSum / n), round(topKTokensSum / n), misses, perTag);
+				round(firstThreeSum / n), round(topKTokensSum / n), budgetAlignment, misses, perTag);
 	}
 
 	/** 召回条目的可读描述：{@code 文档#序号 (面包屑)}，排查错召回时一眼看出它属于哪一节。 */

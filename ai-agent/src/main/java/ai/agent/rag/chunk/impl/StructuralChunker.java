@@ -76,7 +76,28 @@ public class StructuralChunker implements DocumentChunker {
 
 	@Override
 	public List<Chunk> chunk(ParsedDocument document) {
-		RagProperties.Chunking.Structural cfg = properties.getChunking().getStructural();
+		return chunk(document, properties.getChunking().getStructural());
+	}
+
+	/**
+	 * 用<b>另一份结构分块配置</b>切分，绕过全局配置。
+	 *
+	 * <h2>为什么需要它</h2>
+	 * 块大小对齐实验里有两种必须能改的配置，而它们都<b>不该改全局配置</b>
+	 * （改了要重启、还会同时污染其它实验结果的可复现性）：
+	 * <ul>
+	 *   <li><b>max-tokens</b>：找出与对照组对齐的那一档；</li>
+	 *   <li><b>面包屑开关</b>：结构分块的 200.9 token 里，
+	 *       <b>正文其实只有约 163</b>（差值就是每块都拼一遍的标题路径）。
+	 *       所以"块大小对齐"要把面包屑也一起按住 —— 否则对齐的是"渲染后的大小"，
+	 *       正文仍然比对照组小 20%，混杂因素只是换了个地方待着。</li>
+	 * </ul>
+	 *
+	 * <p>配置对象由调用方构造并传入，所以这个方法是<b>无副作用</b>的：
+	 * 不会回写任何共享状态（早先的探针脚本用过"改配置 → 跑 → 改回来"的写法，
+	 * 那种写法在并发下会互相串味，而且异常路径上恢复不了）。
+	 */
+	public List<Chunk> chunk(ParsedDocument document, RagProperties.Chunking.Structural cfg) {
 		if (document.blocks().isEmpty()) {
 			return List.of();
 		}
