@@ -27,6 +27,7 @@
 import { createServer } from 'node:http'
 import { handleAgentRoutes } from './agent-routes.mjs'
 import { handleCostRoutes } from './cost-routes.mjs'
+import { handlePromptRoutes } from './prompt-routes.mjs'
 import { handleRagRoutes } from './rag-routes.mjs'
 
 const PORT = Number(process.env.MOCK_PORT ?? 8081)
@@ -326,11 +327,24 @@ const server = createServer((req, res) => {
     return
   }
 
+  // ---------------------------------------------------------------
+  //  Prompt 版本管理端点（阶段四 · 工程化第 3 件）
+  //
+  //  ⚠️ 这一组与上面所有组**性质不同**：它有四个**写**端点（存 / 生效 / 回滚 / 复位），
+  //  而且状态是**进程内可变**的 —— 因为界面自检要验的正是"点一下之后状态真的变了"。
+  //  代价与配套的两条纪律都写在 prompt-routes.mjs 开头，其中最重要的一条：
+  //  既然是状态机，就必须有 `POST /api/prompts/__reset`，
+  //  否则自检脚本跑第二遍时会继承第一遍改出来的版本号（与 HITL 的 __reset-approval 同一条经验）。
+  // ---------------------------------------------------------------
+  if (url.pathname.startsWith('/api/prompts') && handlePromptRoutes(req, res, url, json)) {
+    return
+  }
+
   res.writeHead(404, { 'Content-Type': 'application/json' })
   res.end(
     JSON.stringify({
       message:
-        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async、POST /api/agent/ask、GET /api/agent/*',
+        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async、POST /api/agent/ask、GET /api/agent/*、GET /api/cost/*、GET|POST /api/prompts/*',
     }),
   )
 })

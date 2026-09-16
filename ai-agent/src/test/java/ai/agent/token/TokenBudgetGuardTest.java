@@ -1,6 +1,7 @@
 package ai.agent.token;
 
 import ai.agent.config.ChatCallProperties;
+import ai.agent.prompt.ClasspathPromptService;
 import ai.agent.token.impl.CharacterClassTokenEstimator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -44,7 +45,7 @@ class TokenBudgetGuardTest {
 		properties = new ChatCallProperties();
 		repository = new InMemoryChatMemoryRepository();
 		guard = new TokenBudgetGuard(properties, new CharacterClassTokenEstimator(properties), repository,
-				TokenBudgetGuard.DEFAULT_SYSTEM_PROMPT_LOCATION);
+				new ClasspathPromptService(new CharacterClassTokenEstimator(properties)));
 	}
 
 	@Test

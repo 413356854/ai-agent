@@ -1,6 +1,8 @@
 package ai.agent.agent;
 
 import ai.agent.config.AgentLoopProperties;
+import ai.agent.prompt.PromptKind;
+import ai.agent.prompt.PromptService;
 import ai.agent.tool.ApprovalGrant;
 import ai.agent.tool.ToolCallContext;
 import ai.agent.tool.ToolCallExecutor;
@@ -14,14 +16,8 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StreamUtils;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -81,17 +77,25 @@ public class AgentLoop {
 
 	private final AgentLoopProperties properties;
 
-	/** 系统提示词（外置资源）。与阶段一的做法一致：提示词不进 Java 字符串。 */
-	private final Resource systemPrompt;
+	/**
+	 * 系统提示词（阶段四第 3 件之后：<b>来自版本库当前生效的那一版</b>）。
+	 *
+	 * <p>与阶段一的做法一致的部分：提示词不进 Java 字符串。
+	 * 改掉的部分：它不再是"启动时解析一次的 {@code Resource}"，而是每次运行开始时
+	 * 向 {@link PromptService} 问一次 —— 这正是"配置热更新"在本条链路上的落点。
+	 *
+	 * <p>热更新的粒度是<b>下一次运行</b>，不是"下一步"：一次运行中途换提示词，
+	 * 会让同一份对话里前后两轮遵循不同的指令，于是报告里"它为什么这么选"变得无法解释。
+	 */
+	private final PromptService prompts;
 
 	public AgentLoop(ToolRegistry registry, ToolCallExecutor executor, ModelTurn modelTurn,
-			AgentLoopProperties properties,
-			@Value("${ai.agent.loop.system-prompt-location:classpath:prompts/system-agent-tools.st}") Resource systemPrompt) {
+			AgentLoopProperties properties, PromptService prompts) {
 		this.registry = registry;
 		this.executor = executor;
 		this.modelTurn = modelTurn;
 		this.properties = properties;
-		this.systemPrompt = systemPrompt;
+		this.prompts = prompts;
 	}
 
 	/**
@@ -463,19 +467,15 @@ public class AgentLoop {
 
 	/** 读系统提示词。与工具目录拼在一起 —— 见 {@code ToolRegistry.renderCatalog} 的注释。 */
 	private String loadSystemPrompt() {
-		try {
-			String base = StreamUtils.copyToString(systemPrompt.getInputStream(), StandardCharsets.UTF_8);
-			String catalog = registry.renderCatalog();
-			if (catalog.isBlank()) {
-				return base;
-			}
-			return base + "\n\n## 你当前可以使用的工具\n\n" + catalog;
+		// 每次运行读一次（不缓存）：换了提示词版本之后，**下一次运行**就用新的。
+		// 兜底链（库 → classpath → 抛异常）在 PromptService 里，这里不重复实现 ——
+		// 两处兜底就意味着两处会漂移
+		String base = prompts.currentContent(PromptKind.AGENT_LOOP);
+		String catalog = registry.renderCatalog();
+		if (catalog.isBlank()) {
+			return base;
 		}
-		catch (IOException e) {
-			// 提示词读不到就不该继续跑：没有提示词的 Agent 会用模型的默认人格乱答，
-			// 而这看起来像"模型不听话"，实际是部署问题
-			throw new UncheckedIOException("Agent 系统提示词读取失败：" + systemPrompt, e);
-		}
+		return base + "\n\n## 你当前可以使用的工具\n\n" + catalog;
 	}
 
 	private static long elapsedMs(long startedAt) {
@@ -496,7 +496,7 @@ public class AgentLoop {
 	 * （这个坑阶段一的钉住实验踩过：一个"只在第一次算"的字段在真并发下会互相干扰）。
 	 */
 	public AgentLoop withModelTurn(ModelTurn otherModel) {
-		return new AgentLoop(registry, executor, otherModel, properties, systemPrompt);
+		return new AgentLoop(registry, executor, otherModel, properties, prompts);
 	}
 
 }

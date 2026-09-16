@@ -1,6 +1,10 @@
 package ai.agent.agent;
 
 import ai.agent.config.AgentLoopProperties;
+import ai.agent.config.ChatCallProperties;
+import ai.agent.prompt.ClasspathPromptService;
+import ai.agent.prompt.PromptService;
+import ai.agent.token.impl.CharacterClassTokenEstimator;
 import ai.agent.tool.ToolCallExecutor;
 import ai.agent.tool.ToolCallOutcome;
 import ai.agent.tool.ToolCallStage;
@@ -268,7 +272,7 @@ class AgentLoopTest {
 		// 每轮睡 40ms，而时间上限设成 50ms：第 2 轮之前就会判定超时
 		CURRENT.set(slow);
 		AgentLoop fastTimeoutLoop = new AgentLoop(registry, executor, new SlowModelTurn(slow, 40L),
-				new AgentLoopProperties(6, 12000, 50L, 2), agentLoopSystemPrompt());
+				new AgentLoopProperties(6, 12000, 50L, 2), promptService());
 
 		AgentRun run = fastTimeoutLoop.run("慢模型");
 
@@ -293,8 +297,18 @@ class AgentLoopTest {
 
 	}
 
-	private org.springframework.core.io.Resource agentLoopSystemPrompt() {
-		return new org.springframework.core.io.ClassPathResource("prompts/system-agent-tools.st");
+	/**
+	 * 系统提示词的来源（阶段四第 3 件之后：提示词从版本库取）。
+	 *
+	 * <p>这里刻意用<b>只读 classpath 的替身</b>而不是真的 {@code PromptService}：
+	 * 这个类要验证的是<b>循环的停止条件</b>，不是提示词存储。
+	 * 让每个循环测试都去起一个 H2 库，会把"验证循环"变成"验证循环 + 验证存储"——
+	 * 而后者失败时前者的结论也跟着不可信。
+	 * <b>代价必须写清</b>：这个替身证明不了热更新（它永远返回 classpath 那一份），
+	 * 热更新由 {@code PromptHotReloadTest} 用真服务验证。
+	 */
+	private PromptService promptService() {
+		return new ClasspathPromptService(new CharacterClassTokenEstimator(new ChatCallProperties()));
 	}
 
 	// ------------------------------------------------------------------
@@ -367,7 +381,7 @@ class AgentLoopTest {
 			}
 		};
 		AgentLoop loop = new AgentLoop(registry, executor, flaky, AgentLoopProperties.defaults(),
-				agentLoopSystemPrompt());
+				promptService());
 
 		AgentRun run = loop.run("会中途失败的问题");
 

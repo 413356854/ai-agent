@@ -4,37 +4,43 @@ import { AgentPanel } from './components/AgentPanel'
 import { Composer } from './components/Composer'
 import { CostPanel } from './components/CostPanel'
 import { MessageBubble } from './components/MessageBubble'
+import { PromptPanel } from './components/PromptPanel'
 import { RagPanel } from './components/RagPanel'
 import { StructuredResultCard } from './components/StructuredResultCard'
 import { ThreadBudgetPanel } from './components/ThreadBudgetPanel'
 import { useAgent } from './hooks/useAgent'
 import { useChatStream } from './hooks/useChatStream'
 import { useCost } from './hooks/useCost'
+import { usePrompt } from './hooks/usePrompt'
 import { useRagDiag } from './hooks/useRagDiag'
 import { useStructuredChat } from './hooks/useStructuredChat'
 import { useThreadDiag } from './hooks/useThreadDiag'
 
-/** 六种模式共用一个壳。加模式时只改三处：这个联合类型、Segmented 的 options、头部那个 Tag 的文案表 */
-type Mode = 'stream' | 'structured' | 'threads' | 'rag' | 'agent' | 'cost'
+/** 七种模式共用一个壳。加模式时只改三处：这个联合类型、Segmented 的 options、头部那个 Tag 的文案表 */
+type Mode = 'stream' | 'structured' | 'threads' | 'rag' | 'agent' | 'cost' | 'prompt'
 
 /**
- * 六种模式的对照台。
+ * 七种模式的对照台。
  *
- * **为什么做成"模式切换"而不是六个页面**：这些模式的差别本身就是这个项目要讲的东西 ——
+ * **为什么做成"模式切换"而不是七个页面**：这些模式的差别本身就是这个项目要讲的东西 ——
  * 同样一次模型调用，一个走 SSE 逐字推、回答是自由文本；另一个同步等、回答必须先过结构校验；
  * 第三个干脆不是"回答"，而是把线程模型和 token 预算的运行时证据摆出来；
  * 第四个更不同 —— 它**不调用模型**，量的是"文档怎么切、检索找不找得到"；
  * 第五个（Agent）**会调模型、还会自己决定调哪些工具**，所以那一页要回答的是
  * "它为什么这么选、失败在哪一步、花的钱值不值"；
  * 第六个（成本看板）是**回头看**的一页：前五个都在回答"这一次怎么样"，
- * 只有它回答"这一批一共花了多少、谁花的、花得值不值"。
+ * 只有它回答"这一批一共花了多少、谁花的、花得值不值"；
+ * 第七个（Prompt 版本）是**唯一一个会改"前六个的行为"的页面** ——
+ * 它管的不是一次调用，而是"以后所有调用的指令"。
+ * 这一点决定了它的交互必须比别的页更谨慎：存与生效分成两次，回滚永远可见。
  * 放在同一个界面里能直接对比"同一个系统里，不同的契约 / 线程模型 / 检索链路 / 自主程度各自长什么样"。
  *
- * 六个 hook 都挂在 App 上（而不是按模式条件挂载）：切换模式时对话记录和实验数据不会被清空，
+ * 七个 hook 都挂在 App 上（而不是按模式条件挂载）：切换模式时对话记录和实验数据不会被清空，
  * 来回切两次不会丢掉刚才的结果 —— 这也是把状态放在这一层的理由。
  * **Agent 那一页尤其需要这样**：一次任务会真的调模型花钱、要等十几秒，
  * 切走再切回来就重跑一遍（再花一次钱）的代价太大。
  * 成本看板同理：它的查询比运行列表重（四条 GROUP BY + 一次对账），来回切一次重跑一遍是浪费。
+ * Prompt 那一页则是"编辑到一半切走再回来"的场景 —— 丢掉草稿的代价是重写一遍整段提示词。
  */
 export default function App() {
   const [mode, setMode] = useState<Mode>('stream')
@@ -51,12 +57,16 @@ export default function App() {
   // 第六个：进面板拉一次快照与价格表。**不轮询** —— 成本是"回头看"的数据，
   // 它变了不影响任何人做决定（唯一轮询的是 HITL 待办，理由是"有人在等它"）
   const cost = useCost(mode === 'cost')
+  // 第七个：进面板拉一次清单与版本历史。同样不轮询 —— 别人改了会以 409 的形式告诉我们，
+  // 那比"每 2.5 秒重拉一次列表"更准确（一次冲突只在真的发生时出现一次）
+  const prompt = usePrompt(mode === 'prompt')
 
   const listRef = useRef<HTMLElement>(null)
 
   // 当前模式对应的视图数据，只用于"滚动到底部"和空状态判断。
   // 三个诊断模式没有这两件事（面板自己滚、没有空状态），所以这里不参与，免得白白触发一次 effect
   const isDiagnostic = mode === 'threads' || mode === 'rag' || mode === 'agent' || mode === 'cost'
+    || mode === 'prompt'
   const activeCount = mode === 'stream' ? stream.messages.length : structured.turns.length
   const busy = mode === 'stream' ? stream.streaming : structured.loading
   const conversationId = mode === 'structured' ? structured.conversationId : stream.conversationId
@@ -95,6 +105,7 @@ export default function App() {
               { label: 'RAG 分块评测', value: 'rag' },
               { label: 'Agent 工具调用', value: 'agent' },
               { label: '成本看板', value: 'cost' },
+              { label: 'Prompt 版本', value: 'prompt' },
             ]}
           />
           {mode === 'stream' && <Tag color="blue">逐字推送 · 自由文本</Tag>}
@@ -103,6 +114,7 @@ export default function App() {
           {mode === 'rag' && <Tag color="green">离线链路 · 调模型 0 次</Tag>}
           {mode === 'agent' && <Tag color="orange">会调模型 · 自主选工具</Tag>}
           {mode === 'cost' && <Tag color="gold">只读聚合 · 不估算 token</Tag>}
+          {mode === 'prompt' && <Tag color="magenta">改的是以后的每一次调用 · 可回滚</Tag>}
         </Flex>
         {/*
           右侧这一段只在对话模式里有意义。两个诊断模式刻意不显示 conversationId 和「新会话」：
@@ -134,6 +146,8 @@ export default function App() {
         <AgentPanel agent={agent} />
       ) : mode === 'cost' ? (
         <CostPanel cost={cost} />
+      ) : mode === 'prompt' ? (
+        <PromptPanel prompt={prompt} />
       ) : (
         // 诊断模式没有输入区，所以 main/footer 只在对话模式下渲染 —— 空着的 footer 会白白吃掉一块高度
         <>

@@ -1,6 +1,8 @@
 package ai.agent.config;
 
-import ai.agent.token.TokenBudgetGuard;
+import ai.agent.prompt.PromptContextResource;
+import ai.agent.prompt.PromptKind;
+import ai.agent.prompt.PromptService;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
@@ -11,7 +13,7 @@ import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.io.Resource;
+import org.springframework.context.annotation.Primary;
 
 /**
  * ChatClient 装配。
@@ -22,7 +24,9 @@ import org.springframework.core.io.Resource;
  *       那样会绕过自动配置，导致 <b>observability 与 ChatClientBuilderCustomizer 失效</b>。
  *       应注入自动配置的 {@code ChatClient.Builder}（prototype 作用域）。</li>
  *   <li>Advisor 的<b>加入顺序决定执行顺序</b>，每个 advisor 改完的 prompt / 上下文会传给下一个。</li>
- *   <li>系统提示词外置到 classpath 资源，可被 {@code system(Resource)} 直接读取。</li>
+ *   <li>系统提示词外置到 classpath 资源，可被 {@code system(Resource)} 直接读取。
+ *       <b>阶段四之后它改成了从版本库取</b>（见 {@code promptContextResource}），
+ *       理由与"为什么这一句只是启动时快照"都写在那里。</li>
  * </ul>
  */
 @Configuration
@@ -69,13 +73,43 @@ public class ChatClientConfig {
 				.build();
 	}
 
+	/**
+	 * 系统提示词的<b>来源</b>（阶段四第 3 件：Prompt 版本管理 + 配置热更新）。
+	 *
+	 * <h2>为什么把配置属性注入的 {@code Resource} 换成这个 bean</h2>
+	 * 原先这里直接 {@code @Value("${ai.chat.system-prompt-location:...}") Resource}，
+	 * 也就是"从 classpath 读一个文件"。换成版本库之后有两个变化：
+	 * <ol>
+	 *   <li>内容是<b>库里当前生效的那一版</b>，不再有"库里是 v3、而 ChatClient 用着出厂文件"
+	 *       这种两处真相（那种不一致不报错，只表现为"改了提示词没反应"）；</li>
+	 *   <li>取数改成走 {@code PromptService}，它每次调用都重新问库。</li>
+	 * </ol>
+	 * 属性 {@code ai.chat.system-prompt-location} 因此在阶段四之后<b>不再影响运行时</b>
+	 * （它是"出厂默认值与回滚去处"的位置，见 {@code PromptKind}）。
+	 * <b>刻意保留属性本身</b>：删掉它会让老配置报"未知属性"，
+	 * 而"配置文件里有一条看起来还在生效、实际已经不生效的设置"正是最难查的一类问题 ——
+	 * 所以留着它、并在 application.properties 里写清它现在的含义。
+	 *
+	 * <h2>⚠️ 这里注入的内容是"启动那一刻的快照"</h2>
+	 * {@code ChatClientBuilder.defaultSystem(Resource)} 在<b>构建 Client 时</b>就调用了
+	 * {@code Resource.getContentAsString()}（用 {@code javap} 核过
+	 * {@code DefaultChatClientBuilder} 的字节码），所以换了版本之后<b>这个 bean 不会自动更新</b>。
+	 * 真正的热更新在<b>调用点</b>：{@code ChatServiceImpl} / {@code StructuredChatServiceImpl}
+	 * 每次请求都显式 {@code .system(...)}。这里仍然注入一次，是为了让"没有任何调用点覆盖时"
+	 * 的那次请求也有正确的系统提示词（以及为了让 {@code ChatClient} 自身的默认值与库一致）。
+	 */
+	@Bean
+	@Primary
+	PromptContextResource promptContextResource(PromptService promptService) {
+		return new PromptContextResource(promptService, PromptKind.CHAT_SYSTEM);
+	}
+
 	@Bean
 	ChatClient chatClient(ChatClient.Builder builder, ChatMemory chatMemory,
-			@Value("${ai.chat.system-prompt-location:" + TokenBudgetGuard.DEFAULT_SYSTEM_PROMPT_LOCATION + "}") Resource systemPrompt) {
+			PromptContextResource systemPrompt) {
 		return builder
-				// 系统提示词：从 classpath 读取，与代码解耦（阶段一的 prompt 版本化基础）。
-				// 位置来自配置属性，与 TokenBudgetGuard 算预算时读的是**同一个属性** ——
-				// 否则会出现"校验算的是旧提示词、实际发的是新的"，预算永远算不准
+				// 系统提示词：来自版本库（当前生效的那一版），与代码解耦。
+				// ⚠️ 这一句是**启动时快照**，热更新靠调用点的 .system(...)，见上面那段注释
 				.defaultSystem(systemPrompt)
 				// 注意：官方建议 SimpleLoggerAdvisor 放在链的靠后位置
 				// 光配 logging.level 不够，必须显式加入 advisor 链才会输出

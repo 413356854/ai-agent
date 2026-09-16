@@ -63,8 +63,10 @@ class StructuredChatServiceImplTest {
 		// 预算守卫用真实实现（配一份足够大的窗口）：这样"预算校验 + 回灌循环"的组合行为
 		// 是被真实验证过的，而不是"测试里把它 mock 掉了所以永远通过"
 		budgetGuard = new TokenBudgetGuard(properties, new CharacterClassTokenEstimator(properties),
-				new InMemoryChatMemoryRepository(), TokenBudgetGuard.DEFAULT_SYSTEM_PROMPT_LOCATION);
-		service = new StructuredChatServiceImpl(chatClient, validator, properties, budgetGuard);
+				new InMemoryChatMemoryRepository(), new ai.agent.prompt.ClasspathPromptService(
+						new CharacterClassTokenEstimator(properties)));
+		service = new StructuredChatServiceImpl(chatClient, validator, properties, budgetGuard,
+				new ai.agent.prompt.ClasspathPromptService(new CharacterClassTokenEstimator(properties)));
 	}
 
 	/**
@@ -103,6 +105,29 @@ class StructuredChatServiceImplTest {
 				Validation.byDefaultProvider().configure().constraintValidatorFactory(factory).buildValidatorFactory()) {
 			return validatorFactory.getValidator();
 		}
+	}
+
+	@Test
+	@DisplayName("★ 系统提示词真的进了请求，而且**每一轮回灌都重新注入一次**（阶段四·热更新的接线证据）")
+	void systemPromptIsInjectedOnEveryAttempt() {
+		// 第 1 轮不合格（关键词为空）→ 第 2 轮回灌改对
+		scriptModelReplies("{\"answer\":\"好的\",\"confidence\":0.9,\"keywords\":[]}", validJson(0.9));
+
+		service.ask("c1", "SSE 是什么？");
+
+		List<String> systems = capturedSystemPrompts();
+		assertThat(systems).as("两轮模型调用 → 两次系统提示词注入").hasSize(2);
+		assertThat(systems.get(0))
+				.as("内容是当前生效的提示词（这里来自 classpath 替身），不是空串")
+				.contains("你是");
+		// 【为什么"每轮都注入"值得单独钉】如果实现改成"进来时取一次、回灌轮复用"，
+		// 那么在两轮之间换掉提示词版本时，会出现第 1 轮用新版、第 2 轮用旧版 ——
+		// 而两轮之间的矛盾会伪装成"模型自愈能力差"，排查方向完全错
+		assertThat(systems.get(1)).as("回灌轮重新注入的是同一份（两次调用之间没有换版本）")
+				.isEqualTo(systems.get(0));
+		// 顺带钉住"取不到内容时不许静默发空提示词"：空系统提示词会让模型用默认人格回答，
+		// 而那看起来像"模型不听话"，实际是部署问题
+		assertThat(systems).allSatisfy(s -> assertThat(s).isNotBlank());
 	}
 
 	@Test
@@ -265,6 +290,14 @@ class StructuredChatServiceImplTest {
 		ChatClient.CallResponseSpec callSpec = mock(ChatClient.CallResponseSpec.class);
 
 		when(chatClient.prompt()).thenReturn(spec);
+		// 【阶段四新增的这一行不是"补个桩"那么轻】
+		// 生产代码从这一轮起每轮都调 .system(当前生效的提示词)，而 mock 对未打桩的方法
+		// 返回 null —— 于是链在 .user(...) 处直接 NPE，报错文本变成
+		// "Cannot invoke ... user(String) because the return value of ... system(...) is null"。
+		// 这条报错指向的是**调用链**，看起来像生产的链写错了，实际是测试替身缺一个桩。
+		// 一条经验：给 ChatClient 这种流式 API 打桩时，**链上每多一环就要多一个桩**，
+		// 而漏掉的那一环只会在运行期以 NPE 的形式暴露。
+		when(spec.system(anyString())).thenReturn(spec);
 		when(spec.user(anyString())).thenReturn(spec);
 		when(spec.options(any())).thenReturn(spec);
 		// advisors 有三个重载（Consumer / Advisor... / List），`any()` 推不出该选哪个，
@@ -277,6 +310,20 @@ class StructuredChatServiceImplTest {
 			stub = stub.thenReturn(replies[i]);
 		}
 		stub.thenReturn(replies[replies.length - 1]);
+	}
+
+	/**
+	 * 取出每一轮真正发给模型的<b>系统提示词</b>。
+	 *
+	 * <p>它证明的是"系统提示词确实进了请求"，而不是"我以为它进了"——
+	 * 阶段四的热更新就是靠这条链把新版本送出去的，而"算了但没接线"这类 bug
+	 * 在本项目已经出现过不止一次。
+	 */
+	private List<String> capturedSystemPrompts() {
+		ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+		Mockito.verify(chatClient, Mockito.atLeastOnce()).prompt();
+		Mockito.verify(chatClient.prompt(), Mockito.atLeastOnce()).system(captor.capture());
+		return captor.getAllValues();
 	}
 
 	/** 取出每一轮真正发给模型的提示词，用于断言"回灌反馈里到底写了什么" */

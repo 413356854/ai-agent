@@ -70,7 +70,8 @@ class ChatControllerRetryTest {
 		// 预算守卫用真实实现：这些超时/重试测试的上下文都很短，
 		// 走的是"放行"路径，不会干扰重试行为；但换来的是"两条链路真的能共存"这个事实
 		TokenBudgetGuard budgetGuard = new TokenBudgetGuard(properties, new CharacterClassTokenEstimator(properties),
-				repository, TokenBudgetGuard.DEFAULT_SYSTEM_PROMPT_LOCATION);
+				repository, new ai.agent.prompt.ClasspathPromptService(
+						new CharacterClassTokenEstimator(properties)));
 		this.controller = new ChatController(service, new ChatRetryPolicy(properties), properties, repository,
 				budgetGuard);
 		return service;

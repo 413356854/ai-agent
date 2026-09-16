@@ -1430,3 +1430,101 @@ body {
 .cost-intent-label { flex: 0 0 auto; }
 .cost-intent-input { max-width: 260px; }
 .cost-intent-hint { font-size: 12px; }
+
+/* ==========================================================================
+   Prompt 版本管理（阶段四第 3 件，第七种模式）
+   ========================================================================== */
+
+.prompt-panel { display: flex; flex-direction: column; gap: 12px; }
+
+/* 顶部那一栏（现在生效的是哪一版）跟着滚 —— 读者在往下翻版本表时
+   还要能看见"现在生效的是 v几"，否则每翻一次都要滚回去确认 */
+.prompt-head { position: sticky; top: 0; z-index: 2; }
+
+.prompt-current .ant-descriptions-item-label { width: 96px; }
+
+/* 指纹、字符数这类"要被比对"的小字：等宽 + 不换行，
+   否则 v3:ab12cd34ef56 这种串会在一行中间断开，比对时容易看错 */
+.prompt-hash { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.prompt-num { font-variant-numeric: tabular-nums; }
+.prompt-meta { font-size: 12px; }
+
+/* 生效中的那一行：淡绿底色。**底色之外还有 Tag**——
+   只靠颜色的话，色觉障碍读者与黑白打印都看不出哪一行是生效的 */
+.prompt-row-active > td { background: #f6ffed !important; }
+
+/* 编辑器：等宽字体不是"好看"，而是提示词里的缩进与对齐要能看出来。
+   注意选择器就是 textarea 本身 —— antd 的 Input.TextArea 把 className 落在
+   **textarea 元素**上（不是外层 wrapper），所以写成 `.prompt-textarea textarea`
+   会一个都选不中（自检里为此白跑过一轮，记在 PromptPanel 的注释里） */
+.prompt-textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.prompt-dirty { margin-left: 8px; }
+
+/* 版本历史上的一对卡片：编辑器窄一点，历史表宽一点 */
+.prompt-main { align-items: flex-start; }
+.prompt-editor { flex: 1 1 380px; }
+
+.prompt-confirm { margin-top: 12px; }
+.prompt-conflict, .prompt-error, .prompt-ok, .prompt-warnings, .prompt-rejections { margin: 0; }
+
+/* ---- 校验判据清单 ---- */
+.prompt-checks { list-style: none; margin: 0; padding: 0; }
+.prompt-check {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 3px 0;
+  line-height: 1.6;
+}
+.prompt-check-detail { font-size: 12px; }
+
+/* ---- 差异视图 ---- */
+.prompt-diff {
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+  overflow: auto;
+  max-height: 420px;
+  background: #fafafa;
+}
+.prompt-diff-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  padding: 0 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 行号列固定宽度 + 数字等宽：diff 的行号必须能竖着对齐，
+   否则"第 12 行改了什么"要靠数格子 */
+.prompt-diff-no {
+  flex: 0 0 34px;
+  text-align: right;
+  color: rgba(0, 0, 0, 0.3);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.prompt-diff-marker { flex: 0 0 14px; color: rgba(0, 0, 0, 0.45); user-select: none; }
+.prompt-diff-text { flex: 1 1 auto; }
+
+/* 颜色只是"加速识别"，所以每一行还有 +/- 标记与行号 ——
+   三样加起来才保证"哪边新增、哪边删除"在灰度下也读得出来 */
+.prompt-diff-line.is-add { background: #f6ffed; }
+.prompt-diff-line.is-add .prompt-diff-marker { color: #389e0d; }
+.prompt-diff-line.is-remove { background: #fff1f0; }
+.prompt-diff-line.is-remove .prompt-diff-marker { color: #cf1322; }
+.prompt-diff-line.is-gap {
+  background: #f0f0f0;
+  color: rgba(0, 0, 0, 0.45);
+  justify-content: center;
+  font-style: italic;
+}
+
+.prompt-notes { margin: 0; }

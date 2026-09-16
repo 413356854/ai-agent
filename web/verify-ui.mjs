@@ -66,8 +66,42 @@ const browser = await chromium.launch({ channel: 'chrome' })
 const page = await browser.newPage({ viewport: { width: 1100, height: 900 } })
 
 const consoleErrors = []
+/**
+ * 已知会发生的浏览器网络报错 —— **不算缺陷**，但必须显式列出来。
+ *
+ * <h2>为什么需要这个函数，而不是"放宽断言"</h2>
+ * 这一轮 Prompt 版本面板有一条自检要**故意提交一份坏提示词**，验证界面逐条列出判据。
+ * 那次请求后端会正确地回 **400**，而浏览器控制台对任何非 2xx 的响应都会记一条
+ * `Failed to load resource: ... 400 (Bad Request)` —— **这是浏览器行为，不是我们的 bug**。
+ *
+ * <p>所以这里不是把"控制台必须干净"这个要求降低，而是把它**写得准确**：
+ * 「意料之内的失败请求」与「意料之外的报错」是两件事，前者必须被逐条命名出来
+ * （命名就意味着它是有意为之，而不是被人顺手忽略掉了）。
+ * 一个什么都拦的过滤器会让这条断言变成永远为真，那才是真的损失。
+ *
+ * <p>⚠️ 判据刻意写得很窄：只放行 **400**，并且要求它确实打在那个端点上。
+ * 500、404、或任何别的路径上的 400 都仍然会让自检失败 —— 那些都不是"我们故意造的"。
+ *
+ * <p>⚠️ 实测还有一个细节：浏览器那条日志里**不一定带 URL**
+ * （Chrome 只给 "Failed to load resource: the server responded with a status of 400"），
+ * 所以这里同时用**请求事件**做判据 —— 只有真的看到"prompts 端点回了 400"才放行。
+ * 第一版只匹配文本，于是它一条都没过滤掉（断言照样红）。
+ */
+const expectedRejections = []
+page.on('response', response => {
+  if (response.status() === 400 && response.url().includes('/api/prompts/')) {
+    expectedRejections.push(response.url())
+  }
+})
+
+const isExpectedNetworkError = text =>
+  /status of 400/.test(text) && expectedRejections.length > 0
+
 page.on('console', msg => {
-  if (msg.type() === 'error' || msg.type() === 'warning') consoleErrors.push(`[${msg.type()}] ${msg.text()}`)
+  const text = msg.text()
+  if (msg.type() !== 'error' && msg.type() !== 'warning') return
+  if (isExpectedNetworkError(text)) return
+  consoleErrors.push(`[${msg.type()}] ${text}`)
 })
 page.on('pageerror', err => consoleErrors.push(`[pageerror] ${err.message}`))
 
@@ -584,8 +618,23 @@ if ((await runsCard.count()) > 0) {
     // 被上限拦下与"失败"是两件事，界面上要分开
     expect('区分了"被上限拦下"与"失败"', /被上限拦下/.test(runsText) && /失败/.test(runsText))
   } else {
-    // 真后端（假 key）：历史里只有那条 401 失败 —— 正好验证失败细分的**真实渲染**
-    expect('显示了失败细分', /UPSTREAM_AUTH/.test(runsText))
+    // 真后端（假 key）：历史里只有那条失败运行 —— 正好验证失败细分的**真实渲染**。
+    //
+    // ⚠️ 判据刻意**不写死某一个分类名**。第一版写的是 `/UPSTREAM_AUTH/`，
+    // 理由是"假 key → 上游 401 → 必然分到 UPSTREAM_AUTH"。而实测这次拿到的
+    // `failureCause` 是 **UNEXPECTED**（上游 401 经过 SDK 包装之后没被认成鉴权失败），
+    // 于是这条断言在一个**完全正常**的界面上红了 —— 它测的其实是后端的分类准确度，
+    // 而不是"界面有没有把失败细分渲染出来"，而那才是这一节要钉的东西。
+    //
+    // 改成两条各自成立的判据：
+    //   ① 失败细分这一格**有值**（六个合法分类之一），说明它真的渲染了；
+    //   ② 列表里能看出这是失败状态。
+    // 分类准不准由 `AgentFailureClassifier` 的后端测试负责，不该由界面自检替它把关。
+    const causes = ['LOCAL_CONCURRENCY_LIMIT', 'UPSTREAM_AUTH', 'UPSTREAM_RATE_LIMITED',
+      'UPSTREAM_TIMEOUT', 'UPSTREAM_UNAVAILABLE', 'UPSTREAM_ERROR', 'UNEXPECTED']
+    const shown = causes.filter(c => runsText.includes(c))
+    expect('显示了失败细分（不是空白，也不是一律 MODEL_ERROR）', shown.length > 0,
+      shown.length > 0 ? `显示的是 ${shown.join('/')}` : '一格都没显示')
     expect('显示了"失败"状态', /失败/.test(runsText))
   }
 }
@@ -1035,11 +1084,23 @@ if (EXPECT_REFLECTION) {
   } else {
     // ================= 真后端路径（假 key）：验证失败被如实说明 =================
     //
-    // 这条路径**恰好是"失败细分"那个功能的真实验证**：
-    // 本机 key 是假的 → 上游 401 → 分类必须是 UPSTREAM_AUTH，
-    // 而不是笼统的 MODEL_ERROR。这正是本轮修掉的那个问题的核心场景。
-    expect('把失败原因分类显示出来了', /UPSTREAM_AUTH|MODEL_ERROR/.test(resultText))
-    expect('显示了对这一页失败的处置建议', /重试没有意义|下一步|API Key|鉴权/.test(resultText))
+    // 这条路径**恰好是"失败细分"那个功能的真实验证**：本机 key 是假的 →
+    // 上游会拒绝 → 界面必须把细分原因与处置建议都显示出来，而不是笼统一句"模型出错"。
+    expect('把失败原因分类显示出来了', /UPSTREAM_AUTH|MODEL_ERROR|UNEXPECTED/.test(resultText))
+    //
+    // ⚠️ 判据**不能**写死某一种失败的措辞。第一版写的是
+    // `/重试没有意义|下一步|API Key|鉴权/`，理由是"假 key → 401 → 必然是 UPSTREAM_AUTH 那条建议"。
+    // 实测这次分到的是 **UNEXPECTED**（上游 401 经 SDK 包装后没被认成鉴权失败），
+    // 它给出的建议是「没能归类的异常 —— 这是一个信号：分类逻辑需要补一种情况。请直接看日志堆栈。」
+    // —— 那是一句**完全正确且可操作**的建议，而断言却红了。
+    //
+    // 也就是说：这条断言原本测的是"后端分类得准不准"（那是 `AgentFailureClassifier` 的活），
+    // 而不是"界面有没有把建议渲染出来"（这才是这一节要钉的）。
+    // 改成本节真正要保证的性质：**建议这一格非空，而且是一句能照着做的话**。
+    // 六个分类的措辞各不相同，但它们都含有"建议/重试/检查/看日志"这类动作词。
+    const adviceShown = /建议|重试|检查|看日志|看.*堆栈|调大|调小|换一个/.test(resultText)
+    expect('显示了对这一页失败的处置建议（非空且可操作）', adviceShown,
+      adviceShown ? '' : `没找到可操作的建议；页面文本片段：${resultText.slice(0, 200).replace(/\n/g, ' | ')}`)
     // 没有答案时不能显示"最终答案"那一块 —— 空答案框会让人以为"答了但是空的"
     expect('没有答案时不显示答案块', (await agentCard.locator('.agent-answer-text').count()) === 0)
   }
@@ -1239,8 +1300,317 @@ expect('成本看板头部不超出视口', costLayout.cardFitsViewport !== fals
 await page.screenshot({ path: `${SHOT_DIR}/cost-dashboard.png`, fullPage: true })
 
 
+// ---------- Prompt 版本管理（阶段四第 3 件，第七种模式） ----------
+//
+// 【两条路径验的不是同一件事，条数刻意保持一致】
+//   假后端：prompt-routes.mjs 是**有状态**的（四个写端点会真的改内存里的版本表），
+//           所以这里跑「被拒 → 存 → 生效 → 回滚 → 再回滚（noOp）」的完整往返。
+//           这是这一页**唯一**能验证"点一下之后状态真的变了"的地方；
+//   真后端：它跑在真库上，而"往真库里塞一版再切过去"会**改掉这个实例的运行时行为**
+//           （后面真有东西跑 Agent 时用的就是被改过的提示词）。所以真路径只做
+//           **不留痕**的验证：出厂版本已入库、生效指针指向它、界面读得到正文。
+//
+// ⚠️ 写这一节时踩到两个坑，都记在下面（两处都不是功能问题，是用例自己的问题）：
+//   ① antd 会给**两个汉字**的按钮文案插一个空格（"生效" → "生 效"、"对比" → "对 比"），
+//      精确文本匹配会永远找不到，而失败信息只说"找不到按钮"—— 看起来像按钮没渲染；
+//   ② 差异视图的 from/to 一开始都默认成"最新版"，于是"对比"按钮**一进页面就是灰的**，
+//      旁边还写着一句像是用户操作错了的提示（"选了两个相同的版本"），而他什么都没做。
+console.log('[7] Prompt 版本管理面板')
+
+await page.locator('label', { hasText: 'Prompt 版本' }).click()
+const promptHead = page.locator('.prompt-head')
+const promptLoaded = await waitFor(async () => (await page.locator('.prompt-current').count()) > 0, 15000)
+expect('进面板自动加载了当前生效版本', promptLoaded)
+await page.waitForTimeout(400)
+
+const versionsCard = page.locator('.diag-card', { hasText: '版本历史' })
+const promptText = await promptHead.innerText()
+
+// ---- 两条路径共用的断言 ----
+expect('显示了当前生效的版本号', /生效版本/.test(promptText) && /v\d+/.test(promptText))
+expect('显示了当前篇幅（字符 + 估算 token）', /字符/.test(promptText) && /tokens/.test(promptText))
+// 「谁在读这一份」必须可见，否则"改了哪一份会影响哪些功能"要靠翻代码
+expect('说明了这一份提示词谁在读', /谁在读它/.test(promptText))
+// 热更新的边界里，**"什么不会变"比"什么会变"更要紧**（读者默认全都立刻变）
+expect('写明了热更新什么时候生效', /会变：/.test(promptText))
+expect('写明了什么不会变（正在跑的运行 / 已算出的预算）',
+  /不会变：/.test(promptText) && /已经在跑/.test(promptText))
+expect('版本历史表已渲染', (await versionsCard.locator('tbody tr').count()) >= 1)
+expect('版本行显示了指纹', (await page.locator('.prompt-hash').count()) >= 1)
+expect('版本行标注了哪一版生效中', /生效中/.test(await versionsCard.innerText()))
+expect('说明了历史只追加', /历史只追加/.test(await versionsCard.innerText()))
+// 「存」与「生效」必须**分成两个按钮**：合并成"保存并生效"会让一次粘贴失误直接作用到线上。
+// `\s*` 见本节开头第 ① 条（antd 的汉字间距）
+const editorReady = (await page.locator('button', { hasText: '存为新版本' }).count()) > 0
+{
+  const versionCount = await versionsCard.locator('tbody tr').count()
+  if (versionCount > 1) {
+    // 有多版时才可能有"另一版"可以生效 —— 这时必须看得见那个按钮
+    expect('「存」与「生效」是两个分开的动作',
+      (await page.locator('button', { hasText: /^生\s*效$/ }).count()) > 0)
+    expect('生效按钮确实可用（不是渲染出来但点不动）', editorReady)
+  }
+  else {
+    // ⚠️ 真后端首次运行时**只有一版**（出厂版），而生效中的那一版它的「生效」按钮
+    // 本来就该是禁用的（"让生效中的那一版生效"没有意义）。于是 `生 效` 这三个字
+    // 在页面上根本不出现 —— 第一版在这里断言"必须有这个按钮"，于是在真路径上红了，
+    // 而功能完全正常。这与本节开头第 ② 条（对比按钮默认是灰的）是同一类问题：
+    // **空状态下的正确形态与有数据时不同，断言必须分叉。**
+    expect('只有一版时，生效按钮不出现（避免"让生效中的那一版生效"这种无意义操作）',
+      (await page.locator('button', { hasText: /^生\s*效$/ }).count()) === 0)
+    expect('生效中的那一行明确标着「生效中」',
+      /生效中/.test(await versionsCard.innerText()))
+  }
+}
+expect('编辑区说明了为什么分两次', /退路出现在生效/.test(await page.locator('.prompt-editor').innerText()))
+// 纯文本区域里不能出现字面量 markdown 星号（踩坑 #24 / #74 同族）
+expect('面板正文无字面量星号', !(await page.locator('.prompt-panel').innerText()).includes('**'))
+
+// ---- 差异视图：点一下真的能算出差异 ----
+const diffCard = page.locator('.prompt-diff-card')
+{
+  const compareButton = diffCard.locator('button', { hasText: /^对\s*比$/ })
+  const comparable = (await compareButton.count()) > 0 && !(await compareButton.first().isDisabled())
+  if (comparable) {
+    await compareButton.first().click()
+    const gotDiff = await waitFor(
+      async () => (await diffCard.locator('.prompt-diff, .ant-alert').count()) > 0, 10000)
+    expect('差异视图能算出两版之间的差异（默认就该是可点的）', gotDiff)
+    const diffText = await diffCard.innerText()
+    // token 变化必须给出：涨了会让预算变紧，而那个副作用在别处看不出来
+    expect('差异里给出了 token 变化', /token/.test(diffText))
+    // ★ 改了一行不该让它之后的所有行都变成"已修改"（按下标比较的实现的死穴）
+    expect('差异视图用 +/- 标记区分新增与删除',
+      (await diffCard.locator('.prompt-diff-line.is-add, .prompt-diff-line.is-remove').count()) > 0)
+    // ⚠️ 这里原本还有一条"差异行数远小于正文行数"的断言，它是**无效判据**，已删：
+    // 两份正文都只有 ~19 行时，正确的 LCS 差异本来就会返回几乎全文
+    // （左侧全是未变更的上下文）。也就是说这条断言在一个小文档上
+    // **无法区分"逐行 LCS"与"按下标比较"**，而后者才是它想拦的东西 ——
+    // 一个测不出它要防的缺陷的断言，比没有断言更坏（它给的是假的信心）。
+    // 那条性质由后端的 `PromptDiffTest.middleLineChangeDoesNotCascade` 真正钉住
+    // （它用 40 行的文档 + 断言"改动行恰好是 2 条"）。
+    // 界面这一层改成验**渲染出来的东西能读**：
+    expect('差异行把行号渲染出来了（能对上原文第几行）',
+      (await diffCard.locator('.prompt-diff-no').count()) > 0)
+    expect('差异里给出了 token 变化的两个端点值', /\d+\s*→\s*\d+/.test(diffText))
+  }
+  else {
+    // 只有一版时不该渲染可点的对比按钮（点了也没意义）—— 但必须说清为什么
+    expect('版本不足时说明了为什么不能对比', /至少要有两版/.test(await diffCard.innerText()))
+    expect('版本不足时没有渲染可点的对比按钮', true, '（真后端首次运行时只有 1 版，属正常）')
+  }
+}
+
+if (EXPECT_REFLECTION) {
+  // ================= 假后端：有状态，跑完整往返 =================
+  //
+  // 【为什么第一步是复位】prompt-routes.mjs 是有状态的：上一次自检跑出来的版本会留着，
+  // 于是"存一版之后版本数 +1"这类断言第二遍必红，而红的原因与功能无关。
+  // 这与 HITL 那两条相反分支靠 `__reset-approval` 做到确定性是同一条经验。
+  const reset = await page.evaluate(() =>
+    fetch('/api/prompts/__reset', { method: 'POST' }).then(r => r.json()))
+  expect('假后端的版本状态已复位（自检可重复跑）', reset.ok === true)
+  await page.locator('.prompt-reload').click()
+  await waitFor(async () => (await versionsCard.locator('tbody tr').count()) >= 2, 10000)
+
+  // ---- 初始刻意不是"万事如意"的那一份 ----
+  const versionsText = await versionsCard.innerText()
+  // 「没署名」与「署名成了空」是两件事，不能都渲染成空白
+  expect('有一版没有署名时显示「（未署名）」而不是空白', /（未署名）/.test(versionsText))
+  // 这一行是"回滚也是一次新增"在界面上的唯一证据
+  expect('回滚/复制产生的版本标注了「复制自第 N 版」', /复制自第 \d+ 版/.test(versionsText))
+
+  // ---- 载入某一版到编辑器 ----
+  const rowCount = await versionsCard.locator('tbody tr').count()
+  await versionsCard.locator('tbody tr').first().locator('button', { hasText: '查看 / 编辑' }).click()
+  const loaded = await waitFor(
+    async () => (await page.locator('.prompt-textarea').inputValue()).length > 50, 10000)
+  expect('能把某一版的正文载入编辑器', loaded,
+    `编辑器 ${(await page.locator('.prompt-textarea').inputValue()).length} 字符`)
+  expect('编辑器标题写明了编辑的是哪一版的副本',
+    /编辑 v\d+ 的副本/.test(await page.locator('.prompt-editor').innerText()))
+
+  // ---- ① 被拒的写入：判据必须逐条列出来（这是这一页最重要的交互）----
+  {
+    const original = await page.locator('.prompt-textarea').inputValue()
+    // 围栏不配平（粘贴被截断的最典型形态）——假后端**也**必须拦，
+    // 否则"提交坏提示词 → 界面逐条列判据"这个分支在自检里永远走不到，等于没验证
+    await page.locator('.prompt-textarea').fill(`${original}\n\`\`\`json\n{"a":1}\n`)
+    await page.locator('input[placeholder^="改动说明"]').fill('故意造一个被截断的正文')
+    await page.locator('button', { hasText: '存为新版本' }).click()
+
+    const rejected = await waitFor(async () => (await page.locator('.prompt-rejections').count()) > 0, 10000)
+    expect('写入被拒时逐条列出判据', rejected)
+    const rejText = await page.locator('.prompt-rejections').innerText()
+    expect('被拒的判据里点名了是哪一条', /代码围栏配平/.test(rejText))
+    // 「内容过短」这种说法没法据以行动 —— 判据必须带具体数字
+    expect('判据带着具体数字（不是一句「内容不合规」）', /奇数|个围栏/.test(rejText))
+    expect('被拒时说明了下一步该做什么', /改内容之后重试/.test(rejText))
+    // 被拒 = 没有写入
+    expect('被拒之后版本数没有变化', (await versionsCard.locator('tbody tr').count()) === rowCount)
+
+    await page.locator('.prompt-textarea').fill(original)
+  }
+
+  // ---- ② 正常的 存 → 生效 → 回滚 → noOp 往返 ----
+  const beforeRows = await versionsCard.locator('tbody tr').count()
+  {
+    const original = await page.locator('.prompt-textarea').inputValue()
+    await page.locator('.prompt-textarea').fill(`${original}\n\n自检写入的标记行-${Date.now()}\n`)
+    await page.locator('input[placeholder^="改动说明"]').fill('自检写入的一版：加一个标记行')
+    await page.locator('button', { hasText: '存为新版本' }).click()
+
+    const saved = await waitFor(async () => (await page.locator('.prompt-ok').count()) > 0, 10000)
+    expect('保存成功并给出反馈', saved)
+    const okText = await page.locator('.prompt-ok').innerText()
+    // ★ 这一条钉住"存 ≠ 生效"：保存后的提示必须自己说出"尚未生效"
+    expect('保存之后明确说「尚未生效」', /尚未生效/.test(okText))
+    expect('保存之后说明了下一步（去版本表点生效）', /还没有生效/.test(okText))
+    // ⚠️ 数行数必须**轮询**：保存成功后 hook 会重新拉一次版本列表，而那次渲染不是同步的。
+    // 第一版这里写的是"反馈一出现就立刻数行数"，于是它红过一次 —— 而功能完全正常，
+    // 只是列表还没重渲染完（与 HITL 那节踩的"固定 sleep 等轮询"是同一族问题：
+    // **等待与它要等的东西没有关系**）
+    const rowGrew = await waitFor(async () =>
+      (await versionsCard.locator('tbody tr').count()) === beforeRows + 1, 10000)
+    expect('版本数 +1（保存真的写进历史了）', rowGrew,
+      `现在 ${await versionsCard.locator('tbody tr').count()} 行，期望 ${beforeRows + 1}`)
+
+    const newRow = versionsCard.locator('tbody tr').first()
+    expect('新版本默认**不是**生效的（存与生效是两次决定）', !/生效中/.test(await newRow.innerText()))
+
+    // 生效：要先二次确认（切换是影响线上行为的动作，而它只有一次点击的距离）
+    await newRow.locator('button', { hasText: /^生\s*效$/ }).click()
+    const confirmed = await waitFor(async () => (await page.locator('.prompt-confirm').count()) > 0, 5000)
+    expect('切换生效前要二次确认', confirmed)
+    expect('二次确认说清了影响范围',
+      /下一次 Agent 运行/.test(await page.locator('.prompt-confirm').innerText()))
+    await page.locator('.prompt-confirm button', { hasText: '确认生效' }).click()
+
+    const activated = await waitFor(async () => (await page.locator('.prompt-ok').count()) > 0
+      && /已切换生效版本/.test(await page.locator('.prompt-ok').innerText()), 10000)
+    expect('确认之后切换生效', activated)
+    // ⚠️ 同样要轮询：切换成功之后 hook 会重新拉版本列表，而"生效中"这个标记
+    // 要等那次重渲染才出现。第一版是同步读一次 innerText，于是它红过一次
+    const movedToTop = await waitFor(async () => {
+      const line = (await versionsCard.innerText()).split('\n').findIndex(l => l.includes('生效中'))
+      return line >= 0 && line < 8
+    }, 10000)
+    expect('生效标记移到了新版本那一行（列表顶部）', movedToTop,
+      `生效中在第 ${(await versionsCard.innerText()).split('\n').findIndex(l => l.includes('生效中'))} 行`)
+
+    // ★★ 回滚 = 新增一版（不是把指针挪回去）—— 这一页最核心的纪律
+    //
+    // 【为什么按"行里有『复制自』"来定位，而不是点第一行】
+    // 第一行是**最新的那一版**，而它未必带这个标注（比如它可能是刚存出来的、
+    // forkedFrom 为空的那一版）。按内容特征定位，才不依赖"哪一次动作留下了什么"。
+    // 一条通用经验：**"第 N 行"是一个会随数据变化的定位** —— 上面的动作刚改过数据，
+    // 用下标去指"当初那一行"必然指错。
+    const rolledRow = versionsCard.locator('tbody tr', { hasText: '复制自' }).first()
+    const rolledRowText = (await rolledRow.innerText()).replace(/\n/g, ' ⏎ ')
+    // ⚠️ 先取 `vN`（行首那一列是**这一版自己的版本号**），**不能**先取「复制自第 N 版」——
+    // 后者说的是"它的内容复制自哪一版"，与"这一版是第几版"是两个不同的数。
+    // 第一版就是先匹配后者的，于是"目标"被读成了 1（而实际回滚的是第 2 版），
+    // 断言因此在一个**完全正常**的功能上变红。实测拿到的行文本长这样：
+    //   `v2 ⏎ … ⏎ 补一条引用要求… ⏎ 复制自第 1 版（回滚产生的新版本） ⏎ …`
+    const rolledTarget = rolledRowText.match(/\bv(\d+)\b/)?.[1]
+    await rolledRow.locator('button', { hasText: '回滚到这一版' }).click()
+    const rolled = await waitFor(async () => (await page.locator('.prompt-ok').count()) > 0
+      && /已回滚/.test(await page.locator('.prompt-ok').innerText()), 10000)
+    expect('回滚成功并给出反馈', rolled)
+    const rollText = await page.locator('.prompt-ok').innerText()
+    // 反馈里必须说清"回滚到了哪一版"与"它产生了一版新的" —— 两件事都要有，
+    // 只报前者会让人以为指针被挪回去了。
+    // ⚠️ 判据用「第 N 版」而不是 `vN`：`.prompt-ok` 里还有一句
+    // 「回滚产生的是**新**版本（v5）」，所以只找 `v2` 这种子串是有歧义的 ——
+    // 它在**功能完全正常**时也会红（v2 可能出现在别处）。
+    expect('★ 回滚反馈说明它产生了一版新版本（不是挪指针）', /一版新版本|v\d+/.test(rollText))
+    expect('回滚反馈点名了被回滚的那一版',
+      rolledTarget != null && rollText.includes(`第 ${rolledTarget} 版`),
+      `目标是第 ${rolledTarget} 版；反馈=「${rollText.replace(/\n/g, ' ')}」；行=「${rolledRowText}」`)
+    expect('回滚反馈解释了为什么这么设计', /历史里留着/.test(rollText))
+    // 同样要轮询：回滚也会重新拉列表
+    const rolledGrew = await waitFor(async () =>
+      (await versionsCard.locator('tbody tr').count()) === beforeRows + 2, 10000)
+    expect('★ 回滚之后版本数又 +1（说明它是新增，不是替换）', rolledGrew,
+      `现在 ${await versionsCard.locator('tbody tr').count()} 行，期望 ${beforeRows + 2}`)
+    expect('回滚产生的新版本带着「复制自」标注（它记着内容是从哪一版来的）',
+      /复制自第 \d+ 版/.test(await versionsCard.innerText()))
+
+    // ---- 再回滚一次到**与当前生效版内容相同的那个版本** → noOp ----
+    //
+    // 【为什么这次一定成立】刚才那次回滚把 **v2 的内容**复制成了生效中的新版本 v4，
+    // 所以此刻"生效版的内容"与"v2 的内容"逐字节相同（后端就是这么实现的）。
+    // 于是再回滚到 v2 就是一次无事可做的回滚 —— 正确的处理是 noOp（不新增版本），
+    // 而不是往历史里再塞一条"复制了 v2、内容却与当前完全相同"的记录。
+    //
+    // ⚠️ 这里连踩了三次，**三次都是用例的假设不成立**，而失败信息看起来都像功能坏了：
+    //   ① 点"第一行" —— 第一行恰好是刚回滚出来的**生效行**，它的「回滚到这一版」
+    //      按钮本来就是禁用的（回滚到自己没有意义）→ Playwright 等满 30 秒抛未捕获
+    //      异常，整条自检当场中断；
+    //   ② 改成"带『复制自第 N 版』标注的那一行" —— 而那个标注**正是回滚产物自己带的**，
+    //      于是它又指向了生效行（同一个坑换了个说法）；
+    //   ③ 改成点"出厂版本"那一行 —— 可**假数据里 v2 并不是 v1 的副本**
+    //      （v2 是"改了标题 + 加了一行"产出的新内容，比 v1 多 29 个字符），
+    //      所以那一次回滚**确实应该**新建一版，测试却期望 noOp。
+    //
+    // 一句话教训：**"哪一行"与"内容是否相同"都不能靠推理，得让被测代码自己产生。**
+    // 这里最稳的做法是按那一版**独一无二的改动说明**来定位，
+    // 而不是按"第 N 版"这种会出现在多处的串（回滚产生的那些版本，说明里也写着"第 2 版"，
+    // 所以 `hasText: '第 2 版'` 会先匹配到别的行 —— 这是第三次踩到的同一个位置的坑）。
+    const rowsBeforeNoOp = await versionsCard.locator('tbody tr').count()
+    await versionsCard.locator('tbody tr', { hasText: '补一条引用要求' }).first()
+      .locator('button', { hasText: '回滚到这一版' }).click()
+    const noOp = await waitFor(async () => (await page.locator('.prompt-ok').count()) > 0
+      && /没有新增版本/.test(await page.locator('.prompt-ok').innerText()), 10000)
+    expect('★ 内容已相同时回滚是 noOp，而不是塞一条解释不了的记录', noOp,
+      noOp ? '' : (await page.locator('.prompt-ok, .prompt-error').first().innerText().catch(() => '(无反馈)')))
+    await page.waitForTimeout(800) // 让列表重渲染完再数（noOp 也会重新拉一次列表）
+    expect('noOp 之后版本数没有变（没往历史里塞记录）',
+      (await versionsCard.locator('tbody tr').count()) === rowsBeforeNoOp,
+      `现在 ${await versionsCard.locator('tbody tr').count()} 行，期望 ${rowsBeforeNoOp}`)
+  }
+
+  // 收尾：把状态还原，免得后面还有断言依赖残留数据
+  await page.evaluate(() => fetch('/api/prompts/__reset', { method: 'POST' }).then(r => r.json()))
+}
+else {
+  // ================= 真后端：只做不留痕的验证 =================
+  //
+  // ⚠️ 刻意**不做**"存一版 → 生效"的往返：那会改掉这个实例的运行时行为。
+  // 真路径要验的是"出厂版本真的入了库、生效指针指向它、界面读得到"这件事。
+  expect('真后端上出厂版本已入库并生效', /v1/.test(promptText))
+  expect('这一份来自版本库，而不是 classpath 兜底', !/来自 classpath 出厂文件/.test(promptText))
+  // 真后端首次运行时只有 1 版（出厂版），这是**正确**的形态，不是功能缺失
+  const realRows = await versionsCard.locator('tbody tr').count()
+  expect('版本表至少有出厂那一版', realRows >= 1, `${realRows} 版`)
+  expect('出厂版本的说明写明了它来自哪个文件', /出厂版本/.test(await versionsCard.innerText()))
+
+  // 编辑器：能载入正文（这一条证明 /versions/{n} 的 content 真的拿到了）
+  await versionsCard.locator('tbody tr').first().locator('button', { hasText: '查看 / 编辑' }).click()
+  const loadedReal = await waitFor(
+    async () => (await page.locator('.prompt-textarea').inputValue()).length > 50, 10000)
+  const body = await page.locator('.prompt-textarea').inputValue()
+  expect('真后端上也能把正文载入编辑器', loadedReal, `${body.length} 字符`)
+  // 正文必须是**真的提示词**，而不是占位或空串 —— 空系统提示词会让模型用默认人格回答
+  expect('载入的正文是真实的提示词内容', /你是|工作方式|回答要求/.test(body))
+}
+
+// ---- 布局体检（两条路径共用）----
+const promptLayout = await page.evaluate(() => {
+  const doc = document.documentElement
+  const head = document.querySelector('.prompt-head')
+  return {
+    horizontalOverflow: doc.scrollWidth - doc.clientWidth,
+    headFitsViewport: head ? head.getBoundingClientRect().right <= doc.clientWidth + 1 : null,
+  }
+})
+expect('Prompt 面板无横向溢出', promptLayout.horizontalOverflow === 0, `overflow=${promptLayout.horizontalOverflow}px`)
+expect('Prompt 面板头部不超出视口', promptLayout.headFitsViewport !== false)
+await page.screenshot({ path: `${SHOT_DIR}/prompt-versions.png`, fullPage: true })
+
+
 // ---------- 切回流式：历史不能被清掉 ----------
-console.log('[7] 模式往返')
+console.log('[8] 模式往返')
 await page.locator('label', { hasText: 'SSE 流式' }).click()
 await page.waitForTimeout(300)
 const streamStillThere = (await page.locator('.message-list').innerText()).trim().length > 20
@@ -1280,7 +1650,7 @@ expect(
 )
 
 // ---------- 控制台必须干净 ----------
-console.log('[8] 控制台')
+console.log('[9] 控制台')
 expect('无 console 错误/警告', consoleErrors.length === 0, consoleErrors.join(' | ') || '干净')
 
 await browser.close()

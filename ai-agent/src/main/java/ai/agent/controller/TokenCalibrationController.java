@@ -1,6 +1,8 @@
 package ai.agent.controller;
 
 import ai.agent.config.ChatCallProperties;
+import ai.agent.prompt.PromptKind;
+import ai.agent.prompt.PromptService;
 import ai.agent.service.ChatService;
 import ai.agent.token.TokenBudgetGuard;
 import ai.agent.token.TokenEstimator;
@@ -8,10 +10,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
-import org.springframework.util.StreamUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -20,8 +20,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -63,12 +61,22 @@ public class TokenCalibrationController {
 
 	private final ChatCallProperties properties;
 
+	/**
+	 * 提示词的来源（阶段四第 3 件）。
+	 *
+	 * <p>校准端点也要读它：{@code /system-prompt} 报的那个 token 数必须是
+	 * <b>当前生效那一版</b>的 —— 直接读 classpath 文件会在换版本之后显示旧数字，
+	 * 而"旧数字"与"新数字"看起来都正常。
+	 */
+	private final PromptService prompts;
+
 	public TokenCalibrationController(TokenBudgetGuard budgetGuard, TokenEstimator estimator,
-			ChatService chatService, ChatCallProperties properties) {
+			ChatService chatService, ChatCallProperties properties, PromptService prompts) {
 		this.budgetGuard = budgetGuard;
 		this.estimator = estimator;
 		this.chatService = chatService;
 		this.properties = properties;
+		this.prompts = prompts;
 	}
 
 	/**
@@ -188,12 +196,18 @@ public class TokenCalibrationController {
 		return body;
 	}
 
-	/** 系统提示词本身占多少（启动时算好的那个数），以及它的字符数。 */
+	/** 系统提示词本身占多少（<b>当前生效那一版</b>），以及它的字符数。 */
 	@GetMapping(value = "/system-prompt", produces = MediaType.APPLICATION_JSON_VALUE)
 	public Map<String, Object> systemPrompt() {
-		String text = readPrompt();
+		// 【阶段四】改成从版本库读，而不是直接读 classpath 文件：
+		// 换了提示词版本之后，这里显示的数必须跟着变 ——
+		// 否则校准端点上会出现"提示词长度还是旧的、而实际发出去的是新的"，
+		// 而两个数看起来都很正常（这正是校准端点最不该有的那种错）
+		String text = prompts.currentContent(PromptKind.CHAT_SYSTEM);
 		Map<String, Object> body = new LinkedHashMap<>();
-		body.put("location", TokenBudgetGuard.DEFAULT_SYSTEM_PROMPT_LOCATION);
+		body.put("location", PromptKind.CHAT_SYSTEM.classpathLocation());
+		body.put("promptKind", PromptKind.CHAT_SYSTEM.defaultValue());
+		body.put("fingerprint", prompts.currentFingerprint(PromptKind.CHAT_SYSTEM));
 		body.put("charCount", text.length());
 		body.put("estimatedTokens", budgetGuard.systemPromptTokens());
 		body.put("note", "系统提示词是 advisor 在调用阶段注入的，业务代码里看不见，但它实实在在占窗口 —— 所以预算必须算它");
@@ -220,15 +234,6 @@ public class TokenCalibrationController {
 			return Map.of();
 		}
 		return chatService.usageOf(last);
-	}
-
-	private static String readPrompt() {
-		try (var in = new ClassPathResource("prompts/system-agent.st").getInputStream()) {
-			return StreamUtils.copyToString(in, StandardCharsets.UTF_8);
-		}
-		catch (IOException e) {
-			return "";
-		}
 	}
 
 	private static String verdictOf(Double errorPercent) {

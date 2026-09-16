@@ -3,6 +3,8 @@ package ai.agent.service.impl;
 import ai.agent.chat.structured.StructuredAnswer;
 import ai.agent.chat.structured.StructuredResult;
 import ai.agent.config.ChatCallProperties;
+import ai.agent.prompt.PromptKind;
+import ai.agent.prompt.PromptService;
 import ai.agent.service.StructuredChatService;
 import ai.agent.token.TokenBudgetGuard;
 import jakarta.validation.ConstraintViolation;
@@ -60,6 +62,14 @@ public class StructuredChatServiceImpl implements StructuredChatService {
 	private final TokenBudgetGuard budgetGuard;
 
 	/**
+	 * 系统提示词的来源（阶段四第 3 件）。
+	 *
+	 * <p>与 {@code ChatServiceImpl} 里那一个字段是同一条理由：{@code ChatClient} 的
+	 * {@code defaultSystem} 是<b>启动时快照</b>，热更新只能在调用点做。
+	 */
+	private final PromptService prompts;
+
+	/**
 	 * 生成 JSON Schema 并与字符串互转。
 	 *
 	 * <p>用 Spring AI 自带的 {@link BeanOutputConverter} 而不是手写 schema：
@@ -70,11 +80,12 @@ public class StructuredChatServiceImpl implements StructuredChatService {
 	private final BeanOutputConverter<StructuredAnswer> converter = new BeanOutputConverter<>(StructuredAnswer.class);
 
 	public StructuredChatServiceImpl(ChatClient chatClient, Validator validator, ChatCallProperties properties,
-			TokenBudgetGuard budgetGuard) {
+			TokenBudgetGuard budgetGuard, PromptService prompts) {
 		this.chatClient = chatClient;
 		this.validator = validator;
 		this.properties = properties;
 		this.budgetGuard = budgetGuard;
+		this.prompts = prompts;
 	}
 
 	@Override
@@ -153,6 +164,10 @@ public class StructuredChatServiceImpl implements StructuredChatService {
 		}
 
 		return chatClient.prompt()
+				// 与流式对话同样的处理：**每轮回灌都重新取一次**当前生效的系统提示词。
+				// 如果只在外面取一次并在回灌轮里复用，改了提示词之后会出现
+				// "第 1 轮用新版、第 2 轮用旧版"—— 而两轮之间的矛盾会伪装成"模型自愈能力差"
+				.system(prompts.currentContent(PromptKind.CHAT_SYSTEM))
 				.user(prompt)
 				.options(options)
 				// 与流式对话共用同一套对话记忆：回灌轮次对用户来说仍是"同一个会话在追问"

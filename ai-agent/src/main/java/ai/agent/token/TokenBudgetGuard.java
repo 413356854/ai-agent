@@ -1,17 +1,14 @@
 package ai.agent.token;
 
 import ai.agent.config.ChatCallProperties;
+import ai.agent.prompt.PromptKind;
+import ai.agent.prompt.PromptService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.memory.ChatMemoryRepository;
 import org.springframework.ai.chat.messages.Message;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StreamUtils;
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -66,20 +63,18 @@ public class TokenBudgetGuard {
 
 	private final ChatMemoryRepository chatMemoryRepository;
 
-	/** 系统提示词资源。路径来自配置属性，见 {@link #DEFAULT_SYSTEM_PROMPT_LOCATION}。 */
-	private final ClassPathResource systemPrompt;
-
 	/**
-	 * 系统提示词的默认位置。
+	 * 提示词的来源（阶段四第 3 件）。预算里算的那一份与实际发出去的那一份
+	 * <b>必须同源</b> —— 否则会出现"校验算的是旧提示词、实际发的是新的"，预算永远算不准。
 	 *
-	 * <p>{@code ChatClientConfig} 里注入提示词用的是同一个配置属性
-	 * （{@code ai.chat.system-prompt-location}），所以"预算里算的提示词"
-	 * 与"实际发给模型的提示词"由配置系统保证一致，不靠注释提醒。
+	 * <p>在阶段四之前，两者的一致性靠"读同一个配置属性"保证（见类注释）。
+	 * 现在它们靠"问同一个 {@link PromptService}"保证，而且这个保证更强：
+	 * 属性只能保证<b>位置</b>相同，而这个还能保证<b>版本</b>相同。
 	 */
-	public static final String DEFAULT_SYSTEM_PROMPT_LOCATION = "classpath:prompts/system-agent.st";
+	private final PromptService prompts;
 
 	/**
-	 * 系统提示词的 token 数，启动时算一次。
+	 * 系统提示词的 token 数（<b>每次现算，不是启动时算一次</b>）。
 	 *
 	 * <p><b>为什么必须把它算进来</b>：系统提示词是 advisor 在调用阶段注入的，
 	 * 业务代码里看不见，但它实实在在占窗口。漏算它的后果是"预算校验永远偏松"——
@@ -87,8 +82,20 @@ public class TokenBudgetGuard {
 	 *
 	 * <p>实测：本项目的 {@code system-agent.st} 约 250 字，估算约 312 tokens。
 	 * 看着不多，但在"窗口调小"的测试里它就是最大的一笔开销 —— 这也说明它不能不算。
+	 *
+	 * <h2>⚠️ 阶段四的改动：这个数从"构造期常量"变成了"每次向版本库问一次"</h2>
+	 * 之前它是 {@code final int}，在构造器里算好后就不再变。
+	 * 那在"提示词是 classpath 文件"的前提下是对的（文件在进程生命周期里不会变），
+	 * 但<b>阶段四第 3 件做的是配置热更新</b> —— 提示词会在运行中换版本，
+	 * 而换了之后这个常量就<b>永久过时</b>。
+	 * 它的失效形态很难发现：预算校验照常工作，只是算出来的数多了一点或少了一点，
+	 * 表现为"历史被裁得比预期早"或"该拦的没拦住"，而没有任何一处会报错。
+	 * 所以这里每次都问一遍 {@link PromptService#tokenCount} ——
+	 * 它的返回值来自"当前生效那一版"的估算，与真正发出去的内容同源。
 	 */
-	private final int systemPromptTokens;
+	public int systemPromptTokens() {
+		return prompts.tokenCount(PromptKind.CHAT_SYSTEM);
+	}
 
 	/**
 	 * 唯一的构造器 —— Spring 直接用它建 bean。
@@ -107,28 +114,19 @@ public class TokenBudgetGuard {
 	 *       {@code No qualifying bean of type 'ClassPathResource'} —— 一模一样的问题。
 	 *       容器里没有这种 bean，Spring 也没有"看到 Resource 类型就自己 new 一个"的规则。
 	 *       真正管用的写法只有两种：<b>加 {@code @Value} 让属性占位符解析器介入</b>，
-	 *       或者注入 {@code ResourceLoader} 自己解析。这里用前者。
-	 *       通用经验：<b>想让容器"凭空造一个参数"，必须给它一个来源（属性 / 前缀），
-	 *       光声明类型是不够的。</b></li>
+	 *       或者注入 {@code ResourceLoader} 自己解析。</li>
 	 * </ol>
+	 * <b>阶段四的后续</b>：系统提示词改成从版本库取之后，这里不再注入 {@code @Value} 资源，
+	 * 而是注入 {@link PromptService}（一个有真实实现的 bean，不涉及上面第 2 条那个边界）。
+	 * 上面两条<b>刻意留着</b>：它们记的是"为什么当时不能那么写"，
+	 * 而一个不知道这段历史的人很容易把 {@code @Value} 资源再走一遍弯路。
 	 */
 	public TokenBudgetGuard(ChatCallProperties properties, TokenEstimator estimator,
-			ChatMemoryRepository chatMemoryRepository,
-			@Value("${ai.chat.system-prompt-location:" + DEFAULT_SYSTEM_PROMPT_LOCATION + "}") String systemPromptLocation) {
+			ChatMemoryRepository chatMemoryRepository, PromptService prompts) {
 		this.properties = properties;
 		this.estimator = estimator;
 		this.chatMemoryRepository = chatMemoryRepository;
-		this.systemPrompt = new ClassPathResource(stripClasspathPrefix(systemPromptLocation));
-		this.systemPromptTokens = estimator.estimateMessage(readQuietly(this.systemPrompt));
-	}
-
-	/** 去掉 {@code classpath:} 前缀：{@link ClassPathResource} 的构造器只认相对路径。 */
-	private static String stripClasspathPrefix(String location) {
-		if (location == null || location.isBlank()) {
-			return "prompts/system-agent.st";
-		}
-		String trimmed = location.trim();
-		return trimmed.startsWith("classpath:") ? trimmed.substring("classpath:".length()) : trimmed;
+		this.prompts = prompts;
 	}
 
 	/**
@@ -148,6 +146,9 @@ public class TokenBudgetGuard {
 		List<Message> history = new ArrayList<>(chatMemoryRepository.findByConversationId(conversationId));
 
 		int questionTokens = estimator.estimateMessage(userMessage);
+		// 【每次现算，不是读字段】提示词可以在运行中换版本，读一个构造期算好的常量
+		// 会让这个数永久过时 —— 而失效形态只是"历史被裁得比预期早"，没有任何报错
+		int systemPromptTokens = systemPromptTokens();
 		int base = systemPromptTokens + questionTokens + estimator.requestOverhead();
 		int allowance = cfg.inputAllowance();
 
@@ -235,6 +236,7 @@ public class TokenBudgetGuard {
 			return BudgetCheck.disabled();
 		}
 
+		int systemPromptTokens = systemPromptTokens();
 		int needed = systemPromptTokens + estimator.estimateMessage(prompt) + estimator.requestOverhead();
 		int allowance = cfg.inputAllowance();
 
@@ -252,11 +254,6 @@ public class TokenBudgetGuard {
 	/** 当前配置下留给输入的 token 上限（便于诊断端点与前端展示）。 */
 	public int inputAllowance() {
 		return properties.getBudget().inputAllowance();
-	}
-
-	/** 系统提示词占用的 token 数（估算值，启动时算一次）。 */
-	public int systemPromptTokens() {
-		return systemPromptTokens;
 	}
 
 	/**
@@ -313,22 +310,6 @@ public class TokenBudgetGuard {
 
 	private static int marginPercent(ChatCallProperties.Budget cfg) {
 		return (int) Math.round(cfg.getSafetyMargin() * 100);
-	}
-
-	private static String readQuietly(ClassPathResource resource) {
-		try (var in = resource.getInputStream()) {
-			return StreamUtils.copyToString(in, StandardCharsets.UTF_8);
-		}
-		catch (IOException e) {
-			// 读不到系统提示词不该让整个应用启动失败（那是 ChatClientConfig 的职责），
-			// 这里退化成"少算一点预算"，并留下明确线索
-			log.warn("读取系统提示词失败，预算校验将不计入系统提示词：{}", e.toString());
-			return "";
-		}
-		catch (UncheckedIOException e) {
-			log.warn("读取系统提示词失败，预算校验将不计入系统提示词：{}", e.toString());
-			return "";
-		}
 	}
 
 	/**

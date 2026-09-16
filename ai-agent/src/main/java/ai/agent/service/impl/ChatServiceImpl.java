@@ -1,5 +1,7 @@
 package ai.agent.service.impl;
 
+import ai.agent.prompt.PromptKind;
+import ai.agent.prompt.PromptService;
 import ai.agent.service.ChatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,13 +32,28 @@ public class ChatServiceImpl implements ChatService {
 
 	private final ChatClient chatClient;
 
-	public ChatServiceImpl(ChatClient chatClient) {
+	/**
+	 * 系统提示词的来源（阶段四第 3 件：Prompt 版本管理 + 配置热更新）。
+	 *
+	 * <p><b>为什么必须在这里再注入一次，而不是只靠 {@code ChatClient} 的默认值</b>：
+	 * {@code ChatClientBuilder.defaultSystem(Resource)} 在<b>构建 Client 的那一刻</b>
+	 * 就把 Resource 读成字符串了（用 {@code javap} 核过字节码），
+	 * 所以换了提示词版本之后，那个默认值<b>不会变</b>。
+	 * 真正的热更新只能发生在调用点 —— 也就是下面这两处 {@code .system(...)}。
+	 */
+	private final PromptService prompts;
+
+	public ChatServiceImpl(ChatClient chatClient, PromptService prompts) {
 		this.chatClient = chatClient;
+		this.prompts = prompts;
 	}
 
 	@Override
 	public Flux<ChatClientResponse> stream(String conversationId, String userText, double temperature) {
 		return chatClient.prompt()
+				// 【每轮都重新取一次当前生效的提示词】这是"配置热更新"真正的落点：
+				// 换了一版之后，下一轮对话就用新的（不需要重启、不需要重新打包）
+				.system(prompts.currentContent(PromptKind.CHAT_SYSTEM))
 				.user(userText)
 				// 注意：options(...) 接收的是 ChatOptions.Builder，不是构建好的 ChatOptions
 				.options(OpenAiChatOptions.builder().temperature(temperature))
@@ -48,6 +65,7 @@ public class ChatServiceImpl implements ChatService {
 	@Override
 	public String call(String conversationId, String message) {
 		return chatClient.prompt()
+				.system(prompts.currentContent(PromptKind.CHAT_SYSTEM))
 				.user(message)
 				.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, conversationId))
 				.call()
