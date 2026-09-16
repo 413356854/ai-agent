@@ -65,7 +65,11 @@ public class DefaultPromptService implements PromptService {
 	public String currentFingerprint(PromptKind kind) {
 		Optional<PromptVersion> active = activeVersion(kind);
 		if (active.isPresent()) {
-			return "v" + active.get().version() + ":" + active.get().hash();
+			// 拼法来自 PromptVersion.fingerprintOf —— **不许在这里手拼**：
+			// 灰度发布也要算"另一版的指纹"（它算不出当前生效那一版），
+			// 于是就会有两份拼法。两份迟早分叉，而分叉的表现是
+			// "灰度那一组的指纹在库里对不上任何版本"（只在读 trace 时才发现）
+			return PromptVersion.fingerprintOf(active.get());
 		}
 		return "classpath:" + PromptVersion.hashOf(classpathOf(kind));
 	}

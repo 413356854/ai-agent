@@ -1,5 +1,7 @@
 package ai.agent.agent;
 
+import ai.agent.canary.CanaryDecision;
+import ai.agent.canary.CanaryService;
 import ai.agent.config.AgentLoopProperties;
 import ai.agent.prompt.PromptKind;
 import ai.agent.prompt.PromptService;
@@ -89,13 +91,29 @@ public class AgentLoop {
 	 */
 	private final PromptService prompts;
 
+	/**
+	 * 灰度发布（阶段四第 5 件）：决定<b>这一次运行</b>用哪一版提示词。
+	 *
+	 * <h2>为什么它出现在循环里，而不是包在 {@link PromptService} 外面（装饰器）</h2>
+	 * 因为分流的输入是<b>运行 id</b> —— 而 {@code PromptService} 的接口上没有任何
+	 * "这一次运行是谁"的信息（它只有 {@code kind}）。做成装饰器就必须把运行 id
+	 * 塞进一个 ThreadLocal 或参数里，而 ThreadLocal 在虚拟线程 + 异步链路上
+	 * 是出了名的容易丢（本项目阶段一的载体线程实验已经量过它的代价）。
+	 *
+	 * <p>更根本的理由：<b>判定要发生在"读提示词"那一刻，而且只发生一次</b>。
+	 * 循环里读提示词的地方就只有一处（{@code messages.isEmpty()} 那一个分支），
+	 * 所以把判定放在那里，天然满足"一次运行只判定一次"这条与热更新粒度对齐的纪律。
+	 */
+	private final CanaryService canary;
+
 	public AgentLoop(ToolRegistry registry, ToolCallExecutor executor, ModelTurn modelTurn,
-			AgentLoopProperties properties, PromptService prompts) {
+			AgentLoopProperties properties, PromptService prompts, CanaryService canary) {
 		this.registry = registry;
 		this.executor = executor;
 		this.modelTurn = modelTurn;
 		this.properties = properties;
 		this.prompts = prompts;
+		this.canary = canary;
 	}
 
 	/**
@@ -200,10 +218,22 @@ public class AgentLoop {
 		// 新起的运行（messages 为空）：自己去读一次。
 		// 续跑：不读（系统消息已经在检查点里），改用服务层从检查点取来的原指纹。
 		String promptFingerprint;
+		String canaryVariant = "";
 		if (messages.isEmpty()) {
-			promptFingerprint = currentPromptFingerprint();
-			messages.add(new SystemMessage(loadSystemPrompt()));
+			// 【阶段四第 5 件：先判定这一次运行属于哪一组，再按那一组读提示词】
+			//
+			// 顺序不能反：如果先读 stable 那一版的正文、再决定"其实该走候选版"，
+			// 那么正文与指纹就会来自两个不同的版本 —— 而指纹是要落库的，
+			// 于是库里会出现一个"对不上任何版本"的指纹，且**只在读 trace 时才发现**。
+			CanaryDecision decision = canary.decide(PromptKind.AGENT_LOOP, runId);
+			canaryVariant = decision.variant();
+			promptFingerprint = decision.fingerprint();
+			messages.add(new SystemMessage(loadSystemPrompt(decision)));
 			messages.add(new UserMessage(question));
+			if (!canaryVariant.isEmpty()) {
+				log.info("灰度分流 runId={} → {}（kind={}）", runId, decision.describe(),
+						PromptKind.AGENT_LOOP.defaultValue());
+			}
 		}
 		else {
 			promptFingerprint = fallbackPromptFingerprint == null ? "" : fallbackPromptFingerprint;
@@ -297,7 +327,7 @@ public class AgentLoop {
 				// 而不是"每一次工具调用之后"—— 后者在纯文字回答的任务上一次都不写。
 				messages.add(new AssistantMessage(reply.text()));
 				listener.afterStep(runId, round, step, List.copyOf(messages), totalTokens, toolCallCount,
-						elapsedMs(startedAt), promptFingerprint);
+						elapsedMs(startedAt), promptFingerprint, canaryVariant);
 				log.info("Agent 在 {} 轮后给出答案，共 {} tokens / {}ms", round, totalTokens, elapsedMs(startedAt));
 				AgentRun answered = new AgentRun(question, steps, reply.text(), AgentStopReason.ANSWERED, totalTokens,
 						elapsedMs(startedAt), toolCallCount);
@@ -376,7 +406,7 @@ public class AgentLoop {
 						reply.promptTokens(), reply.completionTokens(), elapsedMs(stepStarted),
 						reply.cachedPromptTokens());
 				listener.afterStep(runId, round, partialStep, List.copyOf(messages), totalTokens, toolCallCount,
-						elapsedMs(startedAt), promptFingerprint);
+						elapsedMs(startedAt), promptFingerprint, canaryVariant);
 
 				AgentStopReason reason = AgentStopReason.WAITING_FOR_APPROVAL;
 				AgentRun waiting = new AgentRun(question, steps, null, reason, totalTokens, elapsedMs(startedAt),
@@ -395,7 +425,7 @@ public class AgentLoop {
 			// 重复动作是一个"正常出口"，它这一步的上下文是完整可用的 ——
 			// 放后面的话，恰恰在最需要看到"它在原地打转"的那次运行里会丢掉最后一步
 			listener.afterStep(runId, round, step, List.copyOf(messages), totalTokens, toolCallCount,
-					elapsedMs(startedAt), promptFingerprint);
+					elapsedMs(startedAt), promptFingerprint, canaryVariant);
 
 			if (duplicateHit) {
 				// 不把"重复"当成正常一步继续：模型已经证明它没有新信息可用，
@@ -510,12 +540,21 @@ public class AgentLoop {
 				.build();
 	}
 
-	/** 读系统提示词。与工具目录拼在一起 —— 见 {@code ToolRegistry.renderCatalog} 的注释。 */
-	private String loadSystemPrompt() {
-		// 每次运行读一次（不缓存）：换了提示词版本之后，**下一次运行**就用新的。
+	/**
+	 * 读系统提示词。<b>读哪一版由 {@code decision} 决定</b>（灰度分流的结果），
+	 * 与工具目录拼在一起 —— 见 {@code ToolRegistry.renderCatalog} 的注释。
+	 *
+	 * <h2>为什么正文与指纹必须来自同一次判定</h2>
+	 * 判定结果同时给出了 version 与 fingerprint。如果这里重读一次"当前生效那一版"
+	 * 的正文、而指纹用的是判定时算的那个，两者就可能来自<b>不同的版本</b> ——
+	 * 当中间恰好有人切了版本时（这正是热更新会发生的事）。
+	 * 那种情况下库里的指纹对不上真正发出去的正文，而它**不报错**：
+	 * 事后查"那天的答案为什么变差"时，你会对着一个错的版本号去比正文。
+	 */
+	private String loadSystemPrompt(CanaryDecision decision) {
 		// 兜底链（库 → classpath → 抛异常）在 PromptService 里，这里不重复实现 ——
 		// 两处兜底就意味着两处会漂移
-		String base = prompts.currentContent(PromptKind.AGENT_LOOP);
+		String base = decision.candidate() ? candidateContent(decision) : prompts.currentContent(PromptKind.AGENT_LOOP);
 		String catalog = registry.renderCatalog();
 		if (catalog.isBlank()) {
 			return base;
@@ -524,32 +563,30 @@ public class AgentLoop {
 	}
 
 	/**
-	 * 读这一版提示词的指纹（trace 用），<b>读不到就返回空串</b>。
+	 * 候选版本的正文。
 	 *
-	 * <h2>为什么这里吞掉异常，而 {@link #loadSystemPrompt()} 不吞</h2>
-	 * 因为两者的失败后果完全不同：
+	 * <p>判定时已经确认过那一版存在（见 {@code DefaultCanaryService.decide}），
+	 * "两次读之间被删掉"在本项目里只剩"库被重建"这一种可能（库里没有删除接口）。
+	 * 读不到时这里<b>兜底成当前生效那一版</b>，而不是抛出去 ——
+	 * 理由与 {@code currentPromptFingerprint} 当初那条取舍正好相反，
+	 * 所以放在一起讲清楚：
 	 * <ul>
-	 *   <li>{@code loadSystemPrompt} 失败 → 这次运行<b>没有系统提示词</b>。
-	 *       模型会用默认人格回答，而答案看起来"只是变笨了" ——
-	 *       这必须让它炸，否则事故会被读成"模型能力不行"；</li>
-	 *   <li>本方法失败 → 只是<b>这一列没有值</b>。任务照样能跑、答案照样对，
-	 *       代价是"这次运行用的是哪一版"事后查不到。</li>
+	 *   <li><b>主路径（读当前生效那一版）读不到 → 必须炸</b>：那时 Agent
+	 *       没有系统提示词会用默认人格回答，看起来像"模型不听话"，实际是部署问题；</li>
+	 *   <li><b>候选版读不到 → 不该炸</b>：实验配置的问题不该让命中的那批运行全部失败 ——
+	 *       它们用稳定版正文照样能把任务跑完。代价是这一次的指纹记的是候选版、
+	 *       而正文来自稳定版，这个不一致<b>必须留 WARN</b>（静默地不一致与
+	 *       "本来就是这样"分不开，而那条日志就是两者的分界）。</li>
 	 * </ul>
-	 * 让后者把整个运行打断，等于"因为一个观测字段而拒绝服务" —— 那个取舍在
-	 * 阶段三的并发闸门那边已经定过一次（观测不该比业务更硬）。
-	 * <p>但**必须留一条 WARN**：静默地少一个字段，与"这一版本来就没有指纹"分不开，
-	 * 而那条日志正是两者的分界。
 	 */
-	private String currentPromptFingerprint() {
-		try {
-			String fingerprint = prompts.currentFingerprint(PromptKind.AGENT_LOOP);
-			return fingerprint == null ? "" : fingerprint;
-		}
-		catch (RuntimeException e) {
-			log.warn("读不到当前提示词版本的指纹（这次运行的 prompt_fingerprint 会是空的，不影响执行）：{}",
-					e.getMessage());
-			return "";
-		}
+	private String candidateContent(CanaryDecision decision) {
+		return canary.candidateContent(PromptKind.AGENT_LOOP, decision.version())
+				.orElseGet(() -> {
+					log.warn("灰度候选版 v{} 读不到正文 —— 这一次运行用稳定版正文兜底"
+							+ "（trace 里的指纹仍是候选版：分流判定已经发生了，这一格如实记录那次的不一致）",
+							decision.version());
+					return prompts.currentContent(PromptKind.AGENT_LOOP);
+				});
 	}
 
 	private static long elapsedMs(long startedAt) {
@@ -570,7 +607,7 @@ public class AgentLoop {
 	 * （这个坑阶段一的钉住实验踩过：一个"只在第一次算"的字段在真并发下会互相干扰）。
 	 */
 	public AgentLoop withModelTurn(ModelTurn otherModel) {
-		return new AgentLoop(registry, executor, otherModel, properties, prompts);
+		return new AgentLoop(registry, executor, otherModel, properties, prompts, canary);
 	}
 
 }

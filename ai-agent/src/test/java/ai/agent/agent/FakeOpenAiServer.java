@@ -42,7 +42,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * 断言"我构造了 ToolDefinition"是不够的 —— 它可能压根没进请求
  * （本项目里"算了但没接线"这类 bug 出现过不止一次）。
  */
-class FakeOpenAiServer implements AutoCloseable {
+public class FakeOpenAiServer implements AutoCloseable {
 
 	private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -64,7 +64,7 @@ class FakeOpenAiServer implements AutoCloseable {
 	private volatile List<String> scriptedResponses = List.of();
 
 	/** 起一个常驻的假端点（端口由系统分配，供整个测试类共用）。 */
-	FakeOpenAiServer() throws IOException {
+	public FakeOpenAiServer() throws IOException {
 		this.server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
 		this.server.createContext("/", this::handle);
 		this.server.start();
@@ -76,23 +76,36 @@ class FakeOpenAiServer implements AutoCloseable {
 	 * <p>清空是必须的：不清的话，断言里的 {@code callCount()} 与 {@code requestJson(0)}
 	 * 会指向上一个测试的请求 —— 于是测试之间互相污染，而表现为"断言偶尔失败"。
 	 */
-	void script(List<String> responses) {
+	public void script(List<String> responses) {
 		this.scriptedResponses = List.copyOf(responses);
 		this.requestBodies.clear();
 	}
 
 	/** 假端点根地址，直接喂给 {@code spring.ai.openai.base-url}。 */
-	String baseUrl() {
+	public String baseUrl() {
 		return "http://127.0.0.1:" + server.getAddress().getPort();
 	}
 
+	/**
+	 * 只清空已记录的请求，不动脚本。
+	 *
+	 * <h2>为什么需要它（而不是用 {@link #script} 顺手清）</h2>
+	 * {@code script(...)} 会同时换脚本与清请求，于是"连跑两次、各取第 0 个请求"这种
+	 * 形态就取不到东西：第二次 {@code requestJson(0)} 拿到的仍然是**合并后**列表里的
+	 * 第一个（也就是第一次运行的那个）。实测踩到过 —— 表现是"两次运行的出站请求
+	 * 一模一样"，看上去像"灰度没生效"，实际是测试读错了下标。
+	 */
+	public void clearRequests() {
+		requestBodies.clear();
+	}
+
 	/** 全部收到的请求体（按轮次）。 */
-	List<String> requestBodies() {
+	public List<String> requestBodies() {
 		return List.copyOf(requestBodies);
 	}
 
 	/** 第 N 轮请求体的 JSON 树。 */
-	JsonNode requestJson(int index) {
+	public JsonNode requestJson(int index) {
 		try {
 			return MAPPER.readTree(requestBodies.get(index));
 		}
@@ -102,7 +115,7 @@ class FakeOpenAiServer implements AutoCloseable {
 	}
 
 	/** 实际被调用了几轮。 */
-	int callCount() {
+	public int callCount() {
 		return requestBodies.size();
 	}
 
@@ -149,7 +162,7 @@ class FakeOpenAiServer implements AutoCloseable {
 	 *
 	 * @param toolCalls 每个元素是 {id, name, arguments}
 	 */
-	static String toolCallResponse(List<String[]> toolCalls) {
+	public static String toolCallResponse(List<String[]> toolCalls) {
 		ObjectNode root = MAPPER.createObjectNode();
 		root.put("id", "chatcmpl-fake-toolcall");
 		root.put("object", "chat.completion");
@@ -180,7 +193,7 @@ class FakeOpenAiServer implements AutoCloseable {
 	}
 
 	/** 造一个"模型给出文字回答"的响应。 */
-	static String textResponse(String text) {
+	public static String textResponse(String text) {
 		ObjectNode root = MAPPER.createObjectNode();
 		root.put("id", "chatcmpl-fake-text");
 		root.put("object", "chat.completion");
@@ -206,7 +219,7 @@ class FakeOpenAiServer implements AutoCloseable {
 	 * 那时报告会写成"模型输出了非法 JSON"—— 而真正的原因是我们给的输出额度太小。
 	 * 两种归因的修法完全相反，所以"能不能把 length 这个信号带出来"必须被测到。
 	 */
-	static String truncatedToolCallResponse(String id, String name, String partialArguments) {
+	public static String truncatedToolCallResponse(String id, String name, String partialArguments) {
 		ObjectNode root = MAPPER.createObjectNode();
 		root.put("id", "chatcmpl-fake-truncated");
 		root.put("object", "chat.completion");
@@ -240,7 +253,7 @@ class FakeOpenAiServer implements AutoCloseable {
 	}
 
 	/** 便捷构造：一组 {id, name, arguments}。 */
-	static List<String[]> calls(String... triples) {
+	public static List<String[]> calls(String... triples) {
 		if (triples.length % 3 != 0) {
 			throw new IllegalArgumentException("必须是 3 的倍数：id, name, arguments");
 		}

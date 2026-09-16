@@ -1842,8 +1842,309 @@ expect('Prompt 面板头部不超出视口', promptLayout.headFitsViewport !== f
 await page.screenshot({ path: `${SHOT_DIR}/prompt-versions.png`, fullPage: true })
 
 
+// ---------- 告警与灰度（阶段四第 5 件，第八种模式） ----------
+//
+// 【两条路径验的不是同一件事，条数刻意保持一致】
+//   假后端：alert-routes.mjs **有状态**（确认一条 → 它从"未处理"变成"已确认"），
+//           所以这里跑「确认 → 状态真的变了」的写往返，外加开/停灰度的校验分支；
+//   真后端：它跑在真库上，而"确认一条告警"会**改掉这个实例的状态**
+//           （后面真有人看这个面板时，那条告警已经被自检标成看过了）。
+//           所以真路径只做**不留痕**的验证：判据目录读得到、当前状态读得到、
+//           灰度那一栏把"配置"与"实测"并排显示出来了。
+//
+// ⚠️ 这一节最要紧的三条断言（它们对应这一件的三条纪律）：
+//   ① **配置与实测必须同屏** —— 只显示"配了 20%"的页面会让人以为实验在做，
+//      而"实际一份都没分到"是不报任何错的一种失败；
+//   ② **三态必须长得不一样** —— 未处理 / 已确认 / 已恢复，合成一个布尔之后
+//      "还有几条没人看过"这个数字就不成立了（而它是值班交接的依据）；
+//   ③ **构建阶段的判据必须显示成「这一页不评估」** —— 否则读的人会以为
+//      "告警面板说构建也没问题"。
+console.log('[8] 告警与灰度面板')
+
+// 【进面板之前先复位假后端的状态，而且这**不**算"作弊"】
+// ⚠️ 这里的复位解决的是**用例自身的顺序依赖**，第一版没有它：
+// "三个状态在清单上长得不一样"那条断言要求清单里同时有未处理 / 已确认 / 已恢复，
+// 而 `alert-routes.mjs` 的初始数据确实三种都有 —— 但**第二条路径跑完之后**，
+// 上面那一节会把那条"未处理"的确认掉。于是**连跑第二遍时那条断言必红**，
+// 而红的原因与界面无关（与 Prompt 面板靠 `__reset` 做到可重复是同一条经验）。
+// 复位放在**切面板之前**：它只改后端的内存状态，不碰页面，
+// 所以三条断言（判据目录 / 三种状态 / 灰度分布）看到的是同一份确定的数据。
+if (EXPECT_REFLECTION) {
+  const resetBeforePanel = await page.evaluate(() =>
+    fetch('/api/alerts/__reset', { method: 'POST' }).then(r => r.json()))
+  expect('进面板前把假后端的告警状态复位（让这一节可重复跑）', resetBeforePanel.ok === true)
+}
+
+await page.locator('label', { hasText: '告警与灰度' }).click()
+
+const alertPanelReady = await waitFor(
+  async () => (await page.locator('.alert-events-card').count()) > 0, 10000)
+expect('告警面板渲染出来了（而不是只有空骨架）', alertPanelReady)
+
+// ---- 判据目录：一处定义、两处使用、一处展示 ----
+const rulesCard = page.locator('.alert-rules-card')
+const rulesText = await rulesCard.innerText()
+expect('判据目录列出了运行阶段的判据', /unconfigured-prices/.test(rulesText))
+expect('判据目录也列出了构建阶段的门禁（否则读的人以为只检查这几件事）',
+  /gate-eval-baseline-drift/.test(rulesText))
+expect('★ 构建阶段的判据被明确标成「这一页不评估」',
+  /这一页不评估它/.test(rulesText),
+  '—— 不加区分地列出来，读的人会以为「告警面板说构建也没问题」')
+expect('判据目录写明了阈值写死不从配置读', /不从配置读/.test(rulesText))
+expect('判据目录里没有字面量 markdown 星号', !rulesText.includes('**'))
+
+// ---- 告警清单 ----
+const eventsCard = page.locator('.alert-events-card')
+
+// ★ 先跑一轮评估 —— 两条路径都跑，而这一步是**这一件端到端的核心**
+//
+// 【为什么必须在界面上点它，而不是用 fetch 绕过】
+// 因为这一条要验的正是"点一下之后告警真的被记下来了"这条链路：
+// 按钮 → useAlerts.evaluate → GET /api/alerts/sweep → AlertRecorder → alert_event 表 → 列表。
+// 用 fetch 直接打端点会跳过前两步，而"界面压根没接上"这种失败恰恰只在前面那两步里。
+//
+// 【为什么真后端也要跑】
+// 真路径的意义就是"同一个动作在真实现上也成立"：假后端的 sweep 是手写 JSON，
+// 而真后端的 sweep 要跑一次快照采集（四条聚合 + 两次检索统计），
+// 任何一处 SQL 写错都会在这里现形 —— 而假后端永远绿。
+//
+// ⚠️ 它会**写库**（真后端上会往 alert_event 插一行）。这是刻意的：
+// 这一件要解决的原始缺口就是"没有人被通知"，而"没人点就永远没有记录"正是它。
+// 自检点这一下，等于顺带证明"这条链路能通"。
+await page.locator('.alert-head button', { hasText: /跑一轮评估|评估中/ }).first().click()
+const sweepRendered = await waitFor(
+  async () => /最近一轮评估/.test(await page.locator('.alert-head').innerText()),
+  20000,
+)
+expect('点「跑一轮评估」之后界面给出了这一轮的产出（新响 / 恢复 / 仍在响）', sweepRendered,
+  `—— head=${(await page.locator('.alert-head').innerText()).replace(/\n/g, ' ').slice(0, 100)}`)
+
+// 评估会写库 → 清单里这时**必然**至少有一条（价格没配在测试库里必然成立）
+const eventsText = await eventsCard.innerText()
+expect('★ 跑完评估之后，告警清单里真的多出了一条记录（评估会写库）',
+  (await eventsCard.locator('tbody tr').count()) > 0,
+  `—— 清单：${eventsText.replace(/\n/g, ' ').slice(0, 120)}`)
+expect('清单列出了具体判据代号（而不是一句笼统的"有问题"）',
+  /unconfigured-prices/.test(eventsText))
+
+// ★ 三个状态在**列表里**必须长得不一样
+//
+// 【判据分两部分，因为两条路径能提供的样本不同】
+//   ① 库里三种状态齐全时，页面上必须能把它们全都渲染出来
+//      （假后端的初始数据**刻意**留了三种各一条 —— 那里是唯一能验全的地方）；
+//   ② 更本质的那一条：**页面上的状态标签必须来自后端**，而不是界面自己编的。
+//      合成一个布尔的后果很具体：值班的人确认完一轮之后，列表看起来与
+//      "完全没人管"一模一样 —— 于是下一个人会从头再查一遍，而第三个人就开始
+//      忽略这个列表了。
+{
+  const apiEvents = await page.evaluate(() =>
+    fetch('/api/alerts').then(r => r.json()).then(d => d.events.map(e => e.state)))
+  const distinct = Array.from(new Set(apiEvents))
+  const labelOf = s => (s === 'OPEN' ? '未处理' : s === 'ACKNOWLEDGED' ? '已确认' : '已恢复')
+  expect('★ 页面上的状态标签与后端给的状态一一对应（不是界面自己编的）',
+    distinct.length > 0 && distinct.every(s => eventsText.includes(labelOf(s))),
+    `—— 后端给了 ${distinct.join('/') || '（空）'}`)
+  if (distinct.length >= 3) {
+    expect('★ 三种状态在清单上长得不一样（未处理 / 已确认 / 已恢复）', true,
+      `—— 本次后端恰好给了三种：${distinct.join('/')}`)
+  }
+  else {
+    expect('三种状态齐全时的对照在假后端那条路径上验（那里刻意留了三种各一条）', true,
+      `—— 本次只有 ${distinct.join('/') || '（空）'}（真后端库里刚建，属正常）`)
+  }
+}
+expect('清单里的每一行都带着观测值与判据阈值（"差多少、跟什么比"）',
+  (await eventsCard.locator('tbody tr').first().innerText()).length > 0)
+const alertLayout = await page.evaluate(() => {
+  const doc = document.documentElement
+  const head = document.querySelector('.alert-head')
+  return {
+    horizontalOverflow: doc.scrollWidth - doc.clientWidth,
+    headFitsViewport: head ? head.getBoundingClientRect().right <= doc.clientWidth + 1 : null,
+  }
+})
+expect('告警面板无横向溢出', alertLayout.horizontalOverflow === 0, `overflow=${alertLayout.horizontalOverflow}px`)
+expect('告警面板头部不超出视口', alertLayout.headFitsViewport !== false)
+await page.screenshot({ path: `${SHOT_DIR}/alerts-panel.png`, fullPage: true })
+
+// ---- 灰度：★ 配置与实测必须同屏 ----
+const canaryCard = page.locator('.canary-card')
+const canaryText = await canaryCard.innerText()
+expect('灰度那一栏渲染出来了', canaryText.length > 20)
+expect('★ 配置的重量与实际分到的份数在同一个视图里',
+  /配置的重量/.test(canaryText) && /参与分流的运行/.test(canaryText) && /实测占比/.test(canaryText),
+  '—— 只看配置的页面在"实际 0 份"时会显示得一切正常，而那次实验等于没做')
+expect('灰度那一栏说清了「分流是算出来的，不是存下来的」',
+  /算出来的/.test(canaryText) && /稳定哈希/.test(canaryText))
+expect('★ 灰度那一栏划清了边界：它答不了「新版更好还是更差」',
+  /不是.*新版更好还是更差|新版更好还是更差/.test(canaryText))
+expect('逐版本的运行数按分组列出来了（实验组 / 对照组 / 未参与）',
+  /实验组/.test(canaryText) && /对照组/.test(canaryText) && /未参与这次实验/.test(canaryText)
+    // 真后端第一次打开时：窗口内一份运行都没有，逐版本表是空的 ——
+    // 那时这几行分组本来就不存在。**但"空"必须被解释**（见下面那条断言）
+    || /参与分流的运行[\s\S]{0,8}?0/.test(canaryText))
+expect('灰度那一栏没有字面量 markdown 星号', !canaryText.includes('**'))
+
+// ★ 没有候选版本可选的场景必须被解释（真后端第一次打开这一页就是它）
+//
+// 【为什么这一条不是"锦上添花"】真后端的库里只有出厂那一版（v1）且它正在生效，
+// 而候选版本不能就是生效那一版 —— 于是候选列表是空的。
+// 只渲染一个空下拉框的后果是使用者以为界面坏了（而他什么也没做错）。
+// 第一版没有这个分支，于是真后端上"逐版本分组"那条断言红在一个**不存在的表格**上，
+// 而失败信息（"找不到实验组"）看起来像数据不对。
+if (/现在没有可以拿来灰度的候选版本/.test(canaryText)) {
+  expect('没有候选版本时给出了下一步（去 Prompt 面板存一版）', /Prompt 面板/.test(canaryText))
+}
+else {
+  expect('有候选版本时渲染出了候选列表与重量输入', (await page.locator('.canary-card input').count()) > 0)
+}
+
+// ★ 灰度的种类名必须与后端的 PromptKind.defaultValue 一致
+//
+// 【为什么要专门断言这一条】第一版这里（以及后端默认参数）写的是 "agent-loop" ——
+// 那是 Java **枚举常量的名字**，而接口上用的名字是 "system-agent-tools"。
+// 后果是真后端上 `GET /api/canary` 直接 400「没有这一份提示词：「agent-loop」」，
+// 而假后端照着那个手写串写了一遍，所以它绿着。
+// 也就是说：**这条断言本来能提前抓住一个真后端的 400**，而它当时不存在。
+// 现在两条路径都断言同一个名字，任何一边改错都会当场现形。
+{
+  const canaryApi = await page.evaluate(() => fetch('/api/canary').then(r => r.json()))
+  expect('★ 灰度的种类名与后端一致（system-agent-tools，不是枚举名 agent-loop）',
+    canaryApi.kind === 'system-agent-tools',
+    `—— 后端返回 kind=${canaryApi.kind}`)
+  expect('灰度接口可读（不是 400/404）', canaryApi.ok === true)
+}
+
+if (EXPECT_REFLECTION) {
+  // ================= 假后端：有状态，跑写往返 =================
+  //
+  // 【为什么这里还要再复位一次】上面那次复位发生在**切进面板之前**，
+  // 而这一节要验的是"点确认之后状态真的变了"—— 那需要一条**未处理**的告警。
+  // 两次复位之间没有任何写操作，所以第二次其实是幂等的安全网：
+  // 它保证"即使将来有人在中间加了别的操作，这一节仍然从确定的状态开始"。
+  // 与 prompt-routes 的 `__reset`、HITL 的 `__set-approval` 是同一条经验。
+  const reset = await page.evaluate(() =>
+    fetch('/api/alerts/__reset', { method: 'POST' }).then(r => r.json()))
+  expect('假后端的告警与灰度状态已复位（自检可重复跑）', reset.ok === true)
+
+  // 【复位之后要让界面重新拉一次 —— 但**不能 `page.reload()`**】
+  // ⚠️ 这是本节踩过的第一个坑，代价很具体：第一版写的是 `page.reload()`，
+  // 于是这一页之前那些模式的结果**全没了**（流式对话、结构化卡片、RAG 对照、
+  // Agent 轨迹都在 React 的 useState 里），后面"切回去结果仍在"那四条断言全红 ——
+  // 而它们红的原因与告警面板毫无关系，看起来却像"新面板把别的面板搞坏了"。
+  // 改成点**本面板自己的**刷新按钮之后，复位与断言都能成立，且不动别的状态。
+  // （另一个坑：别的面板也有叫「刷新」的按钮，所以必须用 `.alert-head` 限定范围 ——
+  //   全局 hasText 会选到第一个，很可能不是这一页的那个，症状是"点了没反应"。）
+  await page.locator('.alert-head button', { hasText: /刷\s*新/ }).click()
+  await waitFor(async () => /未处理/.test(await eventsCard.innerText()), 10000)
+
+  // ---- ① 确认一条告警：状态必须真的变 ----
+  {
+    const before = await page.evaluate(() =>
+      fetch('/api/alerts').then(r => r.json()).then(d => d.openCount))
+    expect('复位之后有未处理的告警（否则下面那条断言测不到东西）', before > 0, `${before} 条`)
+
+    // 找第一行"未处理"的确认按钮点下去。
+    // ⚠️ 用**行内定位**而不是全局 hasText：全局找会在多个面板的同名按钮之间乱选
+    const openRow = eventsCard.locator('tbody tr', { hasText: '未处理' }).first()
+    await openRow.locator('button', { hasText: /^已\s*确\s*认$/ }).click()
+
+    // 【断言分两半，因为它们各自可能单独失败】
+    //   a) 后端那侧的状态真的变了 —— 这是这一条的全部价值。
+    //      只改 DOM 不算数（与 Prompt 面板那条 409 是同一个教训：
+    //      "界面变了"与"事实变了"是两件事）。
+    //   b) 界面上的数字跟着变了 —— 这是"界面没有自己造一个乐观状态"的证据。
+    // 【断言的是**后端**那一侧，而不是界面上的字】
+    // ⚠️ 第一版写的是 `waitFor(...)` 轮询 `fetch('/api/alerts')`，它**永远返回 false** ——
+    // 而同一轮的界面断言全绿（页面上确实显示「未处理 0」）。
+    // 也就是说那一次红是**用例自己的问题**，与功能无关：
+    // `waitFor` 期望一个真值，而 `openCount` 变成 0 之后 `0 < 1` 的结果是
+    // 数字 0 —— 它是假值，被当成"还没变"。**"变成 0"恰好是这条断言要等的东西**，
+    // 而 0 是 JS 里最经典的假值。改成用布尔包装之后一切正常。
+    // 记在这里：凡是要等一个"归零"的断言，都要显式 `=== 0`。
+    const after = await waitFor(
+      async () => {
+        const d = await page.evaluate(() => fetch('/api/alerts').then(r => r.json()))
+        return d.openCount < before ? d.openCount + 1 : false
+      },
+      10000,
+    )
+    expect('★ 点「已确认」之后，后端那侧的未处理条数真的少了一条', after !== false,
+      `—— ${before} → ${after === false ? '(没变)' : after - 1}`)
+    const headText = await page.locator('.alert-head').innerText()
+    expect('界面上的「未处理」数字跟着后端变成 0（不是界面自己造的乐观状态）',
+      /未处理（还没人看过）[\s\S]{0,12}?0/.test(headText),
+      headText.replace(/\n/g, ' ').slice(0, 120))
+    expect('写操作成功后给出了明确反馈', (await page.locator('.alert-write-result').count()) > 0)
+  }
+
+  // ---- ② 灰度的两个方向：正在实验 vs 没有实验 ----
+  //
+  // 【为什么这里要分支】假数据的灰度**默认是进行中的**（这样"配置与实测并排"
+  // 那条断言才有东西可看），而进行中时"开灰度"这个按钮压根不渲染 ——
+  // 第一版写死了"没写 note 时开灰度按钮是禁用的"，于是在进行中的状态上永远红，
+  // 而红的原因与"按钮该不该禁用"无关（面板走的是另一条分支）。
+  // 两条分支各断言一件真正成立的事，比强行断言同一件事更有信息量。
+  {
+    const stopButton = page.locator('.canary-card button', { hasText: '停止这次灰度' })
+    const startButton = page.locator('.canary-card button', { hasText: '开灰度' })
+    const hasStop = (await stopButton.count()) > 0
+    expect('灰度控制区渲染出来了（要么能开、要么能停，不会两个都没有）',
+      hasStop || (await startButton.count()) > 0)
+
+    if (hasStop) {
+      // 进行中：必须给"停止"的入口，而且**原因没填时不许停**
+      expect('★ 没写「为什么停」时停止按钮是禁用的',
+        await stopButton.first().isDisabled(),
+        '—— 一次实验的结论常常就是那句话（推全 / 回滚 / 到期了），不写就只剩「某天它停了」')
+      await page.locator('input.canary-end-reason').fill('界面自检：验证停灰度的往返')
+      expect('写了原因之后停止按钮可点', !(await stopButton.first().isDisabled()))
+
+      await stopButton.first().click()
+      const stopped = await waitFor(
+        async () => {
+          const d = await page.evaluate(() => fetch('/api/canary').then(r => r.json()))
+          return d.active === false
+        },
+        10000,
+      )
+      expect('★ 点停止之后灰度的 active 真的变成 false（不是只改了界面）', stopped === true)
+      // 【等界面重新渲染，而不是立刻断言】停止之后面板会重拉一次灰度状态并重渲染，
+      // 而那次渲染**不是同步的**。这条第一版就是直接读文本，于是偶发红 ——
+      // 与第 9 节那条"切回去之后必须轮询等待面板重新挂起来"是同一个坑
+      // （固定 sleep 或立刻读的失效形态都一样：等待与它要等的东西没有关系）。
+      const previousShown = await waitFor(
+        async () => /上一轮实验已停止/.test(await page.locator('.canary-card').innerText()),
+        10000,
+      )
+      expect('★ 停掉之后仍能看到「上一轮实验」的配置（一次实验的结论不该随停止消失）',
+        previousShown === true,
+        `—— 卡片标题：${(await page.locator('.canary-card').innerText()).split('\n')[0]}`)
+    }
+    else {
+      // 没有进行中的实验：必须给"开"的入口，而且**假设没写时不许开**
+      expect('★ 没写实验假设时「开灰度」是禁用的',
+        await startButton.first().isDisabled(),
+        '—— 不写的话一周后没人记得这次想看什么，唯一结局是忘了关')
+      expect('灰度控制区给出了候选版本与重量的输入', (await page.locator('.canary-card input').count()) > 0)
+    }
+  }
+}
+else {
+  // ================= 真后端：只做不留痕的验证 =================
+  //
+  // 【为什么真路径不点"确认"】它会**改掉这个实例的状态** ——
+  // 后面真有人打开这个面板时，那条告警已经被自检标成"看过了"，
+  // 而"还有几条没人看过"正是值班交接的依据。这与 Prompt 面板那条
+  // "真路径不往库里塞版本"是同一个取舍。
+  expect('真后端的告警端点可读（不是 404）', eventsText.length > 0)
+  expect('真后端上灰度那一栏也把配置与实测并排显示了',
+    /配置的重量/.test(canaryText) && /参与分流的运行/.test(canaryText))
+}
+
+
 // ---------- 切回流式：历史不能被清掉 ----------
-console.log('[8] 模式往返')
+console.log('[9] 模式往返')
 await page.locator('label', { hasText: 'SSE 流式' }).click()
 await page.waitForTimeout(300)
 const streamStillThere = (await page.locator('.message-list').innerText()).trim().length > 20

@@ -71,6 +71,32 @@ public record PromptVersion(
 	}
 
 	/**
+	 * <b>指纹的唯一拼法</b>：{@code "v" + 版本号 + ":" + hash}（形如 {@code v3:9ab12cd34ef5}）。
+	 *
+	 * <h2>为什么单独抽成一个静态方法（阶段四第 5 件补的）</h2>
+	 * 在灰度发布之前，这个形状只有一处拼（{@code DefaultPromptService.currentFingerprint}），
+	 * 所以它写在哪儿都行。而灰度要回答的问题变成了"<b>候选那一版</b>的指纹是什么" ——
+	 * 那是服务的 {@code currentFingerprint} 答不了的（它只回答当前生效那一版）。
+	 *
+	 * <p>于是就有了两份拼法：一份在服务里、一份在灰度里。而两份拼法迟早会分叉，
+	 * 分叉的表现是"灰度那一组的指纹在库里对不上任何版本" ——
+	 * 一个只有在下钻 trace 时才会被发现的问题，而那时已经很难回溯了。
+	 * 抽到这里之后，两边走的是同一个方法：
+	 * <b>格式只有一份，谁也分不开</b>。
+	 */
+	public static String fingerprintOf(PromptVersion version) {
+		if (version == null) {
+			return "";
+		}
+		return "v" + version.version() + ":" + version.hash();
+	}
+
+	/** 这一版自己的指纹（等价于 {@code fingerprintOf(this)}，让调用点更短）。 */
+	public String fingerprint() {
+		return fingerprintOf(this);
+	}
+
+	/**
 	 * token 数相对另一版的变化（正数表示这一版占得更多）。
 	 *
 	 * <p>换提示词最常见的副作用就是<b>预算变了</b>，而它在别处完全看不出来：

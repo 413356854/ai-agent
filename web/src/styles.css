@@ -1528,3 +1528,79 @@ body {
 }
 
 .prompt-notes { margin: 0; }
+
+/* ===========================================================================
+   告警与灰度面板（阶段四 · 工程化第 5 件）
+   ===========================================================================
+   这一页的样式只服务于一件事：**让"配置"与"实际"在视觉上分不开**。
+   灰度那块里，"我配了 20%"与"实际分到 0 份"是两个必须同屏的东西 ——
+   分开显示的后果是"配置 20%、实际 0 份"看起来一切正常，而那次实验等于没做。
+   所以下面 .canary-split 里那排数字与旁边那句结论是**同一个容器**里的两块，
+   不允许被响应式拆到两屏之外。
+   =========================================================================== */
+
+.alert-head { position: sticky; top: 0; z-index: 2; }
+.alert-write-result { margin-bottom: 12px; }
+.alert-write-unprotected {
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 6px 8px;
+  background: #fffbe6;
+  border: 1px solid #ffe58f;
+  border-radius: 4px;
+}
+.alert-sweep-summary { font-size: 12px; line-height: 1.6; }
+
+/* 头部那排统计：数字等宽 —— 不等宽时"3 条"与"8 条"看起来一样宽，
+   而这一页最需要一眼看出的就是"几条在等着人处理" */
+.alert-stat { min-width: 120px; }
+.alert-stat-label { font-size: 12px; color: rgba(0, 0, 0, 0.45); }
+.alert-stat-value {
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+}
+.alert-stat-bad .alert-stat-value { color: #cf1322; }
+.alert-stat-warn .alert-stat-value { color: #d46b08; }
+.alert-stat-good .alert-stat-value { color: #389e0d; }
+
+.alert-events-card { margin-bottom: 12px; }
+.alert-rule-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* 展开的明细：左边标签固定宽度，右边值可以很长（处置说明是整段话） */
+.alert-detail { padding: 4px 0; }
+.alert-detail-label { flex: 0 0 110px; font-size: 12px; }
+.alert-detail-value { flex: 1 1 auto; font-size: 12px; line-height: 1.7; }
+
+/* ---- 灰度 ---- */
+.canary-card { margin-bottom: 12px; }
+.canary-split {
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+  padding: 12px;
+  background: #fafafa;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.canary-split-note { margin: 0; }
+.canary-split-caveat { font-size: 12px; line-height: 1.6; }
+.canary-controls {
+  border-top: 1px dashed #e8e8e8;
+  padding-top: 12px;
+}
+.canary-note { flex: 1 1 auto; }
+.canary-end-reason { flex: 1 1 280px; }
+
+/* ---- 判据目录 ---- */
+.alert-rules-card .alert-rule-section + .alert-rule-section {
+  border-top: 1px dashed #e8e8e8;
+  padding-top: 12px;
+}
+
+/* 灰度：没有候选版本可选时的解释块（真后端第一次打开这一页就是它） */
+.canary-no-candidate { margin: 0; }

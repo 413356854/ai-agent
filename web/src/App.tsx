@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Empty, Flex, Segmented, Tag, Typography } from 'antd'
 import { AgentPanel } from './components/AgentPanel'
+import { AlertPanel } from './components/AlertPanel'
 import { Composer } from './components/Composer'
 import { CostPanel } from './components/CostPanel'
 import { MessageBubble } from './components/MessageBubble'
@@ -9,6 +10,7 @@ import { RagPanel } from './components/RagPanel'
 import { StructuredResultCard } from './components/StructuredResultCard'
 import { ThreadBudgetPanel } from './components/ThreadBudgetPanel'
 import { useAgent } from './hooks/useAgent'
+import { useAlerts } from './hooks/useAlerts'
 import { useChatStream } from './hooks/useChatStream'
 import { useCost } from './hooks/useCost'
 import { usePrompt } from './hooks/usePrompt'
@@ -17,7 +19,7 @@ import { useStructuredChat } from './hooks/useStructuredChat'
 import { useThreadDiag } from './hooks/useThreadDiag'
 
 /** 七种模式共用一个壳。加模式时只改三处：这个联合类型、Segmented 的 options、头部那个 Tag 的文案表 */
-type Mode = 'stream' | 'structured' | 'threads' | 'rag' | 'agent' | 'cost' | 'prompt'
+type Mode = 'stream' | 'structured' | 'threads' | 'rag' | 'agent' | 'cost' | 'prompt' | 'alerts'
 
 /**
  * 七种模式的对照台。
@@ -60,6 +62,9 @@ export default function App() {
   // 第七个：进面板拉一次清单与版本历史。同样不轮询 —— 别人改了会以 409 的形式告诉我们，
   // 那比"每 2.5 秒重拉一次列表"更准确（一次冲突只在真的发生时出现一次）
   const prompt = usePrompt(mode === 'prompt')
+  // 第八个：进面板只拉三样**只读**的（判据 / 当前状态 / 灰度）。
+  // 「跑一轮评估」要点按钮 —— 它会写库，自动跑会让'打开这一页看看'本身改变告警状态
+  const alerts = useAlerts(mode === 'alerts')
 
   const listRef = useRef<HTMLElement>(null)
 
@@ -106,6 +111,7 @@ export default function App() {
               { label: 'Agent 工具调用', value: 'agent' },
               { label: '成本看板', value: 'cost' },
               { label: 'Prompt 版本', value: 'prompt' },
+              { label: '告警与灰度', value: 'alerts' },
             ]}
           />
           {mode === 'stream' && <Tag color="blue">逐字推送 · 自由文本</Tag>}
@@ -115,6 +121,7 @@ export default function App() {
           {mode === 'agent' && <Tag color="orange">会调模型 · 自主选工具</Tag>}
           {mode === 'cost' && <Tag color="gold">只读聚合 · 不估算 token</Tag>}
           {mode === 'prompt' && <Tag color="magenta">改的是以后的每一次调用 · 可回滚</Tag>}
+          {mode === 'alerts' && <Tag color="volcano">上线前挡 · 上线后报</Tag>}
         </Flex>
         {/*
           右侧这一段只在对话模式里有意义。两个诊断模式刻意不显示 conversationId 和「新会话」：
@@ -148,6 +155,8 @@ export default function App() {
         <CostPanel cost={cost} />
       ) : mode === 'prompt' ? (
         <PromptPanel prompt={prompt} />
+      ) : mode === 'alerts' ? (
+        <AlertPanel alerts={alerts} />
       ) : (
         // 诊断模式没有输入区，所以 main/footer 只在对话模式下渲染 —— 空着的 footer 会白白吃掉一块高度
         <>

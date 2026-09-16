@@ -26,6 +26,7 @@
  */
 import { createServer } from 'node:http'
 import { handleAgentRoutes } from './agent-routes.mjs'
+import { handleAlertsRoutes } from './alert-routes.mjs'
 import { handleCostRoutes } from './cost-routes.mjs'
 import { handlePromptRoutes } from './prompt-routes.mjs'
 import { handleRagRoutes } from './rag-routes.mjs'
@@ -340,11 +341,30 @@ const server = createServer((req, res) => {
     return
   }
 
+  // ---------------------------------------------------------------
+  //  告警 + 灰度端点（阶段四 · 工程化第 5 件）
+  //
+  //  ⚠️ 这一组与上面所有组有一个**结构性**的区别：它同时有**读与写**，
+  //  而且写的是**进程内状态**（确认一条告警 → 它从"未处理"变成"已确认"；
+  //  开一次灰度 → 状态页上多出一条进行中的实验）。
+  //
+  //  所以它必须放在**所有 `req.method !== 'GET'` 的守卫之后、且在 404 之前** ——
+  //  这里的 if 链是按前缀分派的，POST 请求会在更上面的分支里被放过去。
+  //  配套的纪律与 prompt-routes 一样：**可变状态必须配一条 __reset**，
+  //  否则自检脚本跑第二遍时会继承第一遍的状态（第十二轮实测踩过）。
+  // ---------------------------------------------------------------
+  if (
+    (url.pathname.startsWith('/api/alerts') || url.pathname.startsWith('/api/canary')) &&
+    handleAlertsRoutes(req, res, url, json)
+  ) {
+    return
+  }
+
   res.writeHead(404, { 'Content-Type': 'application/json' })
   res.end(
     JSON.stringify({
       message:
-        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async、POST /api/agent/ask、GET /api/agent/*、GET /api/cost/*、GET|POST /api/prompts/*',
+        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async、POST /api/agent/ask、GET /api/agent/*、GET /api/cost/*、GET|POST /api/prompts/*、GET|POST /api/alerts/*、GET|POST /api/canary/*',
     }),
   )
 })

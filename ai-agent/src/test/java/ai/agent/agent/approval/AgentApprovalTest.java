@@ -505,7 +505,11 @@ class AgentApprovalTest {
 			ScriptedModelTurn turn = CURRENT.get();
 			return turn == null ? ModelTurn.ModelReply.text("无脚本", 0, 0) : turn.chat(messages);
 		}, loop.properties(), new ai.agent.prompt.ClasspathPromptService(
-				new ai.agent.token.impl.CharacterClassTokenEstimator(new ai.agent.config.ChatCallProperties())));
+				new ai.agent.token.impl.CharacterClassTokenEstimator(new ai.agent.config.ChatCallProperties())),
+				// 这个测试关心的是"挂起路径"，与灰度无关 —— 用不做分流的替身
+				new ai.agent.canary.NoCanaryService(new ai.agent.prompt.ClasspathPromptService(
+						new ai.agent.token.impl.CharacterClassTokenEstimator(
+								new ai.agent.config.ChatCallProperties()))));
 
 		String title = "挂起路径-%d".formatted(System.nanoTime());
 		CURRENT.set(new ScriptedModelTurn(List.of(ScriptedModelTurn.callTool("call_1", WRITE_TOOL,

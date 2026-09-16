@@ -58,6 +58,30 @@ public interface AgentProgressListener {
 	 *        <p>恢复路径上它是<b>空串</b>：那一步用的是检查点里已经注入过的系统消息，
 	 *        而不是本次读到的这一版。空串表示"本次运行没有读提示词"，
 	 *        与"某个叫空串的版本"不会混淆
+	 * @param canaryVariant 这一步所在的那次运行属于灰度实验的**哪一组**
+	 *        （{@code "canary"} / {@code "stable"} / 空串 = 没参与这次实验，阶段四第 5 件）。
+	 */
+	default void afterStep(String runId, int stepIndex, AgentRun.Step step, List<Message> messages,
+			int totalTokensSoFar, int toolCallsSoFar, long elapsedMsSoFar, String promptFingerprint,
+			String canaryVariant) {
+		// 【为什么新形态自带默认实现，而不是做成抽象方法】
+		// 关心分流的实现只有一个（{@code PersistingListener}，它要落库），
+		// 而别的实现（测试里手写的监听器、诊断用的监听器）与灰度毫无关系。
+		// 默认实现丢弃它即可 —— 这比"改签名让所有实现都跟着改一遍"少了很多改错的机会，
+		// 也比"在旧方法上再加一个参数"更清楚地表达了"这一项是可选的观测"。
+		afterStep(runId, stepIndex, step, messages, totalTokensSoFar, toolCallsSoFar, elapsedMsSoFar,
+				promptFingerprint);
+	}
+
+	/**
+	 * 旧形态的一步结束回调（不带灰度分组）。
+	 *
+	 * <p>保留它是因为有一部分实现与灰度无关：诊断用的监听器、以及
+	 * {@code AgentApprovalTest} 里只关心"闸门停在第几步"的那个手写监听器。
+	 * 让它们被迫实现一个用不上的参数，只会多出改错的机会。
+	 *
+	 * <p>{@link AgentLoop} <b>只调用新形态</b>（带 {@code canaryVariant} 那个），
+	 * 新形态默认转调本方法 —— 所以旧的实现照样工作。
 	 */
 	default void afterStep(String runId, int stepIndex, AgentRun.Step step, List<Message> messages,
 			int totalTokensSoFar, int toolCallsSoFar, long elapsedMsSoFar, String promptFingerprint) {

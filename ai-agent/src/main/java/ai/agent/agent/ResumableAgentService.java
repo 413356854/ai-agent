@@ -500,7 +500,8 @@ public class ResumableAgentService {
 
 		@Override
 		public void afterStep(String runId, int stepIndex, AgentRun.Step step, List<Message> messages,
-				int totalTokensSoFar, int toolCallsSoFar, long elapsedMsSoFar, String promptFingerprint) {
+				int totalTokensSoFar, int toolCallsSoFar, long elapsedMsSoFar, String promptFingerprint,
+				String canaryVariant) {
 			// 先写工具调用明细，再写检查点。
 			// 顺序有讲究：检查点是"这一步完成了"的凭据，如果先写它、
 			// 后写明细时失败，恢复时就会看到一个"完成"的步骤却缺了工具记录 ——
@@ -544,13 +545,15 @@ public class ResumableAgentService {
 								outcome.invocation().name(), trace)));
 				callIndex++;
 			}
-			// 缓存命中、模型名与提示词指纹一起落库：它们是 trace 与成本看板的三个输入口径。
+			// 缓存命中、模型名、提示词指纹与灰度分组一起落库：它们是 trace 与成本看板的四个输入口径。
 			// 少了缓存命中，成本只能按最贵那一档算（偏高，且高估倍数随上游命中率浮动）；
 			// 少了模型名，"换了模型之后钱花在哪"没有数据可答；
-			// 少了提示词指纹，"答案变差了是不是因为换了提示词"没有数据可答
+			// 少了提示词指纹，"答案变差了是不是因为换了提示词"没有数据可答；
+			// 少了灰度分组，"新版到底比旧版好还是差"没有数据可答 ——
+			// 而它是**唯一**能事后区分两组的东西（用指纹反推在推全之后就失效了）
 			store.checkpoint(new AgentRunRecord.StepCheckpoint(runId, stepIndex, codec.encode(messages),
 					step.thoughtText(), step.promptTokens(), step.completionTokens(), step.elapsedMs(),
-					step.cachedPromptTokens(), resolveModelName(), promptFingerprint));
+					step.cachedPromptTokens(), resolveModelName(), promptFingerprint, canaryVariant));
 			store.updateProgress(runId, totalTokensSoFar, toolCallsSoFar, elapsedMsSoFar);
 		}
 	}

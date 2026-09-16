@@ -148,8 +148,8 @@ public class JdbcAgentRunStore implements AgentRunStore {
 		String sql = """
 				INSERT INTO agent_step
 				  (run_id, step_index, thought_text, prompt_tokens, completion_tokens, cache_read_tokens,
-				   model_name, prompt_fingerprint, elapsed_ms, transcript)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				   model_name, prompt_fingerprint, canary_variant, elapsed_ms, transcript)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				ON DUPLICATE KEY UPDATE
 				  thought_text = VALUES(thought_text),
 				  prompt_tokens = VALUES(prompt_tokens),
@@ -157,6 +157,7 @@ public class JdbcAgentRunStore implements AgentRunStore {
 				  cache_read_tokens = VALUES(cache_read_tokens),
 				  model_name = VALUES(model_name),
 				  prompt_fingerprint = VALUES(prompt_fingerprint),
+				  canary_variant = VALUES(canary_variant),
 				  elapsed_ms = VALUES(elapsed_ms),
 				  transcript = VALUES(transcript)
 				""";
@@ -174,8 +175,10 @@ public class JdbcAgentRunStore implements AgentRunStore {
 			// 与"某个叫空串的版本"不会混淆（后者不是一个合法指纹）。
 			// 归一化已经在 StepCheckpoint 的紧凑构造器里做过，这里不再判 null
 			ps.setString(8, checkpoint.promptFingerprint());
-			ps.setLong(9, checkpoint.elapsedMs());
-			ps.setString(10, checkpoint.transcriptJson());
+			// 灰度分组：空串 = 没参与这次实验（与 'stable' 严格区分，见 AgentRunRecord 的注释）
+			ps.setString(9, checkpoint.canaryVariant());
+			ps.setLong(10, checkpoint.elapsedMs());
+			ps.setString(11, checkpoint.transcriptJson());
 			ps.executeUpdate();
 		}
 		catch (SQLException e) {
@@ -471,7 +474,7 @@ public class JdbcAgentRunStore implements AgentRunStore {
 	public Optional<AgentRunRecord.StepCheckpoint> latestCheckpoint(String runId) {
 		String sql = """
 				SELECT run_id, step_index, thought_text, prompt_tokens, completion_tokens, cache_read_tokens,
-				       model_name, prompt_fingerprint, elapsed_ms, transcript
+				       model_name, prompt_fingerprint, canary_variant, elapsed_ms, transcript
 				  FROM agent_step
 				 WHERE run_id = ?
 				 ORDER BY step_index DESC
@@ -492,7 +495,7 @@ public class JdbcAgentRunStore implements AgentRunStore {
 	public List<AgentRunRecord.StepCheckpoint> stepsOf(String runId) {
 		String sql = """
 				SELECT run_id, step_index, thought_text, prompt_tokens, completion_tokens, cache_read_tokens,
-				       model_name, prompt_fingerprint, elapsed_ms, transcript
+				       model_name, prompt_fingerprint, canary_variant, elapsed_ms, transcript
 				  FROM agent_step
 				 WHERE run_id = ?
 				 ORDER BY step_index
@@ -686,7 +689,7 @@ public class JdbcAgentRunStore implements AgentRunStore {
 		return new AgentRunRecord.StepCheckpoint(rs.getString("run_id"), rs.getInt("step_index"),
 				rs.getString("transcript"), rs.getString("thought_text"), rs.getInt("prompt_tokens"),
 				rs.getInt("completion_tokens"), rs.getLong("elapsed_ms"), rs.getInt("cache_read_tokens"),
-				rs.getString("model_name"), rs.getString("prompt_fingerprint"));
+				rs.getString("model_name"), rs.getString("prompt_fingerprint"), rs.getString("canary_variant"));
 	}
 
 	private static Instant toInstant(Timestamp timestamp) {

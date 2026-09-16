@@ -272,7 +272,7 @@ class AgentLoopTest {
 		// 每轮睡 40ms，而时间上限设成 50ms：第 2 轮之前就会判定超时
 		CURRENT.set(slow);
 		AgentLoop fastTimeoutLoop = new AgentLoop(registry, executor, new SlowModelTurn(slow, 40L),
-				new AgentLoopProperties(6, 12000, 50L, 2), promptService());
+				new AgentLoopProperties(6, 12000, 50L, 2), promptService(), noCanary());
 
 		AgentRun run = fastTimeoutLoop.run("慢模型");
 
@@ -309,6 +309,17 @@ class AgentLoopTest {
 	 */
 	private PromptService promptService() {
 		return new ClasspathPromptService(new CharacterClassTokenEstimator(new ChatCallProperties()));
+	}
+
+	/**
+	 * 灰度服务的替身（见 {@code NoCanaryService} 的注释）。
+	 *
+	 * <p>这个类要验证的是<b>循环的停止条件</b>，不是灰度分流。让每个循环测试
+	 * 都去起库、造版本、开灰度，会把"验证循环"变成"验证循环 + 验证灰度存储"——
+	 * 而后者失败时前者的结论也跟着不可信。
+	 */
+	private ai.agent.canary.CanaryService noCanary() {
+		return new ai.agent.canary.NoCanaryService(promptService());
 	}
 
 	// ------------------------------------------------------------------
@@ -381,7 +392,7 @@ class AgentLoopTest {
 			}
 		};
 		AgentLoop loop = new AgentLoop(registry, executor, flaky, AgentLoopProperties.defaults(),
-				promptService());
+				promptService(), noCanary());
 
 		AgentRun run = loop.run("会中途失败的问题");
 

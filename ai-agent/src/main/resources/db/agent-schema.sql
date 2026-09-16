@@ -98,6 +98,20 @@ CREATE TABLE IF NOT EXISTS agent_step (
   -- 空串 = 库里读不到这一版（老数据、或提示词服务不可用），
   -- 与"某个叫空串的版本"不会混淆（后者不是一个合法的指纹）。
   prompt_fingerprint VARCHAR(64) NOT NULL DEFAULT '',
+  -- 【阶段四第 5 件 · 灰度发布】这一步所在的那次运行属于**哪一组**。
+  --
+  -- 【为什么分组必须与指纹分开存，而且必须落库】
+  -- 灰度实验要回答"新版比旧版好还是差"，而事后唯一能判断"某次运行属于哪一组"的
+  -- 依据就是这一列。用指纹反推是不行的：指纹只说明"用的是哪一版的内容"，
+  -- 而一次实验里的**对照组（stable）用的也是某一版内容** ——
+  -- 更糟的是，实验结束后如果把候选版推全，"候选版"这个身份就消失了，
+  -- 于是那次实验的两组在数据里再也分不开。
+  --
+  -- 取值：'canary'（走了候选版）/ 'stable'（对照）/ 空串（**没有参与这次实验**）。
+  -- ⚠️ 空串与 'stable' 是两件事：前者是"这次实验不包含它"（灰度还没开），
+  -- 后者是"它是这次实验的对照组"。混起来会让灰度报告的参与率虚高，
+  -- 而参与率虚高的直接后果是"样本够了"这个判断过早成立。
+  canary_variant    VARCHAR(16) NOT NULL DEFAULT '',
   elapsed_ms        BIGINT      NOT NULL DEFAULT 0,
   transcript        TEXT        NOT NULL,            -- 这一步之后的完整消息列表（JSON）
   created_at        TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,

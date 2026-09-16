@@ -141,15 +141,33 @@ public record AgentRunRecord(String id, String question, RunStatus status, Agent
 	 *            <p>空串 = 库里读不到那一版（老数据 / 提示词服务不可用）。
 	 *            刻意不用 null：列有 NOT NULL DEFAULT ''，而且"空指纹"与"某个叫空串的版本"
 	 *            不会混淆（后者不是一个合法指纹）
+	 * @param canaryVariant 这一步所在的那次运行属于灰度实验的**哪一组**（阶段四第 5 件）。
+	 *            取值为 {@code "canary"} / {@code "stable"} / 空串。
+	 *            <p>为什么必须与 {@code promptFingerprint} 分开存：指纹只说明"用的是哪一版的内容"，
+	 *            而实验里的<b>对照组用的也是某一版内容</b> —— 更糟的是，实验结束把候选版推全之后，
+	 *            "候选版"这个身份就消失了，那次实验的两组再也分不开。
+	 *            所以分组是**判定当时的一个事实**，它必须独立落库。
+	 *            <p>⚠️ 空串与 {@code "stable"} 是两件事：前者是"这次实验不包含它"，
+	 *            后者是"它是这次实验的对照组"。混起来会让参与率虚高 ——
+	 *            而参与率虚高的直接后果是"样本够了"这个判断过早成立
 	 */
 	public record StepCheckpoint(String runId, int stepIndex, String transcriptJson, String thoughtText,
 			int promptTokens, int completionTokens, long elapsedMs, int cacheReadTokens, String modelName,
-			String promptFingerprint) {
+			String promptFingerprint, String canaryVariant) {
 
 		/** 不带成本口径的构造器（旧调用点与测试用）。 */
 		public StepCheckpoint(String runId, int stepIndex, String transcriptJson, String thoughtText,
 				int promptTokens, int completionTokens, long elapsedMs) {
-			this(runId, stepIndex, transcriptJson, thoughtText, promptTokens, completionTokens, elapsedMs, 0, null, "");
+			this(runId, stepIndex, transcriptJson, thoughtText, promptTokens, completionTokens, elapsedMs, 0, null,
+					"", "");
+		}
+
+		/** 带成本口径、但不带灰度分组的构造器（第十三轮及之前的调用点与测试用）。 */
+		public StepCheckpoint(String runId, int stepIndex, String transcriptJson, String thoughtText,
+				int promptTokens, int completionTokens, long elapsedMs, int cacheReadTokens, String modelName,
+				String promptFingerprint) {
+			this(runId, stepIndex, transcriptJson, thoughtText, promptTokens, completionTokens, elapsedMs,
+					cacheReadTokens, modelName, promptFingerprint, "");
 		}
 
 		public StepCheckpoint {
@@ -157,6 +175,7 @@ public record AgentRunRecord(String id, String question, RunStatus status, Agent
 			// 让"没传指纹"落成一个明确的空串，而不是一个会在渲染到那一行时才炸的 null
 			modelName = modelName == null ? "" : modelName;
 			promptFingerprint = promptFingerprint == null ? "" : promptFingerprint;
+			canaryVariant = canaryVariant == null ? "" : canaryVariant;
 		}
 	}
 
