@@ -186,6 +186,121 @@ class AlertRuleCatalogTest {
 	}
 
 	@Test
+	@DisplayName("★ 缓存命中率 0 按**租户**判（第 6 件）：整窗不为 0 时，某个租户为 0 仍然要报")
+	void zeroCacheHitsIsJudgedPerTenant() {
+		// 【这一条钉的正是第 6 件改动本身】整窗命中率是 12%（不为 0），
+		// 而「甲」这个租户一次都没命中 —— 在改粒度之前，这条告警**永远不会响**
+		RuntimeSnapshot mixed = snapshot().promptTokens(10_000).cachedPromptTokens(1_200)
+				.tenantCaches(List.of(
+						new RuntimeSnapshot.TenantPoint("甲", 6_000, 0),
+						new RuntimeSnapshot.TenantPoint("乙", 4_000, 1_200)))
+				.build();
+
+		assertThat(AlertRule.ZERO_CACHE_HITS.judge(mixed).breached())
+				.as("判据本身读的是「传进来的那份快照」—— 逐租户展开由 AlertEvaluator 负责，"
+						+ "所以这里对窗口快照判就是整窗口径（不为 0 → 不响）").isFalse();
+
+		List<Outcome> outcomes = AlertEvaluator.judge(AlertRule.ZERO_CACHE_HITS, mixed);
+		assertThat(outcomes).as("只有「甲」响 —— 乙命中了 1200").hasSize(1);
+		Outcome fired = outcomes.get(0);
+		assertThat(fired.kind()).isEqualTo(Outcome.Kind.FIRING);
+		assertThat(fired.subject()).as("主体必须是租户名 —— 泛泛的「窗口合计」会让这条告警"
+				+ "与别的成本告警长得一样，而它要人做的动作恰恰与那个租户有关").isEqualTo("甲");
+		assertThat(fired.verdict().observed()).as("观测值必须是**这个租户**的，不是整窗的")
+				.isEqualTo("0 / 6000");
+
+		// 【没有租户信息时要退回窗口口径】否则一个还没接归因的部署**永远收不到**这条告警，
+		// 而那时它的成本正按最贵的一档算
+		List<Outcome> noTenants = AlertEvaluator.judge(AlertRule.ZERO_CACHE_HITS,
+				snapshot().promptTokens(1_000).cachedPromptTokens(0).build());
+		assertThat(noTenants).singleElement().satisfies(o -> {
+			assertThat(o.kind()).isEqualTo(Outcome.Kind.FIRING);
+			assertThat(o.subject()).as("退回窗口口径时主体要说明它没按租户拆 —— "
+					+ "否则读的人会以为这是某一个租户的结论").contains("未按租户拆分");
+		});
+
+		// 【一个租户都没响时必须产出一条 QUIET】它是"把已经在响的那几条标成恢复"的入口；
+		// 漏了它，某租户缓存开始命中之后那条告警会一直响着
+		List<Outcome> allGood = AlertEvaluator.judge(AlertRule.ZERO_CACHE_HITS,
+				snapshot().promptTokens(10_000).cachedPromptTokens(1_200)
+						.tenantCaches(List.of(new RuntimeSnapshot.TenantPoint("甲", 6_000, 600)))
+						.build());
+		assertThat(allGood).singleElement()
+				.satisfies(o -> assertThat(o.kind()).isEqualTo(Outcome.Kind.QUIET));
+	}
+
+	@Test
+	@DisplayName("★ 成本集中度：只有租户粒度才问得出的一个问题（<90% 静、≥90% 响、没有归因静）")
+	void tenantCostConcentration() {
+		// 两个租户各一半 —— 完全正常，不该响
+		assertThat(AlertRule.TENANT_COST_CONCENTRATION
+				.judge(snapshot().tenantShare(new AlertRule.TenantShare("甲", 5_000, 10_000)).build()).breached())
+				.as("两个租户各占一半是正常分布；阈值取 0.5 会让任何两家客户的部署一上线就顶着一条告警")
+				.isFalse();
+
+		Verdict fired = AlertRule.TENANT_COST_CONCENTRATION
+				.judge(snapshot().tenantShare(new AlertRule.TenantShare("甲", 9_500, 10_000)).build());
+		assertThat(fired.breached()).isTrue();
+		assertThat(fired.observed()).as("观测值必须带上是哪一个租户 —— 只说「95%」等于没说").contains("甲");
+		assertThat(fired.why()).as("分母与分子都要给出（可复算）").contains("9500").contains("10000");
+		assertThat(AlertRule.TENANT_COST_CONCENTRATION.action())
+				.as("★ 它的处置说明第一句必须是「先确认这是不是已知的」——"
+						+ "一个正当的大客户会让它一直响，而一条「去优化它」的说明会把人引错方向")
+				.contains("已知");
+
+		assertThat(AlertRule.TENANT_COST_CONCENTRATION.judge(snapshot().build()).breached())
+				.as("没有任何租户信息时不响 —— 也**不给一个 0**：那不是「集中度低」，"
+						+ "而是「这个问题无从谈起」（该做的是去看调用方有没有传 tenantId）")
+				.isFalse();
+	}
+
+	@Test
+	@DisplayName("★ 判据里的字面量 == 公开常量：租户集中度的阈值")
+	void tenantConcentrationThresholdMatchesThePublishedConstant() {
+		double threshold = AlertRule.TENANT_CONCENTRATION_THRESHOLD;
+		long total = 100_000;
+		// 占比刚好略高于阈值 → 必须响；略低于 → 必须不响。
+		// 这是唯一能验证"两份数字一致"的办法（光读常量验不了 lambda 里那个字面量）
+		long above = (long) Math.ceil(total * threshold) + 1;
+		long below = (long) Math.floor(total * threshold) - 1;
+
+		assertThat(AlertRule.TENANT_COST_CONCENTRATION
+				.judge(snapshot().tenantShare(new AlertRule.TenantShare("甲", above, total)).build()).breached())
+				.as("占比略高于公开阈值 %.2f → 必须响（否则坏掉的不是判据，是那个常量）", threshold).isTrue();
+		assertThat(AlertRule.TENANT_COST_CONCENTRATION
+				.judge(snapshot().tenantShare(new AlertRule.TenantShare("甲", below, total)).build()).breached())
+				.as("占比略低于公开阈值 → 必须不响").isFalse();
+	}
+
+	@Test
+	@DisplayName("★ 主体粒度是一处显式的 switch：成本那一族的粒度必须逐条被钉住")
+	void costRulesDeclareTheirSubjectGranularity() {
+		// 【为什么值得一条专门的测试】台账点名写过：「换粒度就去 AlertEvaluator.judge 里改」——
+		// 而"改了粒度"这件事本身没有症状：一条被判成"全局"的判据只是**少报几条**，
+		// 页面上看不出任何异常。所以这里把当前的粒度写成断言：
+		//   · 配置/取数类 → 全局（价格表是一个部署一份的配置，与有几个租户无关）
+		//   · 花钱形态类 → 每租户（缓存 0 命中、花费集中）
+		RuntimeSnapshot two = snapshot().promptTokens(10_000).cachedPromptTokens(0)
+				.tenantCaches(List.of(
+						new RuntimeSnapshot.TenantPoint("甲", 6_000, 0),
+						new RuntimeSnapshot.TenantPoint("乙", 4_000, 0)))
+				.build();
+
+		assertThat(AlertEvaluator.judge(AlertRule.UNCONFIGURED_PRICES, two))
+				.as("价格没配是**全局**的：按租户拆开问会得到 N 条一模一样的话")
+				.hasSize(1);
+		assertThat(AlertEvaluator.judge(AlertRule.RECONCILE_GAP, two))
+				.as("对账对不上也是全局的：它说的是一次汇总的差，拆开之后每一份都不完整")
+				.hasSize(1);
+		assertThat(AlertEvaluator.judge(AlertRule.ZERO_CACHE_HITS, two))
+				.as("缓存命中率是**每租户**的：两个租户都没命中 → 两条独立告警")
+				.hasSize(2);
+		assertThat(AlertEvaluator.judge(AlertRule.ZERO_CACHE_HITS, two))
+				.extracting(Outcome::subject).as("两条的主体必须是两个租户名，而不是重复的窗口合计")
+				.containsExactly("甲", "乙");
+	}
+
+	@Test
 	@DisplayName("★ 连续空命中：2 次静、3 次响 —— 阈值是「连续」而不是「累计」")
 	void emptyRetrievalUsesAStreakNotASum() {
 		assertThat(AlertRule.EMPTY_RETRIEVAL.judge(snapshot().emptyStreak(2, 0).build()).breached())
@@ -295,12 +410,18 @@ class AlertRuleCatalogTest {
 		// 但用"一份万能的最差快照"去覆盖它们就做不到 ——
 		// 而第一版正是那么写的，失败信息里缺的正是 CANARY_NO_TRAFFIC。
 		// 记在这里：**互斥的判据需要各自的最差输入**。
+		//
+		// 【第 6 件又加了一处】tenantShare 也要给 —— 否则
+		// TENANT_COST_CONCENTRATION 永远不响，而"漏掉哪条说明它压根没法被触发"
+		// 那条断言会以"缺一条判据"的形式失败（它确实抓到了）。
 		List<RuntimeSnapshot> worstCases = List.of(
 				snapshot().pricingConfigured(false).unpricedModels(List.of("模型甲")).reconcileGap(42)
 						.promptTokens(1000).cachedPromptTokens(0).emptyStreak(5, 0)
+						.tenantShare(new AlertRule.TenantShare("甲", 950, 1000))
 						.canary(new CanarySplit(true, 4, 80, 0, 0)).build(),
 				snapshot().pricingConfigured(false).unpricedModels(List.of("模型甲")).reconcileGap(42)
 						.promptTokens(1000).cachedPromptTokens(0).emptyStreak(5, 0)
+						.tenantShare(new AlertRule.TenantShare("甲", 950, 1000))
 						.canary(new CanarySplit(true, 4, 80, 100, 0)).build());
 
 		List<AlertRule> fired = new ArrayList<>();
@@ -346,6 +467,19 @@ class AlertRuleCatalogTest {
 		assertThat(byFingerprint).as("三个模型 + 其它判据各自的指纹").hasSize(3 + AlertRule.observed().size() - 1);
 		assertThat(byFingerprint.values()).filteredOn(o -> o.kind() == Outcome.Kind.FIRING)
 				.extracting(o -> o.rule().code()).containsOnly("unpriced-models");
+
+		// 【第 6 件：逐租户展开的判据，指纹必须按租户分开】
+		// 不分开的后果很具体：N 个租户的告警会互相覆盖，只剩最后一条 ——
+		// 而"只剩一条"在页面上完全看不出来，它看起来就是"只有一个租户有问题"
+		RuntimeSnapshot perTenant = snapshot().promptTokens(10_000).cachedPromptTokens(0)
+				.tenantCaches(List.of(
+						new RuntimeSnapshot.TenantPoint("甲", 6_000, 0),
+						new RuntimeSnapshot.TenantPoint("乙", 4_000, 0)))
+				.build();
+		List<Outcome> cacheOutcomes = AlertEvaluator.judge(AlertRule.ZERO_CACHE_HITS, perTenant);
+		assertThat(cacheOutcomes).extracting(o -> o.fingerprint().orElseThrow())
+				.as("两个租户必须是两个不同的指纹 —— 否则其中一条会把另一条覆盖掉")
+				.doesNotHaveDuplicates();
 	}
 
 	// ------------------------------------------------------------------
@@ -396,6 +530,12 @@ class AlertRuleCatalogTest {
 
 		private CanarySplit canary = CanarySplit.none();
 
+		/** 逐租户的缓存口径（第 6 件）。默认空 = "这个部署还没接归因"。 */
+		private List<RuntimeSnapshot.TenantPoint> tenantCaches = List.of();
+
+		/** 花费最集中的租户（第 6 件）。默认 null = "无从谈起"。 */
+		private AlertRule.TenantShare tenantShare;
+
 		Builder pricingConfigured(boolean value) {
 			this.pricingConfigured = value;
 			return this;
@@ -432,11 +572,22 @@ class AlertRuleCatalogTest {
 			return this;
 		}
 
+		/** 逐租户口径：每项是 (租户, 输入 token, 其中命中缓存)。 */
+		Builder tenantCaches(List<RuntimeSnapshot.TenantPoint> value) {
+			this.tenantCaches = value;
+			return this;
+		}
+
+		Builder tenantShare(AlertRule.TenantShare value) {
+			this.tenantShare = value;
+			return this;
+		}
+
 		RuntimeSnapshot build() {
 			return new RuntimeSnapshot(Instant.parse("2026-09-18T00:00:00Z"), "2026-09-12", "2026-09-18",
 					pricingConfigured, unpricedModels, reconcileGap, stepLevelTokens, runLevelTokens,
 					runsWithoutSteps, promptTokens, cachedPromptTokens, emptyStreak, lastIndexSize,
-					retrievalCalls, canary);
+					retrievalCalls, canary, tenantCaches, tenantShare);
 		}
 
 	}

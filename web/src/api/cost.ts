@@ -83,6 +83,19 @@ export interface CostGroup {
   /** 命中的价格规则（`*` 表示兜底规则）；多模型混在一起时没有这个字段 */
   priceRule?: string
   priceSource?: string
+  /**
+   * 这个金额是怎么来的（只有两条取值）。
+   *
+   * - `PER_MODEL`：在这一格上**直接算**出来的（这一格的 token 与某一个模型一一对应，
+   *   单价唯一）—— 这是钱唯一被真正计算出来的粒度；
+   * - `ALLOCATED_BY_TOKEN_SHARE`：从合计**按 token 占比分摊**来的
+   *   （这一格里合法地混着多个模型，单一单价不适用）。
+   *
+   * <p>为什么必须把它交给界面：两种金额在页面上一模一样，而它们的**含义不同** ——
+   * 一个是算出来的，一个是分摊的。不说口径的成本表会被读成"大约就是这么分的"，
+   * 而那比"按 token 占比分摊（费用对 token 线性，与原值等价）"弱得多。
+   */
+  amountBasis?: 'PER_MODEL' | 'ALLOCATED_BY_TOKEN_SHARE'
 }
 
 /** 工具维度的一行。**它没有金额**，见后端 `CostQuery.byTool` 的注释。 */
@@ -115,6 +128,14 @@ export interface CostSummaryResponse {
   configNotes: string[]
   totals: CostGroup & { allModelsPriced?: boolean; daysWithData?: number }
   days: CostGroup[]
+  /**
+   * 按**租户**分账（阶段四第 6 件）：谁的钱。
+   *
+   * 与 {@link byIntent} 是**两个维度、两栏**，不是同一栏的两种叫法：
+   * 这一栏回答"谁在花钱"，那一栏回答"花在哪个功能上"。
+   */
+  byTenant: CostGroup[]
+  /** 按**业务归因键**分账：花在哪个功能上。 */
   byIntent: CostGroup[]
   byModel: CostGroup[]
   byTool: CostToolRow[]

@@ -42,18 +42,24 @@ import java.util.List;
  *            刻意不自动生成一个：给每次孤立调用编一个会话 id，会让"有会话"这件事
  *            看起来处处成立，而真相是"我们不知道这些运行属不属于同一段对话" ——
  *            那与成本看板"没标注就显示未标注"是同一条规矩。
+ * @param tenantId <b>租户</b>（阶段四第 6 件新增，成本归因）：这次运行花的是<b>谁</b>的钱。
+ *            {@code null} 表示未标注 —— 与 {@code intent} 同一条规矩，
+ *            也<b>刻意不用空串</b>（"没标注"与"标注成了空"是两件事）。
+ *            <p>它与 {@code intent} 是两个维度：本字段是"谁"，{@code intent} 是"做什么"。
+ *            看板上它们各自一栏、各自一行 —— 不合成一个字段，理由见
+ *            {@code agent-schema.sql} 里 tenant_id 那一段。
  */
 public record AgentRunRecord(String id, String question, RunStatus status, AgentStopReason stopReason,
 		String finalAnswer, int totalTokens, int toolCallCount, long elapsedMs, String node, String error,
 		Instant createdAt, Instant updatedAt, ai.agent.agent.AgentFailureCause failureCause, String intent,
-		String conversationId) {
+		String conversationId, String tenantId) {
 
 	/** 不带失败细分的构造器（保持旧调用点可编译）。 */
 	public AgentRunRecord(String id, String question, RunStatus status, AgentStopReason stopReason, String finalAnswer,
 			int totalTokens, int toolCallCount, long elapsedMs, String node, String error, Instant createdAt,
 			Instant updatedAt) {
 		this(id, question, status, stopReason, finalAnswer, totalTokens, toolCallCount, elapsedMs, node, error,
-				createdAt, updatedAt, null, null, null);
+				createdAt, updatedAt, null, null, null, null);
 	}
 
 	/**
@@ -62,12 +68,16 @@ public record AgentRunRecord(String id, String question, RunStatus status, Agent
 	 * <p>保留它是因为<b>归因与会话都是"调用方才知道的事实"</b>，而有一批调用方
 	 * （测试、外部链路）确实不知道它们。让它们显式传两个 null 只会增加噪音，
 	 * 且不会有任何好处 —— 这两个字段的语义本身就是"可以没有"。
+	 *
+	 * <p>⚠️ 租户（第 6 件）同样落进这个构造器的 {@code null}：它的性质与归因键
+	 * 一字不差（"调用方在运行开始前就知道"），所以<b>不加第四个构造器</b> ——
+	 * 四个重载里有两个的差别只在一个尾部字段，那正是麻烦的开始。
 	 */
 	public AgentRunRecord(String id, String question, RunStatus status, AgentStopReason stopReason, String finalAnswer,
 			int totalTokens, int toolCallCount, long elapsedMs, String node, String error, Instant createdAt,
 			Instant updatedAt, ai.agent.agent.AgentFailureCause failureCause) {
 		this(id, question, status, stopReason, finalAnswer, totalTokens, toolCallCount, elapsedMs, node, error,
-				createdAt, updatedAt, failureCause, null, null);
+				createdAt, updatedAt, failureCause, null, null, null);
 	}
 
 	/** 失败时给页面看的下一步建议。 */
@@ -84,6 +94,18 @@ public record AgentRunRecord(String id, String question, RunStatus status, Agent
 	 */
 	public boolean hasConversation() {
 		return conversationId != null && !conversationId.isBlank();
+	}
+
+	/**
+	 * 这次运行有没有租户信息（阶段四第 6 件）。
+	 *
+	 * <p>与 {@link #hasConversation()} 同一个理由：这个判据同时被
+	 * "成本看板要不要把它归到未标注那一行"和"页面要不要显示租户"用到，
+	 * 写两遍的后果是其中一遍迟早漏掉空白串那一半
+	 * —— 于是"只有空格的租户"变成一个合法的分组键，看板上出现一个叫「 」的租户。
+	 */
+	public boolean hasTenant() {
+		return tenantId != null && !tenantId.isBlank();
 	}
 
 	/**

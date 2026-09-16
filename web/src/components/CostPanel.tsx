@@ -10,11 +10,18 @@ import type { Remote } from '../types'
  * <h2>这一页要回答的三个问题（其余都是它们的证据）</h2>
  * <ol>
  *   <li><b>花了多少</b> —— 按天的走势与窗口合计；</li>
- *   <li><b>谁花的</b> —— 按业务归因键、按模型的拆分（路线文档的「成本归因」）；</li>
+ *   <li><b>谁花的</b> —— 按<b>租户</b>（谁的钱）、按<b>业务归因键</b>（花在哪个功能上）、
+ *       按模型的拆分（路线文档的「成本归因：按业务/租户/功能拆分」）；</li>
  *   <li><b>花得值不值</b> —— 失败但同样花钱的那部分、缓存命中率、工具调用与延迟。</li>
  * </ol>
  * 第三问是这一页与"账单截图"的区别：账单只知道花了多少，
  * 而「花了钱又没办成事」（失败的运行）只在我们自己的数据里才有。
+ *
+ * <h2>★ 租户与业务归因是两栏，不是同一栏的两种叫法</h2>
+ * 前者回答「谁在花钱」，后者回答「花在哪个功能上」。两栏的金额都是后端按 token 占比
+ * <b>从合计分摊</b>来的（费用对 token 是线性的，所以这与逐模型算完再相加等价），
+ * 因此两栏各自加起来都等于「按模型」那一栏的和。页面把这件事写在两栏里 ——
+ * 不说的话，"这一栏的钱是哪来的"只能靠猜。
  *
  * <h2>本页最重要的一条纪律：**不显示我们算不出来的东西**</h2>
  * 后端给的 `amount` 是可空的，而 null 有两种含义（价格没配 / 模型没上报），
@@ -76,6 +83,8 @@ export function CostPanel({ cost }: { cost: UseCostResult }) {
       {data && <PriceCard data={data} prices={prices} onReload={cost.loadPrices} />}
 
       {data && <DaysCard data={data} />}
+
+      {data && <TenantCard data={data} />}
 
       {data && <IntentCard data={data} />}
 
@@ -405,59 +414,104 @@ function DaysCard({ data }: { data: CostSummaryResponse }) {
 }
 
 // ---------------------------------------------------------------------------
-//  4. 按业务归因
+//  4. 两个归因维度：租户（谁的钱）与业务（哪个功能）
 // ---------------------------------------------------------------------------
 
+/**
+ * 「按租户」这一栏（阶段四第 6 件）。
+ *
+ * <h2>为什么它与「按业务」是两个组件调用同一份渲染，而不是两段各写一遍</h2>
+ * 两栏的**形状完全一样**（同一份后端结构 `byTenant` / `byIntent`），差别只有三个字符串：
+ * 标题、空行的名字（「未标注租户」/「未标注」）、以及提示里那句"该去哪个面板填"。
+ * 各写一遍的代价不是重复本身，而是它们会**慢慢分叉** ——
+ * 比如有人给业务那一栏加了"未标注"的提示，却忘了租户那一栏也有同一个空洞。
+ */
+function TenantCard({ data }: { data: CostSummaryResponse }) {
+  return (
+    <AttributionCard
+      rows={data.byTenant}
+      title="按租户：钱是谁花的"
+      columnTitle="租户"
+      howToFill="在「Agent 工具调用」面板发起任务时填「租户」就会归到这里。"
+      missingNote={
+        <>
+          它们单独占一行（未标注租户），<b>没有</b>被并进任何一个租户里 ——{' '}
+          并进去会让那个租户的成本虚高，而虚高的部分无从发现。
+          它与「未标注」（业务归因缺失）是<b>两件事</b>：前者是不知道算谁的钱，后者是不知道属于哪个功能。
+        </>
+      }
+    />
+  )
+}
+
 function IntentCard({ data }: { data: CostSummaryResponse }) {
-  const missing = data.byIntent.some(r => r.keyMissing)
+  return (
+    <AttributionCard
+      rows={data.byIntent}
+      title="按业务归因：钱花在哪个功能上"
+      columnTitle="业务 / 功能"
+      howToFill="在「Agent 工具调用」面板发起任务时填「业务归因」就会归到这里。"
+      missingNote={
+        <>
+          它们单独占一行（未标注），<b>没有</b>被并进任何一个业务里 ——{' '}
+          并进去会让那个业务的成本虚高，而虚高的部分无从发现。
+        </>
+      }
+    />
+  )
+}
+
+/**
+ * 归因维度那一栏的共用渲染。
+ *
+ * <h2>金额那一格为什么**有数字**（第 6 件之前这里写的是「算不出」）</h2>
+ * 后端现在按 token 占比把这批花费从合计分摊到每一行（`amountBasis = ALLOCATED_BY_TOKEN_SHARE`）。
+ * 为什么这不算"猜"：费用对 token 是线性的（三档单价各自是常数），
+ * 所以"按占比分摊"与"逐模型算完再相加"是同一个数的两种算法。
+ * 页面上把口径写在提示里 —— 一张不说口径的成本表，读者会自行脑补一个更弱的说法
+ * （"大约是这么分的"），而那不是事实。
+ */
+function AttributionCard({
+  rows,
+  title,
+  columnTitle,
+  howToFill,
+  missingNote,
+}: {
+  rows: CostGroup[]
+  title: string
+  columnTitle: string
+  /** 该去哪儿填这个维度（两个维度的提示语不同，所以它是参数而不是写死的一句）。 */
+  howToFill: string
+  missingNote: React.ReactNode
+}) {
+  const missing = rows.some(r => r.keyMissing)
   return (
     <Card
       size="small"
       className="diag-card diag-card-wide"
       title={
         <Flex gap={8} align="center" wrap>
-          <span>按业务归因：钱是谁花的</span>
+          <span>{title}</span>
           {missing && <Tag color="orange">有未标注的运行</Tag>}
         </Flex>
       }
     >
-      {/*
-        这一栏与「按模型」的分工：归因键回答"哪个业务在花钱"，
-        而金额那一格是空的 —— 因为一格里可能混着多个模型，单一单价不适用。
-        这不是没实现，页面必须把这件事说清楚（说清了读者就去下面那一栏核对）
-      */}
       {missing && (
-        <Alert
-          type="info"
-          showIcon
-          className="cost-needs-alert"
-          title="有一部分运行没有标注业务归因"
-          description={
-            /*
-              这里刻意**不用 markdown 星号**：Alert 的 description 是纯文本渲染，
-              写 `**没有**` 会在页面上原样显示两个星号 —— 阶段一踩过同一个坑
-              （见踩坑库 #24：纯文本里的 markdown 星号会原样显示）。
-            */
-            <>
-              它们单独占一行（未标注），<b>没有</b>被并进任何一个业务里 ——{' '}
-              并进去会让那个业务的成本虚高，而虚高的部分无从发现。
-              在「Agent 工具调用」面板发起任务时填「业务归因」就会归到这里。
-            </>
-          }
-        />
+        <Alert type="info" showIcon className="cost-needs-alert" title="有一部分运行没有标注" description={missingNote} />
       )}
 
-      {data.byIntent.length === 0 ? (
+      {rows.length === 0 ? (
         <Empty description="还没有运行记录" />
       ) : (
         <Table<CostGroup>
           size="small"
           rowKey={r => r.keyLabel ?? ''}
           pagination={false}
-          dataSource={data.byIntent}
+          dataSource={rows}
           columns={[
             {
-              title: '业务 / 功能',
+              title: columnTitle,
               dataIndex: 'keyLabel',
               render: (v: string, row: CostGroup) =>
                 row.keyMissing ? <Typography.Text type="warning">{v}</Typography.Text> : v,
@@ -476,7 +530,15 @@ function IntentCard({ data }: { data: CostSummaryResponse }) {
               title: '金额',
               dataIndex: 'amount',
               render: (_: unknown, row: CostGroup) => (
-                <Tooltip title={row.amount === null ? row.amountReason ?? '' : `按模型分别计算后相加，见「按模型」那一栏`}>
+                <Tooltip
+                  title={
+                    row.amount === null
+                      ? row.amountReason ?? ''
+                      : row.amountBasis === 'ALLOCATED_BY_TOKEN_SHARE'
+                        ? `这一栏混着多个模型，单一单价不适用 —— 金额是从合计按 token 占比分摊的`
+                        : ''
+                  }
+                >
                   <span>
                     <Amount row={row} />
                   </span>
@@ -485,6 +547,14 @@ function IntentCard({ data }: { data: CostSummaryResponse }) {
             },
           ]}
         />
+      )}
+
+      {rows.length > 0 && (
+        <Typography.Paragraph type="secondary" className="cost-note-line">
+          这一栏的金额是<b>按 token 占比从合计分摊</b>的（费用对 token 是线性的，
+          所以这与逐模型算完再相加等价）—— 所以各行相加必然等于「按模型」那一栏的和。
+          {howToFill}
+        </Typography.Paragraph>
       )}
     </Card>
   )

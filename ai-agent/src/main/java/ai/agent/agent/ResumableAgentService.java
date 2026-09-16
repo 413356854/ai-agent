@@ -118,7 +118,16 @@ public class ResumableAgentService {
 	 * @param intent 业务归因键；{@code null} 表示未标注
 	 */
 	public AgentRun runWithId(String runId, String question, String intent) {
-		return runWithId(runId, question, null, intent, null);
+		// 【第六件在这里留下了一处必须记住的教训】
+		// 这一行原来写的是 `runWithId(runId, question, null, intent, null)` ——
+		// 加了"五参 + 第六个 String 租户"那个重载之后，它变成了**歧义**：
+		// 五个实参两种都匹配（`(String,String,String,String,String)` 与
+		// `(String,String,ModelTurn,String,String)`），javac 报「对 runWithId 的引用不明确」。
+		// 也就是说：**新增一个 String 参数，会让"第三位是 null"的每一处调用都变成编译错误。**
+		// 好在它是编译错误而不是静默走错分支 —— 那种"编译器帮你把影响面找齐"的失败，
+		// 与 tenantId 加进 Start 只改一处构造点是同一件事的两面。
+		// 修法就是第 112 行那句注释说的办法：把歧义的那一位显式转型。
+		return runWithId(runId, question, (ModelTurn) null, intent, null, null);
 	}
 
 	/**
@@ -128,7 +137,16 @@ public class ResumableAgentService {
 	 * @param conversationId 会话 id；{@code null} / 空白 = 没有会话信息
 	 */
 	public AgentRun runWithId(String runId, String question, String intent, String conversationId) {
-		return runWithId(runId, question, null, intent, conversationId);
+		return runWithId(runId, question, (ModelTurn) null, intent, conversationId, null);
+	}
+
+	/**
+	 * 用指定 id 与<b>归因键 + 会话 id + 租户</b>跑一次（阶段四第 6 件）。
+	 *
+	 * @param tenantId 租户：这次运行花的是**谁**的钱；{@code null} / 空白 = 未标注租户
+	 */
+	public AgentRun runWithId(String runId, String question, String intent, String conversationId, String tenantId) {
+		return runWithId(runId, question, null, intent, conversationId, tenantId);
 	}
 
 	/**
@@ -154,10 +172,31 @@ public class ResumableAgentService {
 		return runWithId(runId, question, modelTurn, intent, null);
 	}
 
-	/** 完整入口：id + 问题 + 覆盖模型 + 业务归因键 + 会话 id。 */
+	/**
+	 * 完整入口：id + 问题 + 覆盖模型 + 业务归因键 + 会话 id。
+	 *
+	 * <p>等价于"不带租户"的那一次调用 —— 保留五参形态是因为**有一批调用方
+	 * 确实不知道租户**（测试、外部只读链路），而 {@link #runWithId(String, String, ModelTurn, String, String, String)}
+	 * 的第六个参数会与第五个混淆（两个都是 String）：
+	 * 把租户写成会话 id 是**编译得过**的错，而它的现象是
+	 * "成本看板上多出一个叫 web-xxxx 的租户"。所以宁可多一个具名入口。
+	 */
 	public AgentRun runWithId(String runId, String question, ModelTurn modelTurn, String intent,
 			String conversationId) {
-		store.start(new AgentRunStore.Start(runId, question, properties.node(), intent, conversationId));
+		return runWithId(runId, question, modelTurn, intent, conversationId, null);
+	}
+
+	/**
+	 * 完整入口：id + 问题 + 覆盖模型 + 业务归因键 + 会话 id + <b>租户</b>
+	 * （阶段四第 6 件：成本归因）。
+	 *
+	 * @param tenantId 租户：这次运行花的是**谁**的钱；{@code null} / 空白 = 未标注。
+	 *            <p>它与 {@code intent} 是两个维度、两列 —— 拼接会互相污染，见
+	 *            {@code agent-schema.sql} 里 tenant_id 那一段
+	 */
+	public AgentRun runWithId(String runId, String question, ModelTurn modelTurn, String intent,
+			String conversationId, String tenantId) {
+		store.start(new AgentRunStore.Start(runId, question, properties.node(), intent, conversationId, tenantId));
 		// 把"这次实际用哪个模型"传给监听器 —— 它是成本归因的一部分（见 PersistingListener.override）
 		PersistingListener listener = new PersistingListener(runId, modelTurn);
 		try {

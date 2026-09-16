@@ -66,10 +66,27 @@ public final class AlertEvaluator {
 	 *
 	 * <p>反过来，"对账对不上"就只有一个主体（它说的是一次汇总的差），
 	 * 所以它只产出一个结果。**主体的粒度由判据自己决定**，不强行统一。
+	 *
+	 * <h2>★ 主体粒度在这里是一处<b>显式的 switch</b>（阶段四第 6 件加的纪律）</h2>
+	 * 租户维度出现之后，"这条判据说的是谁"从"只有一个答案"变成了一个需要**逐条决定**的问题。
+	 * 而这个决定的落点只能是这里 —— 台账点名写过：<b>换粒度就来这里改这个 switch，
+	 * 而不是在新加的代码里另写一套阈值</b>。原因是具体的：
+	 * <ul>
+	 *   <li>把粒度做成判据上的一个属性（枚举字段），就多了一处"声明与实现可能不一致"
+	 *       （声明说 per-tenant，判据 lambda 里却只读窗口合计 —— 那不会有任何症状，
+	 *       只是永远少报几条）；</li>
+	 *   <li>做成全局开关（"这个部署按租户告警"）更糟：同一份判据目录会**读不同的意思**，
+	 *       于是"这条判据到底在说什么"取决于部署配置 —— 而判据的意义不该是配置。</li>
+	 * </ul>
+	 * 所以粒度是写死在代码里、能对着快照断言的一件事，并且有一条测试专门钉住它：
+	 * <b>改了这个 switch，测试会告诉你哪些判据的粒度变了。</b>
+	 * 缺省分支（{@code default}）刻意写成一个明确的"单主体"而不是省略 ——
+	 * 一个新增的判据会静默落进缺省粒度，那时有人该看到这一行。
 	 */
 	public static List<Outcome> judge(AlertRule rule, RuntimeSnapshot snapshot) {
 		if (rule == AlertRule.UNPRICED_MODELS) {
-			// 多主体判据：一条判据、每个模型一条告警
+			// 多主体判据：一条判据、每个模型一条告警。
+			// 粒度是"模型"而不是"租户"，因为单价按模型配 —— 见 AlertRule.UNPRICED_MODELS 的注释
 			List<Outcome> outcomes = new ArrayList<>();
 			AlertRule.Verdict verdict = rule.judge(snapshot);
 			if (!verdict.breached()) {
@@ -83,6 +100,10 @@ public final class AlertEvaluator {
 			}
 			return List.copyOf(outcomes);
 		}
+		if (rule == AlertRule.ZERO_CACHE_HITS) {
+			// 【第 6 件：从"整窗"改成"每租户"】一条判据、每个租户一条告警。
+			return perTenant(rule, snapshot);
+		}
 		AlertRule.Verdict verdict = rule.judge(snapshot);
 		if (verdict.breached()) {
 			List<Outcome> single = new ArrayList<>(1);
@@ -95,6 +116,56 @@ public final class AlertEvaluator {
 	}
 
 	/**
+	 * 把一条判据<b>逐租户</b>评估一遍（阶段四第 6 件新加的粒度）。
+	 *
+	 * <h2>为什么不是"在判据 lambda 里循环租户"</h2>
+	 * 那样写每个租户会得到**同一个指纹**（指纹由 rule + subject 决定，而 subject 是外层给的），
+	 * 于是 N 个租户的告警会互相覆盖，只剩最后一条 —— 而"只剩一条"在页面上看不出来，
+	 * 它看起来就是"只有一个租户有问题"。指纹必须在<b>这一层</b>按主体展开，
+	 * 与 UNPRICED_MODELS 那条同一个做法。
+	 *
+	 * <h2>为什么每租户评估时要切一份快照，而不是把租户当参数传进判据</h2>
+	 * 判据的签名保持 {@code RuntimeSnapshot -> Verdict} 不变，才能继续满足
+	 * "判据是纯函数、只读快照"这条纪律（也是它能在毫秒级被测的前提）。
+	 * 所以这里切一份"只看这一个租户"的快照：token 两个数换成该租户的，
+	 * 其余字段原样保留。代价是每租户多一次判据调用（微秒级），
+	 * 换来的是<b>判据只有一份、且它读的东西与窗口版本完全一样</b>。
+	 *
+	 * <p>⚠️ 而"切出来的快照"这件事本身有一个坑，所以它在 {@code withTenant} 里只做一次：
+	 * 切的时候如果顺手把别的字段也清零（例如 unpricedModels），
+	 * 这条判据的结论就会随着别的维度变化 —— 那种耦合没有任何症状，只是结论偶尔不同。
+	 */
+	private static List<Outcome> perTenant(AlertRule rule, RuntimeSnapshot snapshot) {
+		if (snapshot.tenantCaches().isEmpty()) {
+			// 【没有租户信息时退回窗口口径】这不是"跳过"，而是一条真实结论：
+			// 一个还没接归因的部署，缓存一次都没命中这件事仍然必须被报出来。
+			// 反过来若在这里直接 quiet，未接归因的部署就**永远收不到**这条告警 ——
+			// 而那时它的成本正按最贵的一档算
+			AlertRule.Verdict windowVerdict = rule.judge(snapshot);
+			return windowVerdict.breached()
+					? List.of(Outcome.fired(rule, WINDOW_SUBJECT, windowVerdict))
+					: List.of(Outcome.quiet(rule));
+		}
+		List<Outcome> outcomes = new ArrayList<>();
+		boolean anyFired = false;
+		for (RuntimeSnapshot.TenantPoint tenant : snapshot.tenantCaches()) {
+			RuntimeSnapshot scoped = snapshot.forTenant(tenant);
+			AlertRule.Verdict verdict = rule.judge(scoped);
+			if (verdict.breached()) {
+				anyFired = true;
+				outcomes.add(Outcome.fired(rule, tenant.tenant(), verdict));
+			}
+		}
+		// 【一个租户都没响时，要产出一条 QUIET】它是"把已经在响的那几条标成恢复"的唯一入口
+		// （见 AlertRecorder 的第二段）。漏了它，某租户缓存开始命中之后，
+		// 那条告警会**一直响着**，而"它其实已经好了"没有任何地方能表达
+		return anyFired ? List.copyOf(outcomes) : List.of(Outcome.quiet(rule));
+	}
+
+	/** 没有租户信息时那条告警的主体（它说的是整个窗口，不是某一个租户）。 */
+	private static final String WINDOW_SUBJECT = "窗口合计（未按租户拆分）";
+
+	/**
 	 * 单主体判据的"说的是谁"。
 	 *
 	 * <p>主体的取值直接进 {@link AlertEvent#fingerprint()}，所以它必须
@@ -102,15 +173,24 @@ public final class AlertEvaluator {
 	 * <ul>
 	 *   <li>灰度那两条用"版本 vN"—— 两次实验（v4 与 v5）是不同的主体，
 	 *       所以第一轮实验的结论不会被第二轮覆盖掉；</li>
+	 *   <li><b>成本集中度那条用租户名</b>（第 6 件）：主体是"哪一家"——
+	 *       一个泛泛的"窗口合计"会让它和别的成本告警长得一样，
+	 *       而它要人去做的动作恰恰与那个租户有关；</li>
 	 *   <li>其余的用一个把窗口外的含义也说清的固定词（例如"窗口合计"），
 	 *       而不是空串：空串在界面上会渲染成一对空括号，读的人不知道那是"没有主体"
 	 *       还是"主体没取到"。</li>
 	 * </ul>
+	 *
+	 * <p>⚠️ {@link AlertRule#ZERO_CACHE_HITS} <b>不在这张表里</b>：它的主体由
+	 * {@link #perTenant} 逐租户展开（每租户一个指纹），走到这里反而是错的。
+	 * 有一条测试专门钉住"该展开的那些真的被展开了"。
 	 */
 	private static String subjectOf(AlertRule rule, RuntimeSnapshot snapshot) {
 		return switch (rule) {
 			case CANARY_NO_TRAFFIC, CANARY_SPLIT_BIASED -> "灰度 v" + snapshot.canary().candidateVersion();
-			case ZERO_CACHE_HITS -> "提示词缓存";
+			case TENANT_COST_CONCENTRATION -> snapshot.tenantShare() == null
+					? "窗口合计"
+					: snapshot.tenantShare().tenant();
 			case EMPTY_RETRIEVAL -> "检索";
 			case RECONCILE_GAP -> "窗口合计";
 			case UNCONFIGURED_PRICES -> "价格表";

@@ -192,7 +192,7 @@ public class AlertController {
 			body.put("skipped", outcomes.stream()
 					.filter(o -> o.kind() == AlertEvaluator.Outcome.Kind.SKIPPED)
 					.map(this::outcome).toList());
-			body.put("note", "dryRun：这一轮**没有写库**，所以「新响 / 恢复」分不出来 —— "
+			body.put("note", "dryRun：这一轮「没有写库」，所以「新响 / 恢复」分不出来 —— "
 					+ "那两种要跟上一轮比才知道。要看真实的状态变化，去掉 dryRun。");
 			return body;
 		}

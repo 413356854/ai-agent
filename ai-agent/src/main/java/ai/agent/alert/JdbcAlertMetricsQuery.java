@@ -87,16 +87,84 @@ public class JdbcAlertMetricsQuery implements AlertSnapshotQuery {
 
 		CostQuery.Reconciliation reconciliation = costQuery.reconcile(from, today);
 		Retrieval retrieval = retrievalSignals(from);
+		// 【阶段四第 6 件】租户口径：复用**成本看板那一条**按租户分组的查询。
+		// 不在这里另写一条 SQL —— 那正是本类类注释里那条纪律
+		//（"同一件事有两份实现，而两份迟早会对不上"），
+		// 而这里的后果更具体：告警说"某租户缓存 0 命中"、看板说"它命中了 12%"。
+		List<CostQuery.GroupTotals> tenantRows = costQuery.byTenant(from, today);
 
 		RuntimeSnapshot snapshot = new RuntimeSnapshot(Instant.now(), from.toString(), today.toString(),
 				pricing.configured(), unpricedModels(effective), reconciliation.gap(),
 				reconciliation.stepLevelTokens(), reconciliation.runLevelTokens(), reconciliation.runsWithoutSteps(),
 				reconciliation.promptTokens(), reconciliation.cachedPromptTokens(),
-				retrieval.consecutiveEmpty(), retrieval.lastIndexSize(), retrieval.calls, canarySplit(effective));
+				retrieval.consecutiveEmpty(), retrieval.lastIndexSize(), retrieval.calls, canarySplit(effective),
+				tenantCaches(tenantRows), tenantShare(tenantRows));
 
-		log.debug("告警快照：窗口 {}~{} 对账差={} 空命中连续={} 灰度={}", from, today, snapshot.reconcileGap(),
-				snapshot.consecutiveEmptyRetrievals(), snapshot.canary());
+		log.debug("告警快照：窗口 {}~{} 对账差={} 空命中连续={} 灰度={} 租户={}（未标注 {} 次运行）", from, today,
+				snapshot.reconcileGap(), snapshot.consecutiveEmptyRetrievals(), snapshot.canary(),
+				snapshot.tenantCaches().size(),
+				tenantRows.stream().filter(r -> r.key() == null).mapToLong(CostQuery.GroupTotals::runCount).sum());
 		return snapshot;
+	}
+
+	/**
+	 * 逐租户的缓存口径（阶段四第 6 件）。
+	 *
+	 * <h2>为什么"未标注租户"那一行被<b>丢掉</b>，而不是当成一个租户</h2>
+	 * 因为判据要报的是「<b>某一家</b>一次都没命中缓存」，而「未标注」不是一个主体 ——
+	 * 它是一堆互不相干的运行的合计。把它当成一个租户报出来，会得到一条
+	 * "未标注租户 的缓存命中率为 0"：那个数字是对的，但它**没有处置动作**
+	 * （要去补的是调用方的 tenantId，而不是"优化未标注租户的提示词"）。
+	 * 那种告警会消耗掉这条判据的信用。
+	 *
+	 * <p>丢掉它<b>不会漏报</b>：一个还没接归因的部署，
+	 * {@code tenantCaches} 是空的，判据会退回窗口口径继续报（见
+	 * {@code AlertEvaluator.perTenant}），所以"整个部署都没命中缓存"这件事仍然会被看见。
+	 */
+	private static List<RuntimeSnapshot.TenantPoint> tenantCaches(List<CostQuery.GroupTotals> tenantRows) {
+		List<RuntimeSnapshot.TenantPoint> points = new ArrayList<>();
+		for (CostQuery.GroupTotals row : tenantRows) {
+			if (row.key() == null || row.promptTokens() <= 0) {
+				// 没有输入 token 的租户不进这一维：命中率对它是"无从谈起"，
+				// 让它进来只会让逐租户评估多跑一次必然不响的判据
+				continue;
+			}
+			points.add(new RuntimeSnapshot.TenantPoint(row.key(), row.promptTokens(), row.cachedPromptTokens()));
+		}
+		return List.copyOf(points);
+	}
+
+	/**
+	 * 花费最集中的那个租户（阶段四第 6 件）。
+	 *
+	 * <h2>分母刻意不含"未标注租户"</h2>
+	 * 见 {@link AlertRule.TenantShare} 的注释：判据问的是"某一家占掉了绝大部分"，
+	 * 而未标注不是一个"家"。把它算进分母还有更糟的一面：一个还没接归因的部署
+	 * 会因为"未标注占了 100%"而……不响（它不在候选里）—— 那是对的，
+	 * 因为那件事该由"去传 tenantId"解决，而不是由一条成本告警解决。
+	 *
+	 * @return 没有已标注租户、或它们的 token 全是 0 时返回 {@code null}
+	 *         （**不是零值**：零值会被读成"没有租户在花钱"）
+	 */
+	private static AlertRule.TenantShare tenantShare(List<CostQuery.GroupTotals> tenantRows) {
+		String top = null;
+		long topTokens = 0;
+		long total = 0;
+		for (CostQuery.GroupTotals row : tenantRows) {
+			if (row.key() == null) {
+				continue;
+			}
+			long tokens = row.totalTokens();
+			total += tokens;
+			if (tokens > topTokens) {
+				topTokens = tokens;
+				top = row.key();
+			}
+		}
+		if (top == null || total <= 0) {
+			return null;
+		}
+		return new AlertRule.TenantShare(top, topTokens, total);
 	}
 
 	@Override

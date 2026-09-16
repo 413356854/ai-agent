@@ -420,6 +420,8 @@ function traceFromScript(runId, known) {
       elapsedMs: (known && known.elapsedMs) || 7402,
       node: 'local',
       intent: '文档问答',
+      // 【第 6 件】租户与业务是两个维度，trace 两个都带（与真后端 AgentTraceView 一致）
+      tenantId: '示例租户',
       createdAt: (known && known.createdAt) || '2026-09-15T21:40:12',
       updatedAt: '2026-09-15T21:40:19',
     },
@@ -483,7 +485,18 @@ function traceFromScript(runId, known) {
   }
 }
 
-/** 最近几次运行（含一条被中断的 —— 那是"等恢复"提示的触发条件） */
+/**
+ * 最近几次运行（含一条被中断的 —— 那是"等恢复"提示的触发条件）。
+ *
+ * <h2>★ 每一行都带 intent 与 tenantId（阶段四第 6 件）</h2>
+ * 真后端从这一件起在这两个键上返回**空串而不是缺字段**（未标注时也是空串），
+ * 所以假数据必须照同一个形状给 —— 漏了的话，"界面按这两个字段渲染"这件事
+ * 在假后端路径上永远走不到（`undefined` 与 `''` 在界面上长得不一样，
+ * 而那种差别只在真路径上现形）。
+ *
+ * <p>这五行的两个维度刻意**各不相同**（有的只有租户、有的只有业务、有的都没有）：
+ * 一一对应的话，"两个维度是独立的"这个结构在自检里就走不到。
+ */
 const RUNS = [
   {
     id: 'run-demo-0004',
@@ -496,6 +509,8 @@ const RUNS = [
     elapsedMs: 7402,
     createdAt: '2026-09-15T21:40:12',
     node: 'local',
+    intent: '文档问答',
+    tenantId: '示例租户',
   },
   {
     id: 'run-demo-0003',
@@ -508,6 +523,9 @@ const RUNS = [
     elapsedMs: 5210,
     createdAt: '2026-09-15T21:38:02',
     node: 'local',
+    // 只有业务归因、没有租户 —— 两个维度的独立性靠这种组合验证
+    intent: '成本排查',
+    tenantId: '',
   },
   {
     id: 'run-demo-0002',
@@ -521,6 +539,9 @@ const RUNS = [
     elapsedMs: 21400,
     createdAt: '2026-09-15T21:35:44',
     node: 'local',
+    // 只有租户、没有业务归因（反过来的那一半）
+    intent: '',
+    tenantId: '内部试用',
   },
   {
     id: 'run-demo-0001',
@@ -535,6 +556,9 @@ const RUNS = [
     elapsedMs: 3120,
     createdAt: '2026-09-15T21:30:11',
     node: 'local',
+    // 两个都没有（curl 直接调用的形状）
+    intent: '',
+    tenantId: '',
   },
   {
     id: 'run-demo-0000',
@@ -548,6 +572,8 @@ const RUNS = [
     elapsedMs: 4180,
     createdAt: '2026-09-15T21:20:03',
     node: 'local',
+    intent: '闲聊',
+    tenantId: '示例租户',
   },
 ]
 
@@ -837,15 +863,22 @@ export function handleAgentRoutes(req, res, url, json) {
       // **刻意如此**，因为真实链路里它只是被写进 agent_run.intent 的一个字符串，
       // 不参与任何判断。假后端在这里"顺手也做点什么"反而会造出一个真后端没有的行为
       let intent = ''
+      // 租户（阶段四第 6 件）与归因键同一条规矩：假后端**不拿它做任何事**，
+      // 因为真实链路里它也只是被写进 agent_run.tenant_id 的一个字符串。
+      // 这里解析它只有一个目的：让"请求体里字段名写错了"这件事在假路径上也现形
+      // （跨路径一致性断言会读它 —— 见 verify-ui 里那条）
+      let tenantId = ''
       try {
         const parsed = JSON.parse(body || '{}')
         question = parsed.question ?? question
         intent = parsed.intent ?? ''
+        tenantId = parsed.tenantId ?? ''
       } catch {
         // 解析失败就用默认值：这是**假后端**，它的职责是让界面能跑起来，
         // 不是严格校验输入（严格校验在真后端，而且那里有测试）
       }
       void intent
+      void tenantId
       setTimeout(() => json(res, askResponse(question)), 900)
     })
     return true

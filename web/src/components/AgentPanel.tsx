@@ -484,7 +484,7 @@ function AskCard({
 }: {
   remote: Remote<AgentAskResponse>
   running: boolean
-  onAsk: (q: string, intent: string) => void
+  onAsk: (q: string, intent: string, tenantId: string) => void
 }) {
   const [question, setQuestion] = useState('分块策略的结论是什么？')
   /**
@@ -500,6 +500,18 @@ function AskCard({
    * 人看到"客服问答"之后会顺手改成自己那条业务。
    */
   const [intent, setIntent] = useState('客服问答')
+  /**
+   * 租户（阶段四第 6 件）。
+   *
+   * <h2>它为什么要单独一个输入框，而不是与业务归因合成一个</h2>
+   * 两者回答的是**两个不同的问题**：业务归因 = 花在哪个功能上，租户 = 谁的钱。
+   * 合成一个字段（`京东-客服问答`）之后，"按租户看一共多少"要靠前缀匹配 ——
+   * 而一次拼写不一致就让同一个租户裂成两行，且两行加起来才是真相。
+   *
+   * <p>默认值同样是"能改的"：给一个具体的租户名比留空更有引导性，
+   * 而留空的后果是看板上那一栏永远只有「未标注租户」。
+   */
+  const [tenantId, setTenantId] = useState('示例租户')
 
   return (
     <Card
@@ -513,20 +525,20 @@ function AskCard({
           <Input
             value={question}
             onChange={e => setQuestion(e.target.value)}
-            onPressEnter={() => onAsk(question, intent)}
+            onPressEnter={() => onAsk(question, intent, tenantId)}
             placeholder="问一个需要查文档的问题（Enter 发送）"
             className="rag-input"
             disabled={running}
           />
-          <Button type="primary" onClick={() => onAsk(question, intent)} loading={running}>
+          <Button type="primary" onClick={() => onAsk(question, intent, tenantId)} loading={running}>
             跑一次
           </Button>
         </Flex>
 
         {/*
-          归因键单独一行、并且写清它去哪儿：它是**成本看板那一栏的分组键**，
-          而分组键的取值质量直接决定那一栏有没有用。
-          不说清的话，没人知道"业务归因"这四个字是干什么的
+          两个归因维度**各占一行、各自写清它去哪儿**：它们是成本看板上两栏的分组键，
+          而分组键的取值质量直接决定那两栏有没有用。
+          排成一行会让它们看起来是"一个东西的两个输入框"
         */}
         <Flex gap={8} align="center" wrap>
           <Typography.Text type="secondary" className="cost-intent-label">
@@ -545,6 +557,23 @@ function AskCard({
           </Typography.Text>
         </Flex>
 
+        <Flex gap={8} align="center" wrap>
+          <Typography.Text type="secondary" className="cost-intent-label">
+            租户
+          </Typography.Text>
+          <Input
+            value={tenantId}
+            onChange={e => setTenantId(e.target.value)}
+            placeholder="这次运行花的是谁的钱（留空则记成「未标注租户」）"
+            maxLength={64}
+            disabled={running}
+            className="cost-intent-input"
+          />
+          <Typography.Text type="secondary" className="cost-intent-hint">
+            与业务归因是两栏：这一栏回答「谁花的钱」，它回答「花在哪个功能上」
+          </Typography.Text>
+        </Flex>
+
         {/*
           例子刻意选"需要查文档"和"不需要查文档"各一个：
           后者能让人看到 Agent 会**直接回答而不调工具** ——
@@ -553,19 +582,20 @@ function AskCard({
         <Flex gap={6} wrap align="center">
           <Typography.Text type="secondary">试试：</Typography.Text>
           {[
-            { q: '分块策略的结论是什么？', intent: '文档问答' },
-            { q: 'token 预算的系数怎么校准的？', intent: '成本排查' },
-            { q: '你是谁？', intent: '闲聊' },
+            { q: '分块策略的结论是什么？', intent: '文档问答', tenantId: '示例租户' },
+            { q: 'token 预算的系数怎么校准的？', intent: '成本排查', tenantId: '示例租户' },
+            { q: '你是谁？', intent: '闲聊', tenantId: '内部试用' },
           ].map(sample => (
             <Tag
               key={sample.q}
               className="rag-tag-clickable"
               onClick={() => {
                 setQuestion(sample.q)
-                // 点例子时把归因键也一起切过去：三个例子的业务归属本来就不同，
-                // 全按输入框里那个值记的话，成本看板上这三个业务会被并成一个
+                // 点例子时把两个归因维度也一起切过去：三个例子的归属本来就不同，
+                // 全按输入框里那两个值记的话，成本看板上这几个分组会被并成一个
                 setIntent(sample.intent)
-                onAsk(sample.q, sample.intent)
+                setTenantId(sample.tenantId)
+                onAsk(sample.q, sample.intent, sample.tenantId)
               }}
             >
               {sample.q}

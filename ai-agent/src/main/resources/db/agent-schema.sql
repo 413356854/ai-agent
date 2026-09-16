@@ -53,6 +53,22 @@ CREATE TABLE IF NOT EXISTS agent_run (
   -- 看起来处处成立，而真相是"我们不知道这些运行属不属于同一段对话" ——
   -- 那与成本看板"没标注就显示未标注"是同一条规矩。
   conversation_id VARCHAR(64) NULL,
+  -- 【阶段四第 6 件 · 成本归因】**租户**：这次运行花的是谁的钱。
+  --
+  -- 【为什么必须与 intent 分开成两列，而不是"按业务/租户"共用一个字段】
+  -- 这是这一件最要紧的一个决定。路线文档的原话是「成本归因（按业务/租户/功能拆分）」——
+  -- 读起来像"一个字段存三个维度"，但那样做的后果是具体的：
+  --   · 拼字符串（`京东-客服问答`）之后，"按业务看一共多少"要靠 LIKE 前缀匹配，
+  --     而一次拼写不一致（`京东 / 客服`）就会让同一件事裂成两行；
+  --   · 更糟的是**维度互相污染**：一个租户想改名、一个问题想换业务归属，
+  --     都要去改历史数据（而那正是"历史只追加"要避免的事）。
+  -- 所以是两列、两个维度、两个 GROUP BY：`tenant_id` 回答"谁在花钱"，
+  -- `intent` 回答"花在哪个功能上"。同一个租户 + 不同功能 = 两行，这是对的。
+  --
+  -- NULL = **这次运行没有标注租户**（curl 直接调、外部系统调、界面没填）。
+  -- 与 intent 同一条规矩：看板会把它显示成「未标注租户」并**独立成一行**，
+  -- 而不是并进某个租户里（那会让那个租户的成本虚高，且无从发现）。
+  tenant_id     VARCHAR(64)  NULL,
   created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id)
@@ -144,6 +160,13 @@ CREATE INDEX IF NOT EXISTS idx_agent_run_status ON agent_run (status, updated_at
 -- 没有它，"这段对话里一共跑了几次、各自花了多少"只能全表扫 ——
 -- 而那个查询恰恰是排查"用户说这个功能今天一直不对"时的第一个动作。
 CREATE INDEX IF NOT EXISTS idx_agent_run_conversation ON agent_run (conversation_id, created_at);
+
+-- 【阶段四第 6 件 · 成本归因】按租户看钱是看板最长的那条查询（多一个 GROUP BY 维度，
+-- 而它的分组基数由**租户数**决定 —— 那是唯一会随业务增长而增长的维度）。
+-- 索引列顺序刻意是 (tenant_id, created_at) 而不是反过来：查询形如
+-- 「窗口内按租户分组」，所以先按租户收敛、再在组内按时间过滤，
+-- 与 conversation 那条索引同一个形状。
+CREATE INDEX IF NOT EXISTS idx_agent_run_tenant ON agent_run (tenant_id, created_at);
 
 -- 【阶段四成本看板】看板的每一次查询都带一个时间窗（默认最近 7 天），
 -- 且按天分桶。所以这个索引是"看板能不能在数据量上来之后还跑得动"的落点 ——

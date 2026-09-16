@@ -147,12 +147,31 @@ public class AgentController {
 		// 长度裁剪同样是必需的，理由与归因键一字不差（超长 → 写库抛 SQL 异常 →
 		// 用户的几个字变成"这次任务失败了"）
 		String conversationId = clamp(request == null ? null : request.conversationId(), MAX_CONVERSATION_CHARS);
-		AgentRun run = service.runWithId(runId, question, intent, conversationId);
+		// 【阶段四第 6 件：成本归因的第二个维度】租户。
+		//
+		// 与归因键是**两列、两个维度**，不是"一个字段存三样东西"：
+		// tenant 回答"谁在花钱"，intent 回答"花在哪个功能上"。
+		// 拼成一个字符串（`京东-客服问答`）会有两个具体后果：
+		//   ① "按租户看一共多少"要靠 LIKE 前缀匹配 —— 一次拼写不一致就让同一件事裂成两行；
+		//   ② 租户改名或功能换归属都要改历史数据，而历史是只追加的。
+		//
+		// 长度裁剪同一条理由（超长 → 写库抛 SQL 异常 → 用户的几个字变成"这次任务失败了"）
+		String tenantId = clamp(request == null ? null : request.tenantId(), MAX_TENANT_CHARS);
+		AgentRun run = service.runWithId(runId, question, intent, conversationId, tenantId);
 		return assemble(runId, run);
 	}
 
 	/** 归因键的最大长度（与 {@code agent_run.intent} 的列宽一致，改一处要一起改）。 */
 	private static final int MAX_INTENT_CHARS = 64;
+
+	/**
+	 * 租户的最大长度（与 {@code agent_run.tenant_id} 的列宽一致）。
+	 *
+	 * <p>与归因键同一个数、同一条理由 —— 而<b>不共用一个常量</b>：
+	 * 两个列宽将来真的可能不同（租户名往往是全称，归因键是短标签），
+	 * 共用一个常量会让"改了一列"变成"悄悄改了另一列的约束"。
+	 */
+	private static final int MAX_TENANT_CHARS = 64;
 
 	/**
 	 * 会话 id 的最大长度（与 {@code agent_run.conversation_id} 的列宽一致）。
@@ -194,6 +213,11 @@ public class AgentController {
 			row.put("elapsedMs", record.elapsedMs());
 			row.put("createdAt", record.createdAt() == null ? null : record.createdAt().toString());
 			row.put("node", record.node());
+			// 【阶段四第 6 件】列表里带上两个归因维度：看板按它们分组，
+			// 而"这次运行算在谁头上"要在它自己的列表里也能对得上 ——
+			// 否则看完板的数字只能信，不能核（trace 那一层也带上，理由相同）
+			row.put("intent", record.intent() == null ? "" : record.intent());
+			row.put("tenantId", record.tenantId() == null ? "" : record.tenantId());
 			rows.add(row);
 		}
 		Map<String, Object> body = new LinkedHashMap<>();
@@ -232,7 +256,11 @@ public class AgentController {
 				Map.entry("totalTokens", run.totalTokens()),
 				Map.entry("toolCalls", run.toolCallCount()),
 				Map.entry("elapsedMs", run.elapsedMs()),
-				Map.entry("node", run.node() == null ? "" : run.node())));
+				Map.entry("node", run.node() == null ? "" : run.node()),
+				// 【阶段四第 6 件】两个归因维度都带上：详情页是"核对看板数字"的落点，
+				// 而"这次运行被算到谁头上"在这个页面上没有别的来源
+				Map.entry("intent", run.intent() == null ? "" : run.intent()),
+				Map.entry("tenantId", run.tenantId() == null ? "" : run.tenantId())));
 
 		List<Map<String, Object>> steps = new ArrayList<>();
 		for (AgentRunRecord.StepCheckpoint step : store.stepsOf(runId)) {
@@ -432,17 +460,30 @@ public class AgentController {
 	 *            <p>它同样进请求体（理由与 intent 一字不差：它是分组键，
 	 *            被 URL 转义改写会让同一段对话裂成两段 —— 而那种错在页面上
 	 *            表现为"这段对话怎么只有一次运行"，没人会想到是转义）
+	 * @param tenantId <b>租户</b>（阶段四第 6 件）：这次运行花的是谁的钱。
+	 *            可空 —— 空表示"未标注租户"，看板会把它单列一行而不是并进某个租户里。
+	 *            <p>它与 {@code intent} <b>是两个维度、两列</b>：
+	 *            {@code intent} = 花在哪个功能上，本字段 = 谁在花钱。
+	 *            拼接（{@code 京东-客服问答}）会让两个维度互相污染，
+	 *            而"按租户看一共多少"会退化成前缀匹配。
+	 *            <p>同样进请求体：它是分组键，被 URL 转义改写会让同一个租户裂成两个 ——
+	 *            而那种错在看板上表现为"这个租户怎么有两行"
 	 */
-	public record AskRequest(String question, String intent, String conversationId) {
+	public record AskRequest(String question, String intent, String conversationId, String tenantId) {
 
-		/** 不带归因键与会话的构造器（旧调用点与测试用）。 */
+		/** 不带任何归因的构造器（最早的调用点与测试用）。 */
 		public AskRequest(String question) {
-			this(question, null, null);
+			this(question, null, null, null);
 		}
 
-		/** 带归因键、不带会话的构造器（成本看板那批调用点用）。 */
+		/** 带归因键、不带会话与租户的构造器（成本看板那批调用点用）。 */
 		public AskRequest(String question, String intent) {
-			this(question, intent, null);
+			this(question, intent, null, null);
+		}
+
+		/** 带归因键与会话、不带租户的构造器（第 2 件那批调用点用）。 */
+		public AskRequest(String question, String intent, String conversationId) {
+			this(question, intent, conversationId, null);
 		}
 	}
 

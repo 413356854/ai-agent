@@ -281,6 +281,13 @@ export interface AgentRunRow {
   elapsedMs: number
   createdAt: string | null
   node: string | null
+  /**
+   * 业务归因键，空串 = 未标注（阶段四第 6 件把它加进列表：
+   * 看板的数字要能在运行自己的列表里**核对**，否则只能信）。
+   */
+  intent: string
+  /** 租户，空串 = 未标注租户。与 `intent` 是两个维度，别当成一回事。 */
+  tenantId: string
 }
 
 /** `GET /api/agent/runs` 的响应 */
@@ -307,6 +314,10 @@ export interface AgentRunDetail {
     toolCalls: number
     elapsedMs: number
     node: string
+    /** 业务归因键，空串 = 未标注 */
+    intent: string
+    /** 租户，空串 = 未标注租户（与 `intent` 是两个维度） */
+    tenantId: string
   }
   steps: AgentStep[]
   toolCalls: AgentToolCall[]
@@ -490,6 +501,8 @@ export interface AgentTrace {
     node: string
     /** 业务归因键；空串 = 未标注 */
     intent: string
+    /** 租户；空串 = 未标注租户（第 6 件加上来的第二个归因维度） */
+    tenantId: string
     createdAt: string
     updatedAt: string
   }
@@ -572,11 +585,24 @@ export interface AgentLimitsResponse {
  *
  *            <p>它由**调用方**给而不是后端自己推：后端只能看到问题文本，
  *            而"这段文本属于哪个业务"是业务侧才知道的事（同一个问题可能被两个业务问）。
+ * @param tenantId 租户（阶段四第 6 件）：这次运行花的是**谁**的钱。
+ *            留空则看板上归到「未标注租户」那一行。
+ *
+ *            <p>⚠️ 它与 `intent` 是**两个维度、两列**，不是同一个字段的两种叫法 ——
+ *            拼接（`京东-客服问答`）会让"按租户看一共多少"退化成前缀匹配，
+ *            而一次拼写不一致就让同一个租户裂成两行（两行加起来才是真相，没人会去加）。
+ *
+ *            <p>它同样由调用方给：后端看不出来"这次是替谁跑的"。
  */
-export function askAgent(question: string, intent = '', conversationId = AGENT_CONVERSATION_ID): Promise<AgentAskResponse> {
+export function askAgent(
+  question: string,
+  intent = '',
+  tenantId = '',
+  conversationId = AGENT_CONVERSATION_ID,
+): Promise<AgentAskResponse> {
   return postJson<AgentAskResponse>(
     '/api/agent/ask',
-    { question, intent, [AGENT_CONVERSATION_FIELD]: conversationId },
+    { question, intent, tenantId, [AGENT_CONVERSATION_FIELD]: conversationId },
     '跑 Agent 任务',
   )
 }

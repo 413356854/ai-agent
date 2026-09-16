@@ -123,7 +123,7 @@ public class AgentConcurrencyLimitsView {
 			// 只 WARN 不抛：测试与自定义装配下确实可能没有这一层。
 			// 但**必须说出来** —— 沉默会让"没装上"和"没有流量"长得一样
 			org.slf4j.LoggerFactory.getLogger(AgentConcurrencyLimitsView.class)
-					.warn("模型侧并发闸门**未启用**（当前 ModelTurn 不是 LimitedModelTurn）——"
+					.warn("模型侧并发闸门「未启用」（当前 ModelTurn 不是 LimitedModelTurn）——"
 							+ "如果你以为它在生效，请检查 AgentConfig 里的装配。");
 		}
 	}
@@ -197,7 +197,7 @@ public class AgentConcurrencyLimitsView {
 		totals.put("openCircuits", openCircuits);
 		body.put("totals", totals);
 
-		body.put("note", "闸门与熔断都是**全局共享**的：同一把工具被所有任务共用，"
+		body.put("note", "闸门与熔断都是「全局共享」的：同一把工具被所有任务共用，"
 				+ "所以这里的数字不是某一次运行的属性。"
 				+ "「拒绝」是限流生效（稍后重试即可）；「熔断」是下游已判为不可用（别再用它）。");
 		return body;

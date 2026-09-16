@@ -470,6 +470,29 @@ if ((await compareCard.count()) > 0) {
   expect('显示了分组表现', /分组表现/.test(compareText))
   expect('显示了未命中用例', /未命中/.test(compareText))
 
+  // ★ 纯文本区里不许出现字面量 markdown 星号（第十六轮补的一条守卫）
+  //
+  // 【为什么补在 RAG 面板上】踩坑库 #24 记过这个坑，而成本看板（第十轮）、
+  // Prompt / 告警面板（第十一 / 十五轮）都各自加过断言 —— **只有 RAG 面板没加**。
+  // 这一轮扫一遍整个仓库才发现它的 notes 与对照说明里都写着 `**加粗**`，
+  // 而它们渲染到这一页的纯文本 <li> 里，也就是说**页面上真的印着星号**。
+  // 一条"某一类问题在本项目里已经被清干净了"的结论，只有在这类地方各有一条断言时才成立。
+  //
+  // ⚠️ **判据必须排除"分块预览"那一块** —— 实测踩到（本轮）：
+  // 它显示的**就是原文**，而语料是 Markdown，所以那里出现 `**单一事实来源**`
+  // 不是缺陷，恰恰是"固定硬切把标题层级丢了、正文里的星号原样留着"的证据。
+  // 把它一起判进去，就会得到一条**在功能正确时必然红**的断言（踩坑 #97 同族：
+  // 判据要先确认它判的到底是什么东西）。
+  // 所以判据是"**除了原文预览之外**的正文里没有字面量星号"。
+  const starProbe = await page.locator('.diag-panel').first().evaluate(panel => {
+    const clone = panel.cloneNode(true)
+    // 预览区与它会话里的原始 Markdown 不算"文案"，它们要显示的就是原样的字节
+    clone.querySelectorAll('.rag-chunk, .rag-breadcrumb, pre, code').forEach(el => el.remove())
+    return clone.innerText
+  })
+  expect('RAG 面板正文无字面量星号（原文预览区除外）', !starProbe.includes('**'),
+    '—— 后端 notes / 对照说明会原样渲染到纯文本里，强调一律用「」')
+
   await page.screenshot({ path: `${SHOT_DIR}/rag-compare.png`, fullPage: true })
 }
 
@@ -686,7 +709,15 @@ if ((await runsCard.count()) > 0) {
   const runsText = (await runsCard.innerText()).trim()
   expect('历史运行卡片渲染出了内容（空状态也要有说明）', runsText.length > 5, `${runsText.length} 字符`)
 
-  if (hasRows && EXPECT_REFLECTION) {
+  // ⚠️ 注意判据是 `hasRows && !EXPECT_REFLECTION` —— **`hasRows` 这一半不能省**。
+  // 实测踩到（第十六轮）：原来的写法是 `if (hasRows && EXPECT_REFLECTION) {...} else {...}`，
+  // 而那个 `else` 分支的注释写的是「真后端（假 key）：历史里只有那条失败运行」——
+  // 它**假设了列表非空**。真后端这次是内存库重启后的空库，于是 `else` 照样进，
+  // 两条断言（"显示了失败细分" / "显示了失败状态"）在一个**完全正常**的空列表上红了，
+  // 而失败信息看起来像"界面没渲染失败细分"。
+  // 这是"断言越界去测了别人的职责"的第 N 次（#80 / #90 / #92 同族），
+  // 而这一次的形状更隐蔽：**越界藏在 `else` 里** —— `else` 不等于"有数据"，它只等于"不满足上一个条件"。
+  if (hasRows && !EXPECT_REFLECTION) {
     // 【"刚刚跑过的任务在列表里"只在假后端路径上成立】
     // 原来这条是本节的共用断言，写的是 `/Agent 工具调用面板|分块策略的结论是什么/` ——
     // 而那个问题是**假数据里写死的**，真后端上永远不会有。
@@ -707,8 +738,11 @@ if ((await runsCard.count()) > 0) {
     expect('显示了失败细分', /LOCAL_CONCURRENCY_LIMIT/.test(runsText))
     // 被上限拦下与"失败"是两件事，界面上要分开
     expect('区分了"被上限拦下"与"失败"', /被上限拦下/.test(runsText) && /失败/.test(runsText))
-  } else {
-    // 真后端（假 key）：历史里只有那条失败运行 —— 正好验证失败细分的**真实渲染**。
+  } else if (hasRows) {
+    // 真后端（假 key）+ **列表非空**：历史里通常只有那条失败运行 ——
+    // 正好验证失败细分的**真实渲染**。
+    // ⚠️ `hasRows` 这个条件必须显式写在 `else` 上（见上面那段注释）：
+    // "列表为空"既不满足前一个分支、也不该进这一个。
     //
     // ⚠️ 判据刻意**不写死某一个分类名**。第一版写的是 `/UPSTREAM_AUTH/`，
     // 理由是"假 key → 上游 401 → 必然分到 UPSTREAM_AUTH"。而实测这次拿到的
@@ -726,6 +760,12 @@ if ((await runsCard.count()) > 0) {
     expect('显示了失败细分（不是空白，也不是一律 MODEL_ERROR）', shown.length > 0,
       shown.length > 0 ? `显示的是 ${shown.join('/')}` : '一格都没显示')
     expect('显示了"失败"状态', /失败/.test(runsText))
+  }
+  else {
+    // 【列表为空 + 真后端】空状态本身也要有一句话说清"为什么空"
+    // （内存库重启即清空是预期行为 —— 一个只有表头、没有解释的空列表会被读成"功能坏了"）
+    expect('空的历史列表也给出了说明（不是一片空白）',
+      /一次运行|还没有|空|没.*运行/.test(runsText), `—— 正文：${runsText.slice(0, 80)}`)
   }
 }
 
@@ -1024,6 +1064,25 @@ let timelineWasThere = false
  */
 const agentCard = page.locator('.diag-card', { hasText: '跑一个任务' }).first()
 
+// ★ 两个归因维度的**输入框都必须存在**（阶段四第 6 件的前提）
+//
+// 【为什么这条断言比它看起来重要】归因维度是"没有入口就等于没有"的能力 ——
+// 后端有字段、界面上不给入口的话，成本看板那两栏会永远只有「未标注」一行，
+// 而那正是"这个能力只能靠 curl 用"的又一次重演（第九轮 HITL 踩过同一个形状）。
+// 更要紧的是：**只给一个入口**（比如只加租户、忘了业务）在页面上完全没有症状，
+// 只是看板少一栏的利用率 —— 所以两个都要点名断言。
+{
+  const labels = await agentCard.locator('.cost-intent-label').allInnerTexts()
+  expect('★ 归因输入框有「业务归因」', labels.some(t => /业务归因/.test(t)),
+    `—— 实际标签：${JSON.stringify(labels)}`)
+  expect('★ 归因输入框有「租户」（第 6 件新增的第二个维度）', labels.some(t => /租户/.test(t)),
+    `—— 实际标签：${JSON.stringify(labels)}`)
+  const askText = await agentCard.innerText()
+  expect('★ 界面写清了两个维度不是一回事（谁的钱 vs 花在哪个功能上）',
+    /谁花的钱/.test(askText) && /哪个功能/.test(askText),
+    '—— 只写两个输入框而不说区别，使用者会把租户填成业务名')
+}
+
 // 假后端才有复位端点（真后端没有这个路径，调用会 404 —— 所以只在假路径调）
 if (EXPECT_REFLECTION) {
   const reset = await page.request.post(`${URL}/api/agent/__reset-approval`).catch(() => null)
@@ -1283,7 +1342,29 @@ if (EXPECT_REFLECTION) {
   // 这不是"把断言放宽"，而是**两条路径本来就跑在不同的场景里**：
   // 假后端能确定性地产出完整轨迹，真后端（假 key）只能产出一次分类明确的失败。
   // 硬等 .agent-timeline 会让真路径必然超时，而失败原因看起来像"界面没渲染"。
+  //
+  // ★ 顺手抓一次**出站请求体**（阶段四第 6 件的做法，与灰度那次"抓出站提示词"同一思路）：
+  // "两个输入框存在"证明不了"它们被发出去了" —— 中间隔着一次字段名拼接，
+  // 而字段名写错的症状是"看板上那一栏永远只有未标注"，看起来像"没人填过"。
+  // 判据必须是**请求体里真的有那两个键**，而不是"页面上有那两个框"。
+  const askRequest = page.waitForRequest(
+    r => r.url().includes('/api/agent/ask') && r.method() === 'POST',
+    { timeout: 20000 },
+  )
   await agentCard.locator('button', { hasText: /跑\s*一\s*次/ }).first().click()
+  try {
+    const body = JSON.parse((await askRequest).postData() ?? '{}')
+    expect('★ 出站请求体里有 tenantId 这个键（不是只画了一个输入框）',
+      Object.prototype.hasOwnProperty.call(body, 'tenantId'), `—— body=${JSON.stringify(body).slice(0, 160)}`)
+    expect('★ 出站请求体里的 tenantId 有值（默认值会真的被发出去）',
+      typeof body.tenantId === 'string' && body.tenantId.length > 0, `tenantId=${body.tenantId}`)
+    expect('★ 出站请求体里业务归因与租户是两个**独立**的键（不是拼成一个字符串）',
+      Object.prototype.hasOwnProperty.call(body, 'intent') && body.intent !== body.tenantId,
+      `intent=${body.intent} tenantId=${body.tenantId}`)
+  }
+  catch (e) {
+    expect('抓到了 /api/agent/ask 的出站请求体（用来核对归因字段）', false, String(e))
+  }
   await agentCard.locator('.stat-cell', { hasText: '停因' }).first().waitFor({ state: 'visible', timeout: 150000 })
   await page.waitForTimeout(800)
 
@@ -1369,7 +1450,11 @@ await page.waitForTimeout(500)
 const priceCard = page.locator('.diag-card', { hasText: '价格表：这一页的钱是按这些单价算出来的' })
 const daysCard = page.locator('.diag-card', { hasText: '按天：钱是怎么涨上去的' })
 const modelCard = page.locator('.diag-card', { hasText: '按模型：换成别的模型会差多少' })
-const intentCard = page.locator('.diag-card', { hasText: '按业务归因：钱是谁花的' })
+// 【两个归因维度各一张卡，标题刻意不同】阶段四第 6 件把「按业务归因：钱是谁花的」
+// 拆成了两栏 —— 旧标题（"钱是谁花的"）留在业务那一栏是**错的**：
+// 那句话现在归租户那一栏，而两栏标题一样的话，读者会以为它们是同一个东西的两种排法
+const tenantCard = page.locator('.diag-card', { hasText: '按租户：钱是谁花的' })
+const intentCard = page.locator('.diag-card', { hasText: '按业务归因：钱花在哪个功能上' })
 const toolCard = page.locator('.diag-card', { hasText: '哪把工具在拖慢任务' })
 const notesCard = page.locator('.diag-card', { hasText: '这份数据能说什么、不能说什么' })
 
@@ -1420,9 +1505,55 @@ expect('总 token 已显示', /总 token/.test(costText))
 expect('缓存命中率已显示', /缓存命中/.test(costText))
 expect('价格表卡已渲染', (await priceCard.count()) > 0)
 expect('按天卡已渲染', (await daysCard.count()) > 0)
+expect('按租户卡已渲染（第 6 件新加的那一维）', (await tenantCard.count()) > 0)
 expect('按业务归因卡已渲染', (await intentCard.count()) > 0)
 expect('按模型卡已渲染', (await modelCard.count()) > 0)
 expect('按工具卡已渲染', (await toolCard.count()) > 0)
+
+// ★ 跨路径一致性：两个归因维度与分摊口径必须**在后端真的存在**
+//
+// 【这一条为什么必须打端点，而不是只看页面】
+// 页面上"这一栏是空的"与"后端压根没有这个字段"长得一模一样（都是没有行）。
+// 而第 15 轮刚吃过这个形状的亏（踩坑 #94）：假后端照着真后端一个写错的默认值抄了一遍，
+// 于是 6 组断言全绿、真后端上一行都渲染不出来。
+// 判据写成"两个维度都在响应里、且金额都带口径标记"——
+// 它在**假后端上也会红**（假后端要写同样的字段），于是下一次任何一边改错都当场现形。
+{
+  const shape = await page.evaluate(async () => {
+    const d = await fetch('/api/cost/summary?days=7').then(r => r.json())
+    return {
+      ok: d.ok === true,
+      hasTenant: Array.isArray(d.byTenant),
+      hasIntent: Array.isArray(d.byIntent),
+      // 有数据时：两个维度都必须给金额（第 6 件起是分摊值，不再是 null），
+      // 而且必须带 amountBasis —— 界面靠它决定"这一格的钱是怎么来的"那句说明
+      tenantRows: (d.byTenant ?? []).length,
+      tenantBasis: (d.byTenant ?? []).map(r => r.amountBasis),
+      intentBasis: (d.byIntent ?? []).map(r => r.amountBasis),
+      // 合计的金额（用来核对"各栏加起来等于合计"）
+      totalMicros: d.totals?.amountMicros ?? null,
+      tenantMicrosSum: (d.byTenant ?? []).reduce((s, r) => s + (r.amountMicros ?? 0), 0),
+      intentMicrosSum: (d.byIntent ?? []).reduce((s, r) => s + (r.amountMicros ?? 0), 0),
+    }
+  })
+  expect('★ /api/cost/summary 有 byTenant 这一维（不是只有 byIntent）', shape.hasTenant && shape.hasIntent,
+    `byTenant=${shape.hasTenant} byIntent=${shape.hasIntent}`)
+  if (EXPECT_REFLECTION) {
+    expect('★ 两个归因维度的每一行都带金额口径（ALLOCATED_BY_TOKEN_SHARE）',
+      shape.tenantBasis.length > 0 && shape.tenantBasis.every(b => b === 'ALLOCATED_BY_TOKEN_SHARE')
+        && shape.intentBasis.length > 0 && shape.intentBasis.every(b => b === 'ALLOCATED_BY_TOKEN_SHARE'),
+      `tenant=${JSON.stringify(shape.tenantBasis)} intent=${JSON.stringify(shape.intentBasis)}`)
+    // 这一条与后端 CostDashboardViewTest 里那条是同一个判据的两条路径：
+    // 后端保证"分摊的最后一行取合计减前面所有行"，这里核对它真的成立
+    expect('★ 按租户那一栏各行相加 == 合计（分摊的最后一行吸收了舍入差）',
+      shape.tenantMicrosSum === shape.totalMicros,
+      `租户和 ${shape.tenantMicrosSum} vs 合计 ${shape.totalMicros}`)
+    expect('★ 按业务那一栏各行相加 == 合计（两个维度是同一份钱的两个视图）',
+      shape.intentMicrosSum === shape.totalMicros,
+      `业务和 ${shape.intentMicrosSum} vs 合计 ${shape.totalMicros}`)
+  }
+}
+
 // 纯文本里的 markdown 星号不能以字面量出现（踩坑库 #24 同族）。
 // ⚠️ 这条**在真后端路径上曾经红过**：后端 notes 里写的 `**加粗**` 在界面上真的印出了星号，
 // 因为那段文本有两个消费方（JSON 接口 / 页面的纯文本渲染），而只有后者在意星号。
@@ -1450,10 +1581,39 @@ if (EXPECT_REFLECTION) {
   expect('「算不出」的原因以可见文本给出（不是只在悬浮提示里）', (await page.locator('.cost-amount-reason').count()) > 0)
 
   // ---- 归因 / 工具 / 对账 ----
+  //
+  // ★ 两个归因维度**各验一遍**，而且验的是各自不同的东西：
+  //   租户那一栏：空值的名字必须是「未标注租户」（与业务那一栏的「未标注」不同）
+  //   业务那一栏：金额不再是「算不出」，而是带口径的分摊值
+  const tenantText = await tenantCard.innerText()
+  expect('按租户表有数据行', (await tenantCard.locator('tbody tr').count()) >= 1)
+  expect('★ 租户那一栏的空值叫「未标注租户」—— 与业务那一栏的「未标注」刻意不同',
+    /未标注租户/.test(tenantText),
+    '—— 两个维度的空长得一样的话，读者会以为它们是同一个空洞，' +
+      '而处置方式完全不同（让调用方传 tenantId / 传 intent）')
+  expect('租户那一栏说明了「未标注租户」与「未标注」是两件事', /两件事/.test(tenantText))
+  expect('★ 两栏都写明了金额是「按 token 占比分摊」的（口径与数字同屏）',
+    /分摊/.test(tenantText) && /分摊/.test(await intentCard.innerText()))
+
   const intentText = await intentCard.innerText()
   expect('按业务归因表有数据行', (await intentCard.locator('tbody tr').count()) >= 1)
   expect('未标注的运行单独成一行（没被并进任何业务里）', /未标注/.test(intentText))
   expect('界面说明了「未标注」不该被并进业务里', /没有.*被并进|虚高/.test(intentText))
+  // 【第 6 件把这一格的语义改了】以前它是「算不出」（与按模型那一栏同样处理），
+  // 现在它是一个分摊值 —— 所以这里断言**这一栏里出现了金额数字**。
+  // 不断言这一条的话，"后端忘了把 amount 填上"会以"界面显示算不出"的形式静默通过
+  // （那一格从前就长这样，所以没人会觉得不对）
+  //
+  // ⚠️ 判据刻意**读 DOM 的 textContent**，而不是对 innerText 做正则 ——
+  // 实测踩到：`innerText` 会按**渲染后的换行**插入空白，而这一页的金额格很窄，
+  // 于是「¥0.0753」在 innerText 里可能是「¥0.0\n753」（数字被折成两半）。
+  // 对 innerText 写 `/¥[\d.]+/` 因此会**在功能正常时报红**，而失败信息看起来像
+  // "界面没渲染金额" —— 一个把排查引向错误方向的假红。
+  // textContent 不受渲染换行影响，它读的就是那一格的内容
+  const intentAmounts = await intentCard.locator('.cost-amount').allTextContents()
+  expect('★ 按业务那一栏出现了金额数字（不再与按模型那一栏一样显示「算不出」）',
+    intentAmounts.some(t => /¥\s*\d/.test(t.replace(/\s+/g, '')) || /^[¥$]/.test(t.replace(/\s+/g, ''))),
+    `—— 业务栏金额格：${JSON.stringify(intentAmounts)}`)
 
   const toolText = await toolCard.innerText()
   expect('按工具表有数据行', (await toolCard.locator('tbody tr').count()) >= 1)
@@ -1893,6 +2053,22 @@ expect('★ 构建阶段的判据被明确标成「这一页不评估」',
 expect('判据目录写明了阈值写死不从配置读', /不从配置读/.test(rulesText))
 expect('判据目录里没有字面量 markdown 星号', !rulesText.includes('**'))
 
+// ★ 第 6 件改了判据的**主体粒度**，而"改了粒度"这件事本身在页面上没有症状 ——
+// 一条被判成"全局"的判据只是**少报几条**，看起来一切正常。所以这里断言目录里有那两条：
+//   · tenant-cost-concentration：只有在租户粒度上才成立的一条判据（新增）；
+//   · zero-cache-hits 的标题必须是"某租户"而不是"整窗"（粒度改了，标题必须跟着改 ——
+//     一条说"整窗"的标题配一个按租户判的实现，读的人会照错的粒度去理解那个数字）。
+expect('★ 判据目录里有「租户花费集中度」这一条（只有在租户粒度上才成立的那条）',
+  /tenant-cost-concentration/.test(rulesText))
+expect('★ 缓存那条判据的标题已改成「某租户」（粒度改了，措辞必须跟着改）',
+  // ⚠️ 判据只能写成"**以「某租户」开头**"，不能写成 `!/整窗…/` ——
+  // 新标题是「某租户的整窗提示词缓存命中率为 0…」，它**包含**「整窗」这两个字。
+  // 第一版就是这么写的（`某租户 && !整窗…`），于是它在标题**已经改对**的时候报红，
+  // 而失败信息说"标题还写整窗" —— 一个指向错误方向的假红。
+  // 教训与本项目反复记的那条同族：**否定式判据要先确认它否定的到底是什么**。
+  /某租户的整窗提示词缓存命中率为 0/.test(rulesText),
+  `—— 目录里缓存那一条的措辞：${(rulesText.match(/[^\s]*整窗[^\s]*/g) ?? ['(找不到)']).join(' / ')}`)
+
 // ---- 告警清单 ----
 const eventsCard = page.locator('.alert-events-card')
 
@@ -1955,6 +2131,18 @@ expect('清单列出了具体判据代号（而不是一句笼统的"有问题"�
 }
 expect('清单里的每一行都带着观测值与判据阈值（"差多少、跟什么比"）',
   (await eventsCard.locator('tbody tr').first().innerText()).length > 0)
+
+// ★ 主体粒度：这一页上唯一一条"主体是一个业务实体（租户名）"的告警
+//
+// 【为什么值得单独一条断言】改了粒度之后，告警的**主体**从固定的几个词
+// （「窗口合计」「价格表」「检索」）变成了"哪一家"。主体是告警里最难被注意到的字段 ——
+// 它不出现在标题里，而"这条说的是谁"错了的时候，收到告警的人会去查错的对象。
+// 假后端那条数据是这一页上**唯一**能提供这个形状的样本，所以只在假路径上断言。
+if (EXPECT_REFLECTION) {
+  expect('★ 清单里出现了「主体是租户名」的告警（改粒度之后才有的形状）',
+    /tenant-cost-concentration/.test(eventsText) && /示例租户/.test(eventsText),
+    `—— 清单：${eventsText.replace(/\n/g, ' ').slice(0, 200)}`)
+}
 const alertLayout = await page.evaluate(() => {
   const doc = document.documentElement
   const head = document.querySelector('.alert-head')

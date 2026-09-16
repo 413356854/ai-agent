@@ -109,6 +109,57 @@ function initialEvents() {
       needsAttention: false,
     },
     {
+      /*
+        【第 6 件新增的一条：主体是**租户名**，不是「窗口合计」】
+
+        它是这一页上唯一一条"主体是一个业务实体"的告警，而**主体那一格正是这一件的产物** ——
+        改为逐租户判之后，告警的指纹与主体都变成"哪一家"。
+        假数据里必须有这么一条，否则"主体是租户名"这个形状在自检里走不到
+        （其它几条的主体都是"窗口合计/价格表/检索"这类固定词）。
+
+        ⚠️ 它的处置说明刻意以「先确认这是不是已知的」开头 —— 一个正当的大客户会让它一直响，
+        而一条写着"去优化它"的说明会把人引到错误的方向上。
+      */
+      fingerprint: 'tenant-cost-concentration|示例租户',
+      ruleCode: 'tenant-cost-concentration',
+      subject: '示例租户',
+      title: '单个租户占掉了绝大部分 token 花费（先把归因本身当作一个信号读）',
+      severity: 'INFO',
+      severityLabel: '建议',
+      severityMeaning: '排进待办就行，不影响服务',
+      phase: 'OBSERVE',
+      firstSeenAt: minutesAgo(150),
+      lastSeenAt: minutesAgo(3),
+      resolvedAt: '',
+      /*
+        ⚠️ 状态刻意是「已确认」而不是「未处理」—— 这是一个**测试契约**，不是随手选的：
+
+        下面那条"点确认之后未处理归零"的断言（`[8.1]` 那一节）隐含假设
+        「初始 OPEN 的告警只有一条」。第一版把这条新告警写成 OPEN，
+        于是确认掉一条之后还剩一条未处理，那条断言红了 —— 而失败信息看起来像
+        "确认没有生效"（界面自己造乐观状态），真因却是**假数据多了一条未处理**。
+        这也顺带是一次形态正确的数据：一条已经响了一百多次的告警，
+        本来就该是"有人看过了、暂时不管"的样子。
+      */
+      state: 'ACKNOWLEDGED',
+      stateLabel: '已确认',
+      acknowledgedAt: minutesAgo(60),
+      acknowledgedBy: '值班-李四',
+      occurrences: 48,
+      firingSeconds: 150 * 60,
+      observed: '0.937（示例租户）',
+      threshold: '单个租户不超过全部 token 的 90%',
+      why: '该租户 968000 / 全部 1033000 tokens。一条正当的大客户流量会让它一直响 —— ' +
+        '所以它的用途是「这条判据把归因接上了吗」，而不是「该限制谁」。',
+      action:
+        '先确认这是不是已知的：一个大客户、一次批处理、一段压测都会让它响。' +
+        '★ 它同时是一条归因自检 —— 花费集中在某一家，说明「按租户」这一维真的接上了。' +
+        '⚠️ 它不作为收紧某个租户预算的依据：预算该由业务方给，从观测数据反推预算是本末倒置。',
+      window: '2026-09-12 ~ 2026-09-18',
+      // 已确认 = 有人看过了，所以它不再需要被"关注"（与 reconcile-gap 那条同一个形状）
+      needsAttention: false,
+    },
+    {
       fingerprint: 'empty-retrieval|检索',
       ruleCode: 'empty-retrieval',
       subject: '检索',
@@ -142,15 +193,25 @@ function initialEvents() {
 /**
  * 判据目录。
  *
- * ⚠️ 它必须**与后端的 AlertRule 一致**（9 条：6 条观察 + 4 条门禁里减去 1 条重复计数，
- * 精确地说是 6 条 OBSERVE + 4 条 GATE）。自检里有一条断言盯着"门禁那几条必须显示
- * 『本页不评估』"—— 所以这里不能只写运行阶段那几条。
+ * ⚠️ 它必须**与后端的 AlertRule 一致**（8 条运行阶段 + 4 条构建阶段门禁）。
+ * 自检里有一条断言盯着"门禁那几条必须显示『本页不评估』"—— 所以这里不能只写运行阶段那几条；
+ * 反过来，**漏掉一条运行阶段的判据也不会有任何症状**（页面上只是少一行），
+ * 所以自检里还有一条"运行阶段那几条必须都在页面上"的断言。
  */
 export const MOCK_RULES = [
   rule('unconfigured-prices', '价格未配置（成本只能算到 token，算不出金额）', 'INFO', 'OBSERVE', true),
   rule('unpriced-models', '窗口内出现了没有价格规则的模型（合计只是下界）', 'WARNING', 'OBSERVE', true),
   rule('reconcile-gap', '两个 token 口径对不上（按步骤汇总 ≠ 运行行累计）', 'WARNING', 'OBSERVE', true),
-  rule('zero-cache-hits', '整窗提示词缓存命中率为 0（有两种成因，数据分不出来）', 'WARNING', 'OBSERVE', true),
+  // 【第 6 件】标题从"整窗"改成了"某租户"—— 主体粒度改了，标题必须跟着改：
+  // 一条说"整窗"的标题配一个按租户判的实现，读的人会照错的粒度去理解那个数字
+  rule('zero-cache-hits', '某租户的整窗提示词缓存命中率为 0（有两种成因，数据分不出来）', 'WARNING', 'OBSERVE', true),
+  rule(
+    'tenant-cost-concentration',
+    '单个租户占掉了绝大部分 token 花费（先把归因本身当作一个信号读）',
+    'INFO',
+    'OBSERVE',
+    true,
+  ),
   rule('empty-retrieval', '连续多次检索一条都没命中（模型白跑一轮，那一轮照样花钱）', 'WARNING', 'OBSERVE', true),
   rule('canary-no-traffic', '灰度开着，但一份流量都没分到（这次实验等于没做）', 'WARNING', 'OBSERVE', true),
   rule('canary-split-biased', '灰度的实际分流与配置比例偏离过大（分流函数可疑）', 'WARNING', 'OBSERVE', true),

@@ -181,19 +181,24 @@ public class RagEvaluationService {
 	 * 而如果不说明，读者只会得出"这个分块策略不行"的错误结论。
 	 */
 	private List<String> buildNotes(List<EvalCase> cases, SectionLocator locator) {
+		// ⚠️ 这一段（以及本类所有 notes）里**不许出现 markdown 星号**：
+		// 它们会原样渲染到 RAG 面板的纯文本 <li> 里 —— 页面上真的会印出两个星号。
+		// 这与成本看板（第十轮）、Prompt/告警面板（第十一 / 十五轮）是同一个坑，
+		// 而"扫一遍整个仓库的字符串字面量"这个动作是第十一轮定下来的做法（踩坑 #24 同族）。
+		// 强调一律用中文书名号「」。
 		List<String> notes = new ArrayList<>();
-		notes.add("差值单位为**百分点**（percentage point），且一律相对对照组「" + BASELINE_STRATEGY + "」计算");
+		notes.add("差值单位为「百分点」（percentage point），且一律相对对照组「" + BASELINE_STRATEGY + "」计算");
 		notes.add("相关性判定按「块覆盖了原文哪些块」与「标准答案章节覆盖哪些块」是否有交集来做，"
 				+ "因此两种策略在同一个判据下比较 —— 硬切不带标题路径也不会被误判为 0 分");
 		notes.add("块数不同会天然影响 Recall（块越多越容易捞到答案），所以必须同时看 MRR 与 token 成本，"
 				+ "不能只拿 Recall 一个数下结论");
-		notes.add("本阶段检索为**词法（BM25）**：它只认词面，对\"块里有没有正确的词\"极其敏感。"
+		notes.add("本阶段检索为「词法（BM25）」：它只认词面，对\"块里有没有正确的词\"极其敏感。"
 				+ "这意味着词法下表现好的分块，换成向量检索只会更好 —— 本报告的结论是偏保守的");
 		// 这一条是本轮新增的：原始对照的边界必须写在报告里，
 		// 否则 0.7674 与 0.8140 摆在一起，任何人都会自行脑补一个方向性结论
-		notes.add("⚠ **这份原始对照不能用来判断\"哪个分块策略更好\"**：两组的平均块大小不同"
+		notes.add("⚠ 「这份原始对照不能用来判断\"哪个分块策略更好\"」：两组的平均块大小不同"
 				+ "（块越大越容易覆盖答案所在章节），所以 Recall 的差异里混着块大小的差异。"
-				+ "要下这个结论请看**块大小对齐实验**（/api/diag/rag/align）");
+				+ "要下这个结论请看「块大小对齐实验」（/api/diag/rag/align）");
 
 		if (!locator.unresolved().isEmpty()) {
 			notes.add("⚠ 有 %d 处标注在语料里找不到对应章节，这些用例必然算作未命中（分数偏低不是检索的问题）：%s"
@@ -202,7 +207,7 @@ public class RagEvaluationService {
 		if (cases.size() < properties.getEvaluation().getMinUsableCases()) {
 			notes.add("⚠ 样本量不足：只有 %d 条用例（门槛 %d 条）。路线文档明确要求「别只问两三个问题觉得还行」——"
 					.formatted(cases.size(), properties.getEvaluation().getMinUsableCases())
-					+ "这份结果可以用来调参，但**不能作为结论引用**");
+					+ "这份结果可以用来调参，但「不能作为结论引用」");
 		}
 		return notes;
 	}

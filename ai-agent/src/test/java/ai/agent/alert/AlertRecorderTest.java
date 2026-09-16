@@ -273,14 +273,19 @@ class AlertRecorderTest {
 
 	/** 一份"有几条判据在响"的快照。 */
 	private static RuntimeSnapshot badSnapshot() {
+		// 【第 6 件】末尾两个参数是租户口径。这里刻意**同时给出**逐租户缓存与集中度：
+		// 逐租户那条判据的展开依赖 tenantCaches，而集中度那条依赖 tenantShare ——
+		// 只给其中一个的话，"每一条判据都能被触发"那条测试会以"缺一条判据"的形式失败
 		return new RuntimeSnapshot(Instant.now(), "2026-09-12", "2026-09-18", true, List.of("模型甲"), 42, 1000, 958,
-				2, 5000, 0, 0, 12, 30, CanarySplit.none());
+				2, 5000, 0, 0, 12, 30, CanarySplit.none(),
+				List.of(new RuntimeSnapshot.TenantPoint("甲", 5000, 0)),
+				new AlertRule.TenantShare("甲", 950, 1000));
 	}
 
 	/** 一份"全好"的快照。 */
 	private static RuntimeSnapshot goodSnapshot() {
 		return new RuntimeSnapshot(Instant.now(), "2026-09-12", "2026-09-18", true, List.of(), 0, 1000, 1000, 0,
-				5000, 2000, 0, 12, 30, CanarySplit.none());
+				5000, 2000, 0, 12, 30, CanarySplit.none(), List.of(), null);
 	}
 
 	/**

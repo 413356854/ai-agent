@@ -125,17 +125,21 @@ public class JdbcAgentRunStore implements AgentRunStore {
 	public void start(Start start) {
 		try (Connection conn = pool.getConnection();
 				PreparedStatement ps = conn.prepareStatement(
-						"INSERT INTO agent_run (id, question, status, node, intent, conversation_id) "
-								+ "VALUES (?, ?, ?, ?, ?, ?)")) {
+						"INSERT INTO agent_run (id, question, status, node, intent, conversation_id, tenant_id) "
+								+ "VALUES (?, ?, ?, ?, ?, ?, ?)")) {
 			ps.setString(1, start.runId());
 			ps.setString(2, start.question());
 			ps.setString(3, RunStatus.RUNNING.name());
 			ps.setString(4, start.node());
-			// 归因键与会话 id 的空白值已在 Start 的紧凑构造器里归一成 NULL，
+			// 归因键、会话 id、租户的空白值已在 Start 的紧凑构造器里归一成 NULL，
 			// 所以这里直接写 —— 不在两处判 blank：**归一化只能有一个地方**，
 			// 两处判的话，"哪一处是权威"会在下一次改动时变成一个问题
 			ps.setString(5, start.intent());
 			ps.setString(6, start.conversationId());
+			// 【阶段四第 6 件】租户与归因键**分别写进两列**，绝不拼成一个字符串：
+			// 拼起来之后"按租户看一共多少"要靠 LIKE 前缀匹配，而一次拼写不一致
+			// 就会让同一件事裂成两行 —— 且两行加起来才是真相，这种事没人会去加
+			ps.setString(7, start.tenantId());
 			ps.executeUpdate();
 		}
 		catch (SQLException e) {
@@ -550,10 +554,18 @@ public class JdbcAgentRunStore implements AgentRunStore {
 						ps.setString(2, candidate.id());
 						ps.setString(3, RunStatus.RUNNING.name());
 						if (ps.executeUpdate() == 1) {
+							// 【这里手工重建一条记录，所以每加一个字段都要在这里补一次】
+							// transcript 那一批（新增字段落在末尾）用的就是这套做法。
+							// ★ 它的失败方式是**编译不过**，而不是静默丢字段 —— 这正是
+							// "位置参数多的构造器"在这里反而安全的原因：漏了编译器会拦。
+							// 而 tenantId 漏了的话，被认领的运行会**丢掉租户**，
+							// 于是它的成本从"某个租户"悄悄挪到"未标注租户"那一行
 							claimed.add(new AgentRunRecord(candidate.id(), candidate.question(),
 									RunStatus.INTERRUPTED, candidate.stopReason(), candidate.finalAnswer(),
 									candidate.totalTokens(), candidate.toolCallCount(), candidate.elapsedMs(),
-									candidate.node(), candidate.error(), candidate.createdAt(), Instant.now()));
+									candidate.node(), candidate.error(), candidate.createdAt(), Instant.now(),
+									candidate.failureCause(), candidate.intent(), candidate.conversationId(),
+									candidate.tenantId()));
 						}
 						else {
 							// 没抢到：说明另一个实例（或另一次启动）先改了它。
@@ -679,10 +691,15 @@ public class JdbcAgentRunStore implements AgentRunStore {
 				// **不给它编一个默认值**：编一个具体的默认值等于给一个假归因
 				rs.getString("failure_cause") == null ? null
 						: ai.agent.agent.AgentFailureCause.valueOf(rs.getString("failure_cause")),
-				// 归因键与会话 id 都是"可以没有"的事实，NULL 就原样读成 null。
+				// 归因键、会话 id、租户都是"可以没有"的事实，NULL 就原样读成 null。
 				// 同样不编默认值：编一个（例如"默认会话"）会让所有没有会话信息的运行
 				// 在页面上聚成一段**不存在的对话**
-				rs.getString("intent"), rs.getString("conversation_id"));
+				rs.getString("intent"), rs.getString("conversation_id"),
+				// 【阶段四第 6 件】租户。老数据（加列之前写的行）这一列是 NULL →
+				// 读成 null → 看板显示成「未标注租户」并独立成一行。
+				// **不给它编一个"默认租户"**：那会把一批互不相干的运行并成一个租户，
+				// 而那个租户的成本会虚高，且虚高的部分无从发现
+				rs.getString("tenant_id"));
 	}
 
 	private static AgentRunRecord.StepCheckpoint mapStep(ResultSet rs) throws SQLException {

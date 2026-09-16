@@ -135,6 +135,9 @@ public class AgentTraceView {
 		// 归因键：trace 与成本看板是**同一个事实的两个视图**，
 		// 所以这里也把它带上 —— 否则"这次运行算在哪个业务头上"要在两个页面之间来回对
 		body.put("intent", run.intent() == null ? "" : run.intent());
+		// 【阶段四第 6 件】租户同理，而且它是**第二个维度**：
+		// "谁花的钱"与"花在哪个功能上"是两个问题，报告里缺任何一个都得回到库里查
+		body.put("tenantId", run.tenantId() == null ? "" : run.tenantId());
 		body.put("createdAt", run.createdAt() == null ? "" : run.createdAt().toString());
 		body.put("updatedAt", run.updatedAt() == null ? "" : run.updatedAt().toString());
 		return body;
@@ -172,6 +175,11 @@ public class AgentTraceView {
 			row.put("stopReason", r.stopReason() == null ? "" : r.stopReason().name());
 			row.put("totalTokens", r.totalTokens());
 			row.put("createdAt", r.createdAt() == null ? "" : r.createdAt().toString());
+			// 【阶段四第 6 件】同一段对话里的运行也可能属于不同租户（同一段对话被
+			// 两个租户共用时，这不是奇怪的场景）。**如实显示**，不假设一段对话只有一个租户 ——
+			// 假设成立的话页面更整齐，但那个整齐是假的：它会让人以为"这段对话的成本"
+			// 是一个租户的成本
+			row.put("tenantId", r.tenantId() == null ? "" : r.tenantId());
 			// 哪一次是"我正在看的这一次" —— 不给这个标记，界面上就分不清
 			// "这段对话里这次是哪一次"（一段对话里所有运行的形状都一样）
 			row.put("current", r.id().equals(run.id()));
@@ -299,7 +307,7 @@ public class AgentTraceView {
 		body.put("promptTokensForShare", promptTokens);
 		body.put("shareOfPrompt", promptTokens == 0 ? 0.0
 				: Math.round((double) hitTokens * 10_000.0 / promptTokens) / 10_000.0);
-		body.put("note", "hitTokens 是**估算**的（来自块自带的 TokenEstimator 计数），"
+		body.put("note", "hitTokens 是「估算」的（来自块自带的 TokenEstimator 计数），"
 				+ "与成本看板那边『来自上游 usage』的 token 不是同一个口径 —— "
 				+ "它用来回答『RAG 大概占了输入的多大一块』，不能当成账目。");
 		return body;
@@ -513,7 +521,7 @@ public class AgentTraceView {
 		if (fingerprints.size() > 1) {
 			notes.add("⚠️ 这次运行的步骤之间出现了 " + fingerprints.size() + " 个不同的提示词指纹（"
 					+ String.join("、", fingerprints) + "）。"
-					+ "热更新的粒度是『下一次运行』，所以同一次运行内**不该**换版 —— "
+					+ "热更新的粒度是『下一次运行』，所以同一次运行内「不该」换版 —— "
 					+ "出现多个指纹说明有人改了提示词、而这次运行跨过了那个时点，"
 					+ "或者恢复路径把指纹记错了。这会让『这次用的是哪一版』没有唯一答案。");
 		}
@@ -524,16 +532,29 @@ public class AgentTraceView {
 		}
 
 		if (toolCalls.isEmpty()) {
-			notes.add("这次运行一次工具都没调（模型直接作答）—— 所以工具与检索那两层为空是**正常的**，"
+			notes.add("这次运行一次工具都没调（模型直接作答）—— 所以工具与检索那两层为空是「正常的」，"
 					+ "不是漏记。");
 		}
 		if (!retrievals.isEmpty()) {
-			notes.add("检索明细里的 token 是**估算**的（块自带的估算器计数），"
+			notes.add("检索明细里的 token 是「估算」的（块自带的估算器计数），"
 					+ "用来回答『RAG 大概占了输入多大一块』；账目口径的 token 在成本看板那边，"
 					+ "那一个来自上游 usage。两个口径不要互相引用。");
 		}
 		if (!run.finished()) {
 			notes.add("这次运行还没结束（status=" + run.status().name() + "）—— trace 还会继续增长。");
+		}
+		// 【阶段四第 6 件】两个归因维度各自缺失时要各自说清 ——
+		// 它们**不是**同一件事：没有租户意味着"这次花费没有被算到任何一个租户头上"，
+		// 而没有归因键意味着"不知道它属于哪个功能"。合并成一句"没有归因"会让
+		// 看板上那两栏的空洞看起来是同一个问题
+		if (!run.hasTenant()) {
+			notes.add("这次运行没有租户信息（调用方没有传 tenantId）—— 所以它的花费在看板的"
+					+ "「按租户」那一栏会落在『未标注租户』那一行，而「不会」被并进任何一个租户里。");
+		}
+		if (run.intent() == null || run.intent().isBlank()) {
+			notes.add("这次运行没有业务归因键（调用方没有传 intent）—— 所以它的花费在看板的"
+					+ "「按业务」那一栏会落在『未标注』那一行。它与『未标注租户』是两件事："
+					+ "前者是不知道属于哪个功能，后者是不知道算谁的钱。");
 		}
 		notes.add("默认库是内存库（ai.agent.store.url 默认 jdbc:h2:mem:...）：进程退出即清空，"
 				+ "所以『历史运行里没有昨天那次』是预期行为。");

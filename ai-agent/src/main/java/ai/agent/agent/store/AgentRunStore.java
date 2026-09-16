@@ -29,14 +29,16 @@ import java.util.Optional;
 public interface AgentRunStore {
 
 	/**
-	 * 开一次运行并记下它的<b>全部启动元信息</b>：节点、业务归因键、会话 id。
+	 * 开一次运行并记下它的<b>全部启动元信息</b>：节点、业务归因键、会话 id、租户。
 	 *
 	 * <h2>为什么"开一次运行"的参数被包成了一个 {@link Start}，而不是继续加参数</h2>
 	 * 这是这一轮唯一一处刻意的接口改动，理由很具体：这些字段<b>全是同一类东西</b> ——
-	 * 调用方在运行开始之前就知道、运行自己推不出来的事实。它们已经有两个了
-	 * （归因键、会话 id），而"按租户细分成本"那条已排在阶段四第 6 件，很快是三个。
+	 * 调用方在运行开始之前就知道、运行自己推不出来的事实。它们当时已经有两个
+	 * （归因键、会话 id），而"按租户细分成本"那条已排在阶段四第 6 件，很快是三个 ——
+	 * <b>这一轮正是来收这笔账的</b>：加租户只改了 {@code Start} 一处构造点，
+	 * 没有任何一个调用方被迫改成"多传一个位置参数"。
 	 *
-	 * <p>继续加重载的代价在这一轮已经出现过一次预演：一个
+	 * <p>继续加重载的代价在当初已经出现过一次预演：一个
 	 * {@code start(id, question, node, "会话A")} 的调用在"第四个参数是归因键"的
 	 * 重载下可以编译通过，于是那个会话 id 被<b>静默写进归因列</b> ——
 	 * 现象是成本看板上多出一个叫「会话A」的业务，而"按会话串起来"一次都不生效。
@@ -66,8 +68,26 @@ public interface AgentRunStore {
 	 * @param conversationId 会话 id；{@code null} 或空白 = **没有会话信息**
 	 *            （curl 直接调、外部系统调）。**刻意不自动生成**：给每次孤立调用编一个
 	 *            会话 id 会让"有会话"看起来处处成立，而真相是我们不知道它们属不属于同一段对话
+	 * @param tenantId <b>租户</b>（阶段四第 6 件：成本归因）：这次运行花的是<b>谁</b>的钱。
+	 *            {@code null} 或空白 = 未标注租户。
+	 *            <p>它与 {@code intent} 是<b>两个维度、两列</b>，不是同一个字段的两种叫法：
+	 *            {@code intent} 回答"花在哪个功能上"，本字段回答"谁在花钱"。
+	 *            拼成一个字段（{@code 京东-客服问答}）会让两个维度互相污染 ——
+	 *            改名或换归属都要动历史数据，而历史是只追加的。
 	 */
-	record Start(String runId, String question, String node, String intent, String conversationId) {
+	record Start(String runId, String question, String node, String intent, String conversationId,
+			String tenantId) {
+
+		/**
+		 * 不带租户的构造器（第六件之前的调用点与测试用）。
+		 *
+		 * <p>保留它而不是把所有调用点改成显式传 {@code null}：这次的改动<b>确实</b>要加一个维度，
+		 * 但"没有租户信息"的调用方（测试、外部只读链路）本来就不该被迫声明租户。
+		 * 与 {@code AgentRunRecord} 那几个构造器同一条取舍。
+		 */
+		public Start(String runId, String question, String node, String intent, String conversationId) {
+			this(runId, question, node, intent, conversationId, null);
+		}
 
 		/**
 		 * 把空白字符串一律归一成 {@code null}。
@@ -77,15 +97,20 @@ public interface AgentRunStore {
 		 * 也不是一个能用来分组的键（所有只打了空格的运行会挤在同一组里，
 		 * 看起来像"这些人属于同一段对话"）。
 		 * 归一化只做一次，做在构造期：让下游任何一处都不必再判 blank。
+		 *
+		 * <p>⚠️ 三个字段都要归一，一个都不能漏：{@link #tenantId} 漏掉的话，
+		 * 一个只打了空格的租户会变成一个**合法的分组键**，
+		 * 于是成本看板上出现一个叫「 」的租户 —— 而它看起来像一个真的租户。
 		 */
 		public Start {
 			intent = blankToNull(intent);
 			conversationId = blankToNull(conversationId);
+			tenantId = blankToNull(tenantId);
 		}
 
 		/** 同一个节点模板，换一次运行的 id 与问题（服务层为每次运行派生一个）。 */
 		public Start forRun(String runId, String question) {
-			return new Start(runId, question, node, intent, conversationId);
+			return new Start(runId, question, node, intent, conversationId, tenantId);
 		}
 
 		private static String blankToNull(String value) {

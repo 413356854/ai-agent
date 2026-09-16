@@ -144,6 +144,7 @@ function buildDays() {
     amountMicros: Math.round(Number(r.amount) * 1_000_000),
     currency: CURRENCY,
     amountReason: null,
+    amountBasis: 'PER_MODEL',
     priceRule: 'deepseek-flash',
     priceSource: '供应商定价页（2026-09-10 调价后）',
   }))
@@ -279,6 +280,9 @@ function byModel() {
       amountMicros: flashMicros,
       currency: CURRENCY,
       amountReason: null,
+      // 口径：这一格的金额是**在这一格上直接算出来的**（模型名唯一 → 单价唯一）。
+      // 与两个归因维度那两栏的 ALLOCATED_BY_TOKEN_SHARE 相对 —— 界面据此显示不同的说明
+      amountBasis: 'PER_MODEL',
       priceRule: 'deepseek-flash',
       priceSource: '供应商定价页（2026-09-10 调价后）',
     },
@@ -310,7 +314,109 @@ function byModel() {
   ]
 }
 
-/** 按工具。**没有金额**，这是刻意的（见文件头注释第 5 条） */
+/**
+ * 按**租户**归因（阶段四第 6 件：成本归因）。
+ *
+ * ---------------------------------------------------------------------------
+ * 【它与 byIntent 是两个维度，假数据也必须体现这一点】
+ * ---------------------------------------------------------------------------
+ * 「按租户」回答"谁在花钱"，「按业务」回答"花在哪个功能上"。
+ * 所以这里的三个租户与 byIntent 里那三个业务**刻意不是一一对应**：
+ *   · 示例租户 用了两个功能（客服问答 + 报表助手）；
+ *   · 内部试用 只用了一个功能（客服问答）；
+ *   · 而 byIntent 里的「未标注」那一行，在租户维度上分属不同租户。
+ * 如果两边一一对应，那个结构差异就永远走不到 —— 而它正是这一件要证明的东西。
+ *
+ * ---------------------------------------------------------------------------
+ * 【金额：这里写的是 null，由 costSummary 按 token 占比分摊后填上】
+ * ---------------------------------------------------------------------------
+ * 真后端在「按租户」这一栏给的是**分摊值**（费用对 token 线性，所以它与逐模型算完再相加等价），
+ * 而且刻意让"各行相加恰好等于合计"成立。假数据也照同一条规则算 ——
+ * 见 costSummary 里 allocateByTokenShare 那段注释：**一份自己都算不平的假数据，
+ * 比没有假数据更坏**（自检里那条"各栏加起来等于合计"的断言会永远红，
+ * 然后人会去改断言而不是改数据）。
+ */
+function byTenant() {
+  return [
+    {
+      key: '示例租户',
+      keyLabel: '示例租户',
+      keyMissing: false,
+      runs: 12,
+      finishedRuns: 12,
+      stoppedRuns: 3,
+      failedRuns: 1,
+      promptTokens: 96_000,
+      cachedPromptTokens: 0,
+      completionTokens: 13_800,
+      totalTokens: 109_800,
+      cacheHitRate: 0,
+      elapsedMs: 98_000,
+      toolCalls: 36,
+      toolFailures: 1,
+      toolElapsedMs: 1_620,
+      firstAt: at(-6),
+      amount: null,
+      amountMicros: null,
+      amountReason: null,
+    },
+    {
+      key: '内部试用',
+      keyLabel: '内部试用',
+      keyMissing: false,
+      runs: 9,
+      finishedRuns: 9,
+      stoppedRuns: 0,
+      failedRuns: 2,
+      promptTokens: 74_000,
+      cachedPromptTokens: 0,
+      completionTokens: 9_600,
+      totalTokens: 83_600,
+      cacheHitRate: 0,
+      elapsedMs: 76_000,
+      toolCalls: 27,
+      toolFailures: 2,
+      toolElapsedMs: 1_180,
+      firstAt: at(-5),
+      amount: null,
+      amountMicros: null,
+      amountReason: null,
+    },
+    {
+      /*
+        【这一行的 key 是 null —— 与 byIntent 里那条"未标注"同一个形状，但含义不同】
+        它说的是"这些运行没有传 tenantId"（不知道算谁的钱），
+        而不是"不知道属于哪个功能"。界面上两行的名字**必须不同**
+        （「未标注租户」vs「未标注」），否则读者会以为它们是同一个空洞。
+      */
+      key: null,
+      keyLabel: '未标注租户',
+      keyMissing: true,
+      runs: 5,
+      finishedRuns: 5,
+      stoppedRuns: 1,
+      failedRuns: 0,
+      promptTokens: 25_300,
+      cachedPromptTokens: 0,
+      completionTokens: 4_200,
+      totalTokens: 29_500,
+      cacheHitRate: 0,
+      elapsedMs: 41_000,
+      toolCalls: 15,
+      toolFailures: 0,
+      toolElapsedMs: 700,
+      firstAt: at(-3),
+      amount: null,
+      amountMicros: null,
+      currency: CURRENCY,
+      amountReason: null,
+    },
+  ]
+}
+
+/**
+ * 按工具。**没有金额**，这是刻意的（见文件头注释第 5 条）
+ */
 function byTool() {
   const reason =
     '工具不直接消耗 token —— 它消耗的是延迟与下游容量。「这把工具花了多少钱」只能靠' +
@@ -410,6 +516,38 @@ export function costSummary(windowDays) {
   const known = models.filter(m => m.amountMicros !== null)
   const totalMicros = known.reduce((s, m) => s + m.amountMicros, 0)
 
+  // ---- 两个归因维度的金额：从合计按 token 占比分摊（与真后端同一套算法）----
+  //
+  // 【为什么这里也要"算"而不是写死】自检里有一条断言是"各栏加起来等于合计"。
+  // 写死的话，任何一次改动（加一行、改一个 token 数）都会让那条断言变红 ——
+  // 而那时人的第一反应是去改断言，不是去改数据。
+  // 【为什么最后一行取"合计 − 前面所有行"】逐行各自四舍五入会差几个 micro，
+  // 于是"加起来等于合计"这条核对永远差一点点。真后端也是这么做的（见
+  // CostDashboardView.allocateByTokenShare）—— 假数据与真代码用同一条算法，
+  // 才不会出现"两条路径长得一样但结论不同"。
+  const allocation = rows => {
+    const total = rows.reduce((s, r) => s + r.totalTokens, 0)
+    let assigned = 0
+    return rows.map((row, i) => {
+      const micros = total <= 0
+        ? 0
+        : i === rows.length - 1
+          ? totalMicros - assigned
+          : Math.round((totalMicros * row.totalTokens) / total)
+      assigned += micros
+      return {
+        ...row,
+        amount: (micros / 1_000_000).toFixed(4),
+        amountMicros: micros,
+        // 币种要给：界面靠它决定显示 ¥ 还是 $（缺了它那一格就只剩一个裸数字）——
+        // 真后端在每一行上都会给 currency（见 CostDashboardView.groups）
+        currency: CURRENCY,
+        amountReason: null,
+        amountBasis: 'ALLOCATED_BY_TOKEN_SHARE',
+      }
+    })
+  }
+
   return {
     ok: true,
     window: { from: dayOffset(-(windowDays - 1)), to: dayOffset(0), days: windowDays, maxDays: 90 },
@@ -430,7 +568,8 @@ export function costSummary(windowDays) {
       daysWithData: dayRows.length,
     },
     days: dayRows,
-    byIntent: byIntent(),
+    byTenant: allocation(byTenant()),
+    byIntent: allocation(byIntent()),
     byModel: models,
     byTool: byTool(),
     reconciliation: {
@@ -462,6 +601,15 @@ export function costSummary(windowDays) {
     notes: [
       'token 数不是估算的：它来自上游响应里的 usage，应用侧只做聚合 —— ' +
         '所以这一页的 token 口径与运行列表、与上游账单是同一份事实。',
+      // 【第 6 件：两个归因维度的口径必须与数字同屏】
+      // 少了它，读者会以为「按租户」那一栏的钱是错的（"它凭什么有金额"）
+      '「按租户」与「按业务」两栏回答的是两个问题：前者是「谁在花钱」，' +
+        '后者是「花在哪个功能上」—— 它们是两个独立的分组，不是同一个字段的两种叫法。' +
+        '两栏的金额都是按 token 占比从合计分摊的（费用对 token 是线性的，' +
+        '所以这与逐模型算完再相加等价），因此两栏各自加起来都等于「按模型」那一栏的和。',
+      '⚠️ 有一批运行没有租户信息（调用方没传 tenantId）—— 它们单独占「未标注租户」' +
+        '那一行，没有被并进任何一个租户里。并进去会让那个租户的成本虚高，' +
+        '而虚高的部分无从发现。它与「未标注」（业务归因键缺失）是两件事。',
       '⚠️ 有模型还没有价格：deepseek-v4-pro —— 它们的 token 计入了总量，但不在金额里，' +
         '所以上面的合计是下界。',
       '⚠️ 窗口内有 2 次运行一个步骤都没有（大多死在第一步之前，例如上游鉴权失败）。' +

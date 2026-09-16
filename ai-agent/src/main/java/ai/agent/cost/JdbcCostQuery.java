@@ -149,6 +149,51 @@ public class JdbcCostQuery implements CostQuery {
 	}
 
 	@Override
+	public List<GroupTotals> byTenant(LocalDate from, LocalDate to) {
+		// 【与 byIntent 逐字相同，只换了分组列】这不是复制粘贴偷懒，而是刻意的：
+		// 两个维度**必须**用同一套口径（同样的 JOIN、同样的 CASE WHEN、同样的窗口边界），
+		// 否则"两个视图加起来应该相等"这条断言就不再成立 —— 而它正是
+		// dayAndIntentViewsAgree 那条测试在钉的东西。
+		// 把它们合成一个"接受列名参数"的方法会让列名变成字符串拼接（SQL 注入面 +
+		// 打错列名在编译期查不出来），代价大于省下的那几行。
+		//
+		// ⚠️ 改这一段时**两处都要改**（byIntent 与 byTenant）。漏改一处的症状是
+		// "租户那一栏的某个数字与业务那一栏对不上"，而两栏看起来都正常。
+		String sql = """
+				SELECT r.tenant_id AS grp,
+				       COUNT(*) AS run_count,
+				       SUM(CASE WHEN r.status <> ? THEN 1 ELSE 0 END) AS finished_count,
+				       SUM(CASE WHEN r.status = ? THEN 1 ELSE 0 END) AS stopped_count,
+				       SUM(CASE WHEN r.status = ? THEN 1 ELSE 0 END) AS failed_count,
+				       COALESCE(SUM(s.prompt_tokens), 0) AS prompt_tokens,
+				       COALESCE(SUM(s.cache_read_tokens), 0) AS cached_tokens,
+				       COALESCE(SUM(s.completion_tokens), 0) AS completion_tokens,
+				       COALESCE(SUM(t.call_count), 0) AS tool_calls,
+				       COALESCE(SUM(t.failures), 0) AS tool_failures,
+				       COALESCE(SUM(t.tool_elapsed_sum), 0) AS tool_elapsed,
+				       COALESCE(SUM(r.elapsed_ms), 0) AS run_elapsed,
+				       MIN(r.created_at) AS first_at
+				  FROM agent_run r
+				  LEFT JOIN (
+				        SELECT run_id, SUM(prompt_tokens) AS prompt_tokens,
+				               SUM(cache_read_tokens) AS cache_read_tokens,
+				               SUM(completion_tokens) AS completion_tokens
+				          FROM agent_step GROUP BY run_id
+				      ) s ON s.run_id = r.id
+				  LEFT JOIN (
+				        SELECT run_id, COUNT(*) AS call_count,
+				               SUM(CASE WHEN stage = ? THEN 1 ELSE 0 END) AS failures,
+				               SUM(elapsed_ms) AS tool_elapsed_sum
+				          FROM agent_tool_invocation GROUP BY run_id
+				      ) t ON t.run_id = r.id
+				 WHERE r.created_at >= ? AND r.created_at < ?
+				 GROUP BY r.tenant_id
+				 ORDER BY COALESCE(SUM(s.prompt_tokens), 0) + COALESCE(SUM(s.completion_tokens), 0) DESC
+				""";
+		return groupRows(sql, from, to, "按租户归因汇总成本");
+	}
+
+	@Override
 	public List<GroupTotals> byModel(LocalDate from, LocalDate to) {
 		// 口径来自**步骤表**（不是运行表）：一个运行里换过模型时，两步会落在两个模型上，
 		// 而那正是"灰度期间钱花在哪个模型上"的唯一答案

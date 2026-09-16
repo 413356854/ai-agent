@@ -70,6 +70,9 @@ class CostDashboardViewTest {
 
 		List<GroupTotals> intents = new ArrayList<>();
 
+		/** 按租户那一维（第 6 件新增）。 */
+		List<GroupTotals> tenants = new ArrayList<>();
+
 		List<GroupTotals> models = new ArrayList<>();
 
 		List<ToolTotals> tools = new ArrayList<>();
@@ -91,6 +94,11 @@ class CostDashboardViewTest {
 		@Override
 		public List<GroupTotals> byModel(LocalDate from, LocalDate to) {
 			return List.copyOf(models);
+		}
+
+		@Override
+		public List<GroupTotals> byTenant(LocalDate from, LocalDate to) {
+			return List.copyOf(tenants);
 		}
 
 		@Override
@@ -302,8 +310,8 @@ class CostDashboardViewTest {
 	}
 
 	@Test
-	@DisplayName("按业务那一栏（混着多个模型）不给单一金额，而是说明去哪里看")
-	void mixedIntentRowExplainsInsteadOfGuessing() {
+	@DisplayName("★ 按业务那一栏的金额是分摊来的（不再是「算不出」）—— 第 6 件把这一格补上了")
+	void mixedIntentRowGetsAnAllocatedAmount() {
 		FakeQuery query = new FakeQuery();
 		query.intents.add(group("客服问答", 1, 1_000, 0, 500));
 		query.models.add(group("m", 1, 1_000, 0, 500));
@@ -315,10 +323,114 @@ class CostDashboardViewTest {
 		List<Map<String, Object>> intents = (List<Map<String, Object>>) view.snapshot(7).get("byIntent");
 
 		assertThat(intents.get(0).get("key")).isEqualTo("客服问答");
+		// 【这一格在第 6 件之前是 null（"算不出，见按模型那一栏"）】
+		// 现在给的是一个**分摊值**：这一栏只有一个业务、而它覆盖了窗口全部 token，
+		// 所以它拿到的就是合计（1000×1 + 500×2 = 2000 微）。
+		// 为什么可以这样算：费用对 token 是线性的 —— 分摊与逐模型算完再相加等价
+		assertThat(intents.get(0).get("amountMicros"))
+				.as("一个只含一个业务、且覆盖全部 token 的窗口：它拿到全额")
+				.isEqualTo(2_000L);
 		assertThat(intents.get(0).get("amount"))
-				.as("这一格里可能混着多个模型，单一单价不适用 —— 给一个数字必然是按某一个模型算的")
-				.isNull();
-		assertThat((String) intents.get(0).get("amountReason")).contains("多个模型");
+				.as("金额是一个能显示的数 —— 这一格从第 6 件起不再是「算不出」")
+				.isNotNull();
+	}
+
+	// ------------------------------------------------------------------
+	//  2.5 归因的两个维度：租户（谁的钱）与业务（哪个功能）
+	// ------------------------------------------------------------------
+
+	@Test
+	@DisplayName("★ 按租户那一栏的金额是**从合计按 token 占比分摊**的，而且各行相加必然等于合计")
+	void tenantAmountsAreAllocatedFromTheTotal() {
+		FakeQuery query = new FakeQuery();
+		// 甲 3000 token、乙 1000 token —— 合计 4000
+		query.tenants.add(group("甲", 2, 2_000, 0, 1_000));
+		query.tenants.add(group("乙", 1, 800, 0, 200));
+		query.models.add(group("m", 3, 2_800, 0, 1_200));
+		query.days.add(new DayTotals(TODAY, group(null, 3, 2_800, 0, 1_200)));
+		query.modelDays.add(new ModelDayRow(TODAY, "m", 2_800, 0, 1_200));
+		query.intents.add(group("客服", 2, 2_000, 0, 1_000));
+		query.intents.add(group("报表", 1, 800, 0, 200));
+		// 价格：输入 ¥1/百万、输出 ¥2/百万 → 合计 = 2800 + 2400 = 5200 微
+		CostDashboardView view = view(query, price("m", "1", "2"));
+
+		Map<String, Object> body = view.snapshot(7);
+		List<Map<String, Object>> tenants = rows(body, "byTenant");
+
+		assertThat(tenants).hasSize(2);
+		long sum = tenants.stream().mapToLong(r -> ((Number) r.get("amountMicros")).longValue()).sum();
+		assertThat(sum).as("★ 各行相加必须**恰好**等于合计 —— 分摊的最后一行取的是"
+				+ "「合计 − 前面所有行」，就是为了让这条核对成立（逐行各自 round 会差几个 micro，"
+				+ "而那条核对红了之后，人会去改断言而不是改算法）").isEqualTo(5_200L);
+
+		Map<String, Object> first = tenants.get(0);
+		assertThat(first.get("keyLabel")).isEqualTo("甲");
+		assertThat(first.get("amountMicros")).as("甲占 3000/4000 = 75%，5200 × 0.75 = 3900")
+				.isEqualTo(3_900L);
+		assertThat(first.get("amountBasis"))
+				.as("口径要能被程序读出来（界面据此显示「按 token 占比分摊」的说明）")
+				.isEqualTo("ALLOCATED_BY_TOKEN_SHARE");
+
+		// 业务那一栏是**另一个维度**：同一份钱、另一条分组，各自加起来都等于同一个合计
+		List<Map<String, Object>> intents = rows(body, "byIntent");
+		assertThat(intents.stream().mapToLong(r -> ((Number) r.get("amountMicros")).longValue()).sum())
+				.as("两个维度各自加起来都等于同一个合计 —— 它们是同一份钱的两个视图").isEqualTo(5_200L);
+	}
+
+	@Test
+	@DisplayName("★ 未标注租户独立成一行，而且它的名字与「未标注」（业务）刻意不同")
+	void unlabeledTenantIsItsOwnRowWithItsOwnName() {
+		FakeQuery query = new FakeQuery();
+		query.tenants.add(group(null, 2, 1_000, 0, 500));
+		query.tenants.add(group("甲", 1, 1_000, 0, 500));
+		query.models.add(group("m", 3, 2_000, 0, 1_000));
+		query.days.add(new DayTotals(TODAY, group(null, 3, 2_000, 0, 1_000)));
+		query.modelDays.add(new ModelDayRow(TODAY, "m", 2_000, 0, 1_000));
+		// 业务那一栏也留一行未标注，用来对照两个「空」的措辞
+		query.intents.add(group(null, 3, 2_000, 0, 1_000));
+		CostDashboardView view = view(query, price("m", "1", "2"));
+
+		Map<String, Object> body = view.snapshot(7);
+		Map<String, Object> unlabeled = rows(body, "byTenant").stream()
+				.filter(r -> Boolean.TRUE.equals(r.get("keyMissing"))).findFirst().orElseThrow();
+
+		assertThat(unlabeled.get("keyLabel")).as("租户那一栏的空必须是「未标注租户」—— "
+				+ "两个维度的空长得一样的话，读者会以为它们是同一个空洞，"
+				+ "而处置方式完全不同（让调用方传 tenantId / 传 intent）").isEqualTo("未标注租户");
+		assertThat(rows(body, "byIntent").get(0).get("keyLabel"))
+				.as("业务那一栏的空保持「未标注」").isEqualTo("未标注");
+
+		@SuppressWarnings("unchecked")
+		List<String> notes = (List<String>) body.get("notes");
+		assertThat(notes).as("有未标注租户时必须在 notes 里说清它与业务的「未标注」是两件事")
+				.anyMatch(n -> n.contains("未标注租户") && n.contains("两件事"));
+		assertThat(notes).as("两栏的分摊口径必须与数字同屏 —— 不说的话，"
+				+ "「按租户这一栏的钱是怎么来的」只能靠猜").anyMatch(n -> n.contains("分摊"));
+	}
+
+	@Test
+	@DisplayName("★ 价格算不出时，按租户那一栏的每一行都算不出 —— 不许出现「一行有金额、别的没有」")
+	void allocationIsAllOrNothing() {
+		FakeQuery query = new FakeQuery();
+		query.tenants.add(group("甲", 1, 1_000, 0, 500));
+		query.tenants.add(group("乙", 1, 1_000, 0, 500));
+		query.models.add(group("m", 2, 2_000, 0, 1_000));
+		query.days.add(new DayTotals(TODAY, group(null, 2, 2_000, 0, 1_000)));
+		query.modelDays.add(new ModelDayRow(TODAY, "m", 2_000, 0, 1_000));
+		CostDashboardView view = view(query); // 空价格表 → 算不出金额
+
+		for (Map<String, Object> row : rows(view.snapshot(7), "byTenant")) {
+			assertThat(row.get("amount")).as("局部有金额的一栏会被读成「其它几行不花钱」").isNull();
+			assertThat((String) row.get("amountReason")).as("算不出必须带原因").isNotBlank();
+		}
+	}
+
+	/** 取快照里的某一栏（类型写错时给出能读的失败信息，而不是一个 ClassCastException）。 */
+	@SuppressWarnings("unchecked")
+	private static List<Map<String, Object>> rows(Map<String, Object> body, String key) {
+		Object value = body.get(key);
+		assertThat(value).as("快照里必须有一栏叫 %s", key).isInstanceOf(List.class);
+		return (List<Map<String, Object>>) value;
 	}
 
 	// ------------------------------------------------------------------

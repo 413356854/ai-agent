@@ -19,11 +19,26 @@ import java.util.Optional;
  * <h2>这一页要回答的三个问题（其余都是它们的证据）</h2>
  * <ol>
  *   <li><b>花了多少</b> —— 按天的走势与窗口合计；</li>
- *   <li><b>谁花的</b> —— 按业务归因键、按模型的拆分（路线文档的「成本归因」）；</li>
+ *   <li><b>谁花的</b> —— 按<b>租户</b>（谁的钱）、按<b>业务归因键</b>（花在哪个功能上）、
+ *       按模型的拆分（路线文档的「成本归因：按业务/租户/功能拆分」）；</li>
  *   <li><b>花得值不值</b> —— 失败但同样花钱的那部分、缓存命中率、工具调用与延迟。</li>
  * </ol>
  * 第三问是这个看板与"账单截图"的区别：账单只知道花了多少，
  * 而"花了钱又没办成事"（{@code status=FAILED} 的运行）只在我们自己的数据里才有。
+ *
+ * <h2>★ 租户与业务归因键是两个维度，不是"同一栏的两种叫法"</h2>
+ * 它们各自一栏、各自一个 GROUP BY：{@code tenant_id} 回答「<b>谁</b>在花钱」，
+ * {@code intent} 回答「花在<b>哪个功能</b>上」。合成一个字段（{@code 京东-客服问答}）之后，
+ * "按租户看一共多少"要靠前缀匹配，而一次拼写不一致就让同一个租户裂成两行 ——
+ * 两行加起来才是真相，这种事没人会去加。详见 {@code agent-schema.sql} 里 tenant_id 那一段。
+ *
+ * <p>⚠️ 两栏的金额格都是空的，而且原因不同：</p>
+ * <ul>
+ *   <li>按租户那一栏：一格里的 token **合法地混着多个模型**（同一个租户会用不同模型），
+ *       所以单一单价不适用 —— 金额按模型算完再相加才是对的；</li>
+ *   <li>按业务那一栏：同理。</li>
+ * </ul>
+ * 两栏的合计都等于「按模型」那一栏的和（页面上有对账说明），所以"看不到金额"不等于"算不出来"。
  *
  * <h2>金额是"按模型分别算完再相加"，不是"先加 token 再乘单价"</h2>
  * 这是本类唯一一处容易写错的地方，所以单独说清。按天/按业务分组的行里
@@ -58,6 +73,16 @@ public class CostDashboardView {
 	/** 归因键为空时的显示名。 */
 	private static final String UNLABELED_INTENT = "未标注";
 
+	/**
+	 * 租户为空时的显示名（阶段四第 6 件）。
+	 *
+	 * <p>措辞刻意与 {@link #UNLABELED_INTENT} 不同，而且带上"租户"两个字：
+	 * 两栏的"未标注"如果在页面上长得一模一样，读者会以为它们是同一个空洞 ——
+	 * 而真相是两件事（不知道算谁的钱 / 不知道属于哪个功能），
+	 * 处置方式也不同（让调用方传 tenantId / 让调用方传 intent）。
+	 */
+	private static final String UNLABELED_TENANT = "未标注租户";
+
 	private final CostQuery query;
 
 	private final CostPricing pricing;
@@ -75,15 +100,19 @@ public class CostDashboardView {
 
 		List<CostQuery.DayTotals> dayRows = query.byDay(from, today);
 		List<CostQuery.GroupTotals> intentRows = query.byIntent(from, today);
+		List<CostQuery.GroupTotals> tenantRows = query.byTenant(from, today);
 		List<CostQuery.GroupTotals> modelRows = query.byModel(from, today);
 		List<CostQuery.ToolTotals> toolRows = query.byTool(from, today);
 		List<CostQuery.ModelDayRow> modelDayRows = query.byModelAndDay(from, today);
 		CostQuery.Reconciliation reconciliation = query.reconcile(from, today);
 
 		// 【计价的中枢】每个模型的 token 与金额先算好，后面所有粒度的金额都从这里派生。
-		// 这样"按天 / 按业务 / 合计"三处的钱**必然**等于"按模型那一栏的和" ——
+		// 这样"按天 / 按业务 / 按租户 / 合计"四处的钱**必然**等于"按模型那一栏的和" ——
 		// 它们是同一份数字的不同视图，而不是三次独立的计算（三次独立计算迟早会对不上）
 		PricedModels priced = priceByModel(modelRows, today);
+		// 窗口合计的钱。两个归因维度（租户 / 业务）的金额都**按 token 占比从它分摊** ——
+		// 这一句是第 6 件唯一一处新的算法，理由写在 allocateByTokenShare 上
+		Long windowMicros = totalMicros(priced);
 		Map<String, Object> body = new LinkedHashMap<>();
 		body.put("ok", true);
 		body.put("window", window(from, today, effectiveDays));
@@ -94,16 +123,22 @@ public class CostDashboardView {
 		body.put("needsPriceFor", priced.unpricedModels());
 
 		body.put("totals", totals(dayRows, priced));		body.put("days", days(dayRows, modelDayRows, priced, today));
-		body.put("byIntent", groups(intentRows, Costs.NOT_SINGLE_MODEL, today, true));
-		body.put("byModel", groups(modelRows, Costs.PER_MODEL, today, false));
+		// 【★ 两个归因维度并列，各自一栏】顺序刻意是"谁的钱"在前、"哪个功能"在后：
+		// 出账的时候先问"这个租户一共花了多少"，再问"花在它的哪个功能上"
+		body.put("byTenant", groups(tenantRows, Costs.NOT_SINGLE_MODEL, Attribution.TENANT, today, true,
+				allocateByTokenShare(tenantRows, windowMicros)));
+		body.put("byIntent", groups(intentRows, Costs.NOT_SINGLE_MODEL, Attribution.INTENT, today, true,
+				allocateByTokenShare(intentRows, windowMicros)));
+		body.put("byModel", groups(modelRows, Costs.PER_MODEL, null, today, false, null));
 		body.put("byTool", toolRows.stream().map(this::tool).toList());
 		body.put("reconciliation", reconciliation(reconciliation));
 		body.put("cache", cache(reconciliation, modelRows));
-		body.put("notes", notes(dayRows, reconciliation, priced));
+		body.put("notes", notes(dayRows, reconciliation, priced, tenantRows));
 
-		log.info("成本看板：窗口 {}~{} 运行 {} 次 / {} tokens / 计价={} / 未配价的模型={}", from, today,
-				priced.totals().runCount(), priced.totals().totalTokens(), pricing.configured(),
-				priced.unpricedModels());
+		log.info("成本看板：窗口 {}~{} 运行 {} 次 / {} tokens / 计价={} / 未配价的模型={} / 租户 {} 个（未标注 {} 次运行）",
+				from, today, priced.totals().runCount(), priced.totals().totalTokens(), pricing.configured(),
+				priced.unpricedModels(), tenantRows.size(),
+				tenantRows.stream().filter(r -> r.key() == null).mapToLong(CostQuery.GroupTotals::runCount).sum());
 		return body;
 	}
 
@@ -284,14 +319,22 @@ public class CostDashboardView {
 		return List.copyOf(rows);
 	}
 
-	/** 按业务 / 按模型的分组行。 */
-	private List<Map<String, Object>> groups(List<CostQuery.GroupTotals> rows, Costs mode, LocalDate today,
-			boolean withTools) {
+	/**
+	 * 按租户 / 按业务 / 按模型的分组行。
+	 *
+	 * @param mode 金额那一格是"按这个键的唯一模型算"（PER_MODEL）还是"按 token 占比分摊"（其它）
+	 * @param attribution 归因维度（决定 key 为空时叫「未标注租户」还是「未标注」）；
+	 *            按模型那一栏传 {@code null}（它有自己的显示名）
+	 * @param allocated 这一栏各行的金额（{@code null} = 这一栏不算金额）。
+	 *            <b>它与行一一对应、且是由窗口合计分摊来的</b> —— 见 {@link #allocateByTokenShare}
+	 */
+	private List<Map<String, Object>> groups(List<CostQuery.GroupTotals> rows, Costs mode, Attribution attribution,
+			LocalDate today, boolean withTools, Map<String, Long> allocated) {
 		List<Map<String, Object>> out = new ArrayList<>();
 		for (CostQuery.GroupTotals row : rows) {
 			Map<String, Object> body = base(row);
 			body.put("key", row.key());
-			body.put("keyLabel", label(row.key(), mode));
+			body.put("keyLabel", label(row.key(), mode, attribution));
 			body.put("keyMissing", row.key() == null);
 			if (!withTools) {
 				// 工具调用不属于"模型"这个维度：它无法归到某一个模型上
@@ -301,6 +344,7 @@ public class CostDashboardView {
 				body.remove("toolFailures");
 				body.remove("toolElapsedMs");
 			}
+			// 【按模型那一栏：key 就是模型名，单价唯一 —— 钱在这里被真正算出来】
 			Optional<CostPricing.Cost> single = mode == Costs.PER_MODEL && row.key() != null
 					? pricing.price(row.key(), row.uncachedPromptTokens(), row.cachedPromptTokens(),
 							row.completionTokens(), endOf(today))
@@ -313,6 +357,39 @@ public class CostDashboardView {
 				body.put("priceRule", cost.ruleModel());
 				body.put("priceSource", cost.source() == null ? "" : cost.source());
 				body.put("amountReason", null);
+				body.put("amountBasis", Costs.PER_MODEL.name());
+			}
+			else if (allocated != null) {
+				// 【★ 阶段四第 6 件：按租户 / 按业务那一栏的金额是**分摊**来的】
+				//
+				// 为什么不像"按模型"那样直接算：一格里合法地混着多个模型
+				// （同一个租户会用不同模型、同一个功能也是），而每个模型单价不同 ——
+				// 把它们的 token 加总乘任意一个单价都是错的，而错出来的钱看起来完全正常。
+				//
+				// 所以钱只在"单一模型"那个粒度上算（上面那一支），
+				// 更大粒度**按 token 占比从窗口合计里分摊**。为什么这在数学上成立：
+				// 费用对 token 是线性的（三档单价各自是常数），所以"按 token 占比分摊"
+				// 与"逐模型算完再相加"的结果相同 —— 而它只需要一份合计，
+				// 不需要为每一行重跑一次价格匹配（价格匹配要选规则、判生效时间）。
+				//
+				// ⚠️ 边界（必须与数字一起交付）：分摊的前提是"这一栏覆盖了窗口里全部的 token"。
+				// 它成立，因为同一个窗口、同一批运行按不同维度分组时总量相同 ——
+				// 这正是 CostQueryJdbcTest 里那条"两个维度加起来必须相等"的断言在钉的东西。
+				// 加起来不等于合计时，页面上那句对账说明会把它显出来（不是靠这里相信它）。
+				Long micros = allocated.get(key(row.key()));
+				body.put("amount", micros == null ? null : CostPricing.format(pricing.defaultCurrency(), micros));
+				body.put("amountMicros", micros);
+				// 【币种必须给，否则界面上那一格会只剩一个裸数字】实测踩到：
+				// 前端按 `currency` 决定前缀（¥ / $），缺了它就渲染成 `0.0753`。
+				// 真后端这条路一直是对的（按模型那一支给过 currency），
+				// 而**假数据**那一版漏了这个字段 —— 于是自检里那条"这一栏有金额"的断言
+				// 以"找不到 ¥"的形式报红，看起来像后端没填金额。
+				// 这里显式写上，理由与 costBasis 那条一样：口径要能被程序读出来
+				body.put("currency", pricing.defaultCurrency());
+				body.put("amountReason", micros == null
+						? reasonNotPriced(List.of())
+						: null);
+				body.put("amountBasis", "ALLOCATED_BY_TOKEN_SHARE");
 			}
 			else {
 				body.put("amount", null);
@@ -331,7 +408,90 @@ public class CostDashboardView {
 		return List.copyOf(out);
 	}
 
-	/** 分组模式：决定"金额"那一格是"按这个键的唯一模型算"还是"说明为什么算不了"。 */
+	/**
+	 * 把窗口合计的金额按 <b>token 占比</b>分摊给一栏里的各行（阶段四第 6 件）。
+	 *
+	 * <h2>为什么可以分摊，而不是"猜"</h2>
+	 * 费用对 token 是<b>线性</b>的：三档（未命中输入 / 命中缓存 / 输出）各自乘一个常数单价再相加。
+	 * 所以"把合计按 token 占比切开"与"逐行逐模型算完再相加"得到同一个数 ——
+	 * 这不是估算，是同一个数的另一种算法。
+	 *
+	 * <h2>那为什么不干脆逐行算</h2>
+	 * 因为逐行算需要"这一行里每个模型花了多少 token"，那是 (维度 × 模型) 的粒度，
+	 * 而现在的查询只到 (维度) 与 (天 × 模型) 两个粒度。加一条 (维度 × 模型) 的查询
+	 * 意味着每多一个归因维度就多一条聚合 SQL —— 而分摊只需要一份合计。
+	 * 与 {@code PricedRow.shareFor}（按天分摊）用的是同一个办法，只是粒度不同。
+	 *
+	 * <h2>★ 三条纪律，每一条都对应一种"不报错的错"</h2>
+	 * <ol>
+	 *   <li><b>没有金额时返回 null，各行的金额也是 null</b>（不许出现一行有金额、别的没有）——
+	 *       局部有金额的一栏会被读成"其它几行不花钱"；</li>
+	 *   <li><b>最后一行取"合计减去前面所有行"</b>，而不是各自 round ——
+	 *       否则各行相加会比合计多或少几个 micro，而页面上有"各栏加起来等于合计"的核对，
+	 *       那条核对会红，然后人会去改断言而不是改算法（这条纪律与阶段二对账同源）；</li>
+	 *   <li><b>空行 / 全零 token 时不对它编一个 0 之外的数</b> ——
+	 *       一行 0 token 的运行确实没有可分摊的金额，它的金额就是 0（那不是"算不出"）。</li>
+	 * </ol>
+	 */
+	private static Map<String, Long> allocateByTokenShare(List<CostQuery.GroupTotals> rows, Long windowMicros) {
+		Map<String, Long> out = new LinkedHashMap<>();
+		if (windowMicros == null || rows.isEmpty()) {
+			// 算不出（价格没配 / 一个模型都没价）→ 每一行都算不出，返回空表，
+			// 调用方据此给 null。**不返回一组 0**：0 会被读成"这个租户不花钱"
+			return out;
+		}
+		long total = rows.stream().mapToLong(CostQuery.GroupTotals::totalTokens).sum();
+		if (total <= 0) {
+			for (CostQuery.GroupTotals row : rows) {
+				out.put(key(row.key()), 0L);
+			}
+			return out;
+		}
+		long assigned = 0;
+		for (int i = 0; i < rows.size(); i++) {
+			CostQuery.GroupTotals row = rows.get(i);
+			long share = i == rows.size() - 1
+					? windowMicros - assigned
+					: Math.round((double) windowMicros * row.totalTokens() / total);
+			assigned += share;
+			out.put(key(row.key()), share);
+		}
+		return out;
+	}
+
+	/** 分摊表的键（{@code null} 要能进 Map —— 它代表"未标注"那一行，不是"没有这一行"）。 */
+	private static String key(String raw) {
+		return raw == null ? "" : raw;
+	}
+
+	/**
+	 * 归因的两个维度（阶段四第 6 件）。
+	 *
+	 * <h2>为什么用它，而不是在两个调用点上写 {@code true} / {@code false}</h2>
+	 * 「金额那一格怎么处置」与「key 为空时叫什么」是两件事，而它们**必须成对**：
+	 * 把"按租户"那一次写成按模型的分支，看板会拿某一个模型的单价去乘混着多模型的 token ——
+	 * 那笔钱看起来完全正常。用枚举之后，两个调用点各自只能传一个值，
+	 * 而多主体判据那一类的错（传错布尔）在调用点上就读得出来。
+	 */
+	private enum Attribution {
+
+		/** 谁在花钱（租户）。 */
+		TENANT(UNLABELED_TENANT),
+
+		/** 花在哪个功能上（业务归因键）。 */
+		INTENT(UNLABELED_INTENT);
+
+		private final String missingLabel;
+
+		Attribution(String missingLabel) {
+			this.missingLabel = missingLabel;
+		}
+
+	}
+
+	/**
+	 * 分组模式：决定"金额"那一格是"按这个键的唯一模型算"还是"说明为什么算不了"。
+	 */
 	private enum Costs {
 
 		/** 按模型分组：key 就是模型名，单价唯一。 */
@@ -342,11 +502,21 @@ public class CostDashboardView {
 
 	}
 
-	private String label(String key, Costs mode) {
+	/**
+	 * 分组键为空时的显示名。
+	 *
+	 * <p>三个维度的"空"是<b>三件不同的事</b>，所以是三个不同的词 ——
+	 * 全都显示成「未标注」的话，读者会以为它们是同一个空洞，
+	 * 而它们的处置方式完全不同（补价格 / 让调用方传 tenantId / 让调用方传 intent）。
+	 */
+	private String label(String key, Costs mode, Attribution attribution) {
 		if (key != null) {
 			return key;
 		}
-		return mode == Costs.PER_MODEL ? UNKNOWN_MODEL_LABEL : UNLABELED_INTENT;
+		if (mode == Costs.PER_MODEL) {
+			return UNKNOWN_MODEL_LABEL;
+		}
+		return attribution == null ? UNLABELED_INTENT : attribution.missingLabel;
 	}
 
 	/** 一组数字里与单价无关的那部分（它们在所有粒度上都可直接相加）。 */
@@ -464,10 +634,30 @@ public class CostDashboardView {
 	 * 这一条对所有"同时给人和给程序看"的文案都成立。
 	 */
 	private List<String> notes(List<CostQuery.DayTotals> dayRows, CostQuery.Reconciliation reconciliation,
-			PricedModels priced) {
+			PricedModels priced, List<CostQuery.GroupTotals> tenantRows) {
 		List<String> notes = new ArrayList<>();
 		notes.add("token 数不是估算的：它来自上游响应里的 usage，应用侧只做聚合 —— "
 				+ "所以这一页的 token 口径与运行列表、与上游账单是同一份事实。");
+		// 【阶段四第 6 件：两个归因维度的口径说明必须同屏】
+		// 少了这一段，读者会以为「按租户」那一栏的金额是错的（"为什么这栏没有金额，
+		// 而按模型那栏有"）—— 而它其实是**分摊来的**，且与按模型那一栏必然对得上。
+		// 这一段的措辞刻意写清"凭什么可以分摊"（线性），而不是只说"我们分摊了"。
+		//
+		// ⚠️ **不许出现 markdown 星号**（实测踩到，而且是被真后端路径抓出来的）：
+		// 第一版这里写的是 `**按 token 占比从合计分摊**`，而这段文本渲染到页面上是
+		// **纯文本 `<ul>`** —— 于是页面上真的印出了两个星号。
+		// 这与第十轮那次是同一个坑（同一个字符串有两个消费方：JSON 接口的读者觉得星号无害，
+		// 而页面的纯文本渲染会原样印出来），也与踩坑库 #24 同族。
+		// 强调一律改用中文书名号「」，**不在界面上过滤星号**（那会让接口的读者拿到被改过的文本）。
+		notes.add("「按租户」与「按业务」两栏回答的是两个问题：前者是「谁在花钱」，"
+				+ "后者是「花在哪个功能上」—— 它们是两个独立的分组，不是同一个字段的两种叫法。"
+				+ "两栏的金额都是「按 token 占比从合计分摊」得来的（费用对 token 是线性的，"
+				+ "所以这与逐模型算完再相加等价），因此两栏各自加起来都等于「按模型」那一栏的和。");
+		if (tenantRows.stream().anyMatch(row -> row.key() == null)) {
+			notes.add("⚠️ 有一批运行没有租户信息（调用方没传 tenantId）—— 它们单独占「未标注租户」"
+					+ "那一行，没有被并进任何一个租户里。并进去会让那个租户的成本虚高，"
+					+ "而虚高的部分无从发现。它与「未标注」（业务归因键缺失）是两件事。");
+		}
 		if (!pricing.configured()) {
 			String models = priced.unpricedModels().isEmpty() ? "（窗口内还没有运行记录）"
 					: String.join("、", priced.unpricedModels());

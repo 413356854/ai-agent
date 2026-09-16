@@ -65,15 +65,42 @@ class CostQueryJdbcTest {
 
 	/** 造一次运行：2 步 + 3 次工具调用（其中一次执行异常）。 */
 	private String seedRichRun(String intent, String model, int promptPerStep, int cachedPerStep, int completion) {
-		return seedRichRun(intent, model, promptPerStep, cachedPerStep, completion, RunStatus.ANSWERED,
+		return seedRun(intent, null, model, promptPerStep, cachedPerStep, completion, RunStatus.ANSWERED,
 				AgentStopReason.ANSWERED);
 	}
 
 	/** 同上，但可以指定结尾状态（用于造"被上限拦下"与"失败"这两种结局）。 */
 	private String seedRichRun(String intent, String model, int promptPerStep, int cachedPerStep, int completion,
 			RunStatus status, AgentStopReason stopReason) {
+		return seedRun(intent, null, model, promptPerStep, cachedPerStep, completion, status, stopReason);
+	}
+
+	/**
+	 * 同上，但可以同时指定<b>租户</b>（阶段四第 6 件）。
+	 *
+	 * <h2>⚠️ 为什么这个方法叫 {@code seedTenantRun} 而不是又一个 {@code seedRichRun} 重载</h2>
+	 * 第一版就是加重载的：{@code seedRichRun(intent, tenantId, model, ...)} 与既有的
+	 * {@code seedRichRun(intent, model, ...)} 在"第二、三个参数都是 String"这一点上重叠，
+	 * 于是<b>所有已有的调用点全部编译不过</b>（javac 报"找不到合适的方法"，
+	 * 而错误信息列的是几个候选，不会明说"你多了个重载"）。
+	 *
+	 * <p>这与 {@code ResumableAgentService.runWithId} 那一处是同一个坑的第二次出现：
+	 * <b>给一个已经有多个 String 参数的方法再添一个 String 参数，
+	 * 会把所有调用点变成歧义或"参数错位"</b> —— 而参数错位（把租户传进归因键的位置）
+	 * 是<b>编译得过</b>的，它的后果是在看板上凭空多出一个叫「京东」的业务。
+	 * 所以这里给新方法一个具名入口，而不是继续加重载。
+	 */
+	private String seedTenantRun(String tenantId, String intent, String model, int promptPerStep,
+			int cachedPerStep, int completion) {
+		return seedRun(intent, tenantId, model, promptPerStep, cachedPerStep, completion, RunStatus.ANSWERED,
+				AgentStopReason.ANSWERED);
+	}
+
+	/** 一次运行（2 步 + 3 次工具调用），可指定归因键、租户、模型与结尾状态。 */
+	private String seedRun(String intent, String tenantId, String model, int promptPerStep, int cachedPerStep,
+			int completion, RunStatus status, AgentStopReason stopReason) {
 		String runId = UUID.randomUUID().toString();
-		store.start(new AgentRunStore.Start(runId, "问题 " + runId, properties.node(), intent, null));
+		store.start(new AgentRunStore.Start(runId, "问题 " + runId, properties.node(), intent, null, tenantId));
 		for (int step = 1; step <= 2; step++) {
 			store.recordToolCall(new AgentRunRecord.ToolCallRecord(runId, step, 0, "call_" + step,
 					step == 1 ? "search_docs" : "read_section", "{}", "OK", "回填", 10L));
@@ -136,9 +163,111 @@ class CostQueryJdbcTest {
 	}
 
 	// ------------------------------------------------------------------
-	//  2. 两个口径的对账
+	//  1.5 归因的两个维度：租户（谁的钱）与业务（哪个功能）—— 阶段四第 6 件
 	// ------------------------------------------------------------------
 
+	@Test
+	@DisplayName("★ 按租户与按业务是**两条独立的分组**：同一个租户的两个功能合成一行，而两个租户永不合并")
+	void tenantAndIntentAreSeparateDimensions() {
+		String tenant = "租户-" + UUID.randomUUID();
+		String other = "租户-" + UUID.randomUUID();
+		// 同一个租户下两个不同的功能 —— 在「按租户」那一栏它们必须合成一行
+		seedTenantRun(tenant, "客服问答", "deepseek-flash", 1_000, 0, 500);
+		seedTenantRun(tenant, "报表助手", "deepseek-flash", 1_000, 0, 500);
+		// 另一个租户的同一个功能 —— 在「按业务」那一栏它们合成一行、在租户栏是两行
+		seedTenantRun(other, "客服问答", "deepseek-flash", 1_000, 0, 500);
+
+		var tenants = query.byTenant(today, today);
+		var mine = tenants.stream().filter(r -> tenant.equals(r.key())).findFirst().orElseThrow();
+		var theirs = tenants.stream().filter(r -> other.equals(r.key())).findFirst().orElseThrow();
+
+		assertThat(mine.runCount())
+				.as("同一个租户的两个功能必须是**一行** —— 租户维度问的是「谁在花钱」，"
+						+ "不是「花在哪个功能上」（那是另一栏）").isEqualTo(2L);
+		assertThat(mine.totalTokens()).as("2 次运行 × (1000 + 500) × 2 步").isEqualTo(6_000L);
+		assertThat(theirs.runCount()).isEqualTo(1L);
+
+		var intentRows = query.byIntent(today, today);
+		var support = intentRows.stream().filter(r -> "客服问答".equals(r.key())).findFirst().orElseThrow();
+		assertThat(support.runCount())
+				.as("同一个功能下两个租户在「按业务」那一栏合成一行 —— 两栏的差别就在这里，"
+						+ "而它们各自加起来都等于同一份总量").isEqualTo(2L);
+
+		// 【两条 GROUP BY 的总量必须相等】它们看的是同一批运行，
+		// 所以"总额"这个数字不该因为换了分组维度而变
+		assertThat(tenants.stream().mapToLong(CostQuery.GroupTotals::totalTokens).sum())
+				.as("两个维度加起来必须相等 —— 不相等说明其中一条 SQL 漏了行（例如 JOIN 写法不同）")
+				.isEqualTo(intentRows.stream().mapToLong(CostQuery.GroupTotals::totalTokens).sum());
+	}
+
+	@Test
+	@DisplayName("★ 未标注租户独立成一行，且与未标注业务互不影响（两个「空」是两件事）")
+	void unlabeledTenantIsSeparateFromUnlabeledIntent() {
+		// 【断言写的是"差值"而不是绝对条数】同一个 Spring 上下文里的库是所有测试共用的
+		// （其它用例也在造"没标租户"的运行），所以绝对条数会随测试顺序变化 ——
+		// 第一版就是这么写的，而它在本类新增用例之后立刻红了：
+		// **一条依赖"别的测试没造过数据"的断言，会在任何人加一个用例时无预警地断掉**
+		long before = unlabeledTenantRuns();
+		// 有租户、没业务归因
+		seedTenantRun("甲-" + UUID.randomUUID(), null, "deepseek-flash", 100, 0, 50);
+		// 有业务归因、没租户
+		seedRichRun("无租户-" + UUID.randomUUID(), "deepseek-flash", 100, 0, 50);
+
+		var tenants = query.byTenant(today, today);
+		var intents = query.byIntent(today, today);
+
+		assertThat(tenants).as("租户那一栏必须有 key=null 的那一行（未标注租户）").anyMatch(r -> r.key() == null);
+		assertThat(intents).as("业务那一栏同样有 key=null 的那一行（未标注）").anyMatch(r -> r.key() == null);
+		// 关键是**不能互相污染**：只标了租户的那次运行不该被算进「未标注租户」，
+		// 也不该出现在某个业务下 —— 混进去会让那一组虚高，而虚高的部分无从发现
+		assertThat(unlabeledTenantRuns() - before)
+				.as("这一轮只造了 1 次「没传 tenantId」的运行 —— 另一次是传了租户、只是没传业务归因，"
+						+ "它不该被算进「未标注租户」；两个维度互相污染的话这里会是 2")
+				.isEqualTo(1L);
+	}
+
+	/** 「未标注租户」那一行的运行数（当前库的全量）。 */
+	private long unlabeledTenantRuns() {
+		return query.byTenant(today, today).stream().filter(r -> r.key() == null)
+				.mapToLong(CostQuery.GroupTotals::runCount).sum();
+	}
+
+	@Test
+	@DisplayName("★ 只有空格的租户被归一成「未标注租户」—— 不许出现一个叫「 」的租户")
+	void blankTenantIsNormalizedToUnlabeled() {
+		// 【这条断言防的是一类很具体的错】分组键只做了判 null 而没判 blank 时，
+		// 一个只打了空格的租户会变成一个**合法的分组键**，
+		// 于是看板上出现一个叫「 」的租户 —— 而它看起来像一个真的租户。
+		//
+		// ⚠️ 这里刻意**只用 store.start + find**，不把这次运行留成 RUNNING 之外的完整运行：
+		// 落一条"有检查点、但运行行 token 为 0"的记录会打破本类那条对账断言
+		// （对账是全窗口的，它会被任何一条这样的记录弄红）——
+		// 那是**测试之间的干扰**，而它会以"对账对不上"的形式报出来，
+		// 看起来像产品代码出了问题
+		String runId = UUID.randomUUID().toString();
+		store.start(new AgentRunStore.Start(runId, "空格租户", properties.node(), "业务", null, "   "));
+
+		assertThat(store.find(runId).orElseThrow().tenantId())
+				.as("归一化只能发生在构造期（Start 的紧凑构造器），所以读出来就是 null").isNull();
+		assertThat(store.find(runId).orElseThrow().hasTenant()).isFalse();
+		assertThat(query.byTenant(today, today)).as("它必须落进「未标注租户」那一行（key=null），"
+				+ "而不是形成一行 key=\"   \" 的租户").anyMatch(r -> r.key() == null);
+
+		// 【而且认领之后仍然不丢】markInterruptedRuns 里那处"手工重建记录"
+		// 漏了 tenantId 的话，被认领的运行会丢掉租户 —— 于是它的成本从"某个租户"
+		// 悄悄挪到「未标注租户」，而两行的数字都正常，只是挪了位置
+		String tenant = "认领-" + UUID.randomUUID();
+		String claimedId = UUID.randomUUID().toString();
+		store.start(new AgentRunStore.Start(claimedId, "会被认领的运行", properties.node(), "业务", null, tenant));
+		List<AgentRunRecord> claimed = store.markInterruptedRuns(properties.node());
+		assertThat(claimed).extracting(AgentRunRecord::id).contains(claimedId);
+		assertThat(store.find(claimedId).orElseThrow().tenantId())
+				.as("认领之后租户必须还在 —— 它正是靠人工复制字段才可能丢的那种数据").isEqualTo(tenant);
+	}
+
+	// ------------------------------------------------------------------
+	//  2. 两个口径的对账
+	// ------------------------------------------------------------------
 	@Test
 	@DisplayName("对账：步骤表的 token 之和必须等于运行行上的累计 token（否则看板的钱是错的）")
 	void reconciliationMatchesTwoAccounts() {
@@ -265,6 +394,7 @@ class CostQueryJdbcTest {
 		// 而它如果抛异常，现象会是"成本看板一打开就报错"，看起来像功能坏了
 		assertThat(query.byDay(today, today)).isNotNull();
 		assertThat(query.byIntent(today, today)).isNotNull();
+		assertThat(query.byTenant(today, today)).as("第 6 件新加的那一维同样要能在空库上跑").isNotNull();
 		assertThat(query.byModel(today, today)).isNotNull();
 		assertThat(query.byTool(today, today)).isNotNull();
 		assertThat(query.byModelAndDay(today, today)).isNotNull();

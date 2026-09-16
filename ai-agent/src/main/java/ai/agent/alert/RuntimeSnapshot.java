@@ -80,28 +80,96 @@ public record RuntimeSnapshot(
 		/** 窗口内一共发生了几次检索（为 0 时上面的"连续"无从谈起）。 */
 		long retrievalCalls,
 
-		// ---- 灰度口径（本件新增） ----
+		// ---- 灰度口径（第 5 件新增） ----
 
 		/** 灰度分流的观测结果。 */
-		AlertRule.CanarySplit canary) {
+		AlertRule.CanarySplit canary,
+
+		// ---- 租户口径（阶段四第 6 件：成本归因新增） ----
+
+		/**
+		 * <b>每个租户</b>在窗口内的输入 token 与其中命中缓存的部分。
+		 *
+		 * <h2>为什么成本判据需要"按租户"的输入，而不是一个窗口合计</h2>
+		 * 在租户维度出现之前，"整窗缓存命中率为 0"是一个有意义的信号。
+		 * 出现之后它变成了一句**可能掩盖问题的话**：窗口里只要有一个租户命中过缓存，
+		 * 合计就不再是 0，而"某个租户的缓存一次都没命中"这个真正可处置的事实
+		 * （它的提示词前缀可能每次都在变、或者它走的是另一条链路）就永远看不见了。
+		 *
+		 * <p>所以这一族判据的主体粒度改成了<b>每个租户一条</b>（见
+		 * {@code AlertEvaluator.judge} 里那处显式的 switch）。
+		 *
+		 * <p>⚠️ <b>未标注租户的运行不在这个列表里</b>：它们不是一个主体，
+		 * 而是一堆互不相干的运行的合计 —— 把那个合计当成"一个租户"去报警，
+		 * 会让告警指向一个不存在的东西。它们由窗口合计那一条（{@code windowPromptTokens}）覆盖。
+		 */
+		List<TenantPoint> tenantCaches,
+		/**
+		 * 窗口内**单个租户占掉全部 token 的比例**最多是多少，那又是哪个租户。
+		 *
+		 * <p>为 {@code null} 表示"无从谈起"（没有租户信息、或窗口内没有 token）——
+		 * 与"比例是 0"是两件事，后者会读成"没有租户在花钱"。
+		 */
+		AlertRule.TenantShare tenantShare) {
 
 	/**
-	 * 紧凑构造器：把可能为 null 的两处归一化。
+	 * 紧凑构造器：把可能为 null 的几处归一化。
 	 *
 	 * <p>判据里少一处判空就少一个坑 —— 而归一化只能有一处
 	 * （与 {@code AgentRunStore.Start} 那条"空白一律在构造期归一"同一条纪律）。
 	 */
 	public RuntimeSnapshot {
 		unpricedModels = unpricedModels == null ? List.of() : List.copyOf(unpricedModels);
+		tenantCaches = tenantCaches == null ? List.of() : List.copyOf(tenantCaches);
 		canary = canary == null ? AlertRule.CanarySplit.none() : canary;
 		windowFrom = windowFrom == null ? "" : windowFrom;
 		windowTo = windowTo == null ? "" : windowTo;
 		observedAt = observedAt == null ? Instant.now() : observedAt;
 	}
 
+	/**
+	 * 窗口内某一段时间的输入 token 与其中的缓存命中量（成本判据的输入）。
+	 *
+	 * <p>租户口径那一族判据读的就是它 —— 见 {@link #tenantCaches}。
+	 * 它<b>刻意不复用 {@code CostQuery.GroupTotals}</b>：那个类型带着十来个
+	 * 与判据无关的字段（工具耗时、运行状态计数…），把它塞进快照会让"判据依赖什么"
+	 * 这件事在一堆字段里消失，而"判据只读它真正需要的东西"是这一层能被单独测的前提。
+	 *
+	 * @param tenant 租户名（**不会是"未标注"** —— 那种运行是几段互不相干的花费，
+	 *            不是一个主体，见 {@link #tenantCaches}）
+	 * @param promptTokens 这个租户的输入 token 合计（含命中缓存的部分）
+	 * @param cachedPromptTokens 其中命中提示词缓存的部分
+	 */
+	public record TenantPoint(String tenant, long promptTokens, long cachedPromptTokens) {
+	}
+
 	/** 窗口的一句话描述（告警明细里带上它，数字才可复现）。 */
 	public String windowLabel() {
 		return windowFrom + " ~ " + windowTo;
+	}
+
+	/**
+	 * <b>切一份"只看这一个租户"的快照</b>（阶段四第 6 件：逐租户判据的输入）。
+	 *
+	 * <h2>为什么是"切一份"而不是"把租户当参数传进判据"</h2>
+	 * 判据的签名保持 {@code RuntimeSnapshot -> Verdict} 不变，才能继续满足
+	 * "判据是纯函数、只读快照、能在毫秒级被单独测"这条纪律。
+	 * 换签名会让每条判据都多一个可能被忽略的参数，而"某条判据忘了看那一个参数"
+	 * 是没有任何症状的错。
+	 *
+	 * <h2>⚠️ 只换两个数，其余字段一律原样保留</h2>
+	 * 顺手把别的字段也按租户重算（比如 unpricedModels）是个诱人的想法，但它会让
+	 * <b>这条判据的结论随别的维度变化</b> —— 那种耦合没有症状，只是结论偶尔不同，
+	 * 而"偶尔不同"的判据比错的判据更难查。
+	 * 所以这里只动 {@code promptTokens} / {@code cachedPromptTokens} 两个字段，
+	 * 并写明为什么，而不是"看起来更彻底"地全部重算。
+	 */
+	public RuntimeSnapshot forTenant(TenantPoint tenant) {
+		return new RuntimeSnapshot(observedAt, windowFrom, windowTo, pricingConfigured, unpricedModels,
+				reconcileGap, stepLevelTokens, runLevelTokens, runsWithoutSteps,
+				tenant.promptTokens(), tenant.cachedPromptTokens(),
+				consecutiveEmptyRetrievals, lastIndexSize, retrievalCalls,
+				canary, tenantCaches, tenantShare);
 	}
 
 }
