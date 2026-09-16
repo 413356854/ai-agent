@@ -62,7 +62,30 @@ const EXPECT_REFLECTION = process.env.CHECK_EXPECT_REFLECTION !== '0'
 const SHOT_DIR = 'ui-check-out'
 mkdirSync(SHOT_DIR, { recursive: true })
 
-const browser = await chromium.launch({ channel: 'chrome' })
+/**
+ * 用哪个浏览器内核。
+ *
+ * <h2>为什么默认是系统 Chrome，而不是 Playwright 自带的 chromium</h2>
+ * 本机踩过：`ms-playwright` 里的内核版本与当前 playwright 不匹配，
+ * 直接 `launch()` 会报 `Executable doesn't exist` —— 那是环境问题，
+ * 却看起来像"界面自检跑不起来"。用系统已装的 Chrome 省掉了
+ * "为了截一张图下载 100MB 内核"这件事（踩坑库 #25）。
+ *
+ * <h2>为什么它必须是可配的（阶段四第 4 件）</h2>
+ * 因为 `chrome` 这个默认值**只在开发者本机成立**：干净 CI 容器里没有 Chrome，
+ * 有的是 `npx playwright install chromium` 装下来的那个内核。
+ * 写死 `chrome` 的后果很具体：**门禁在 CI 上永远红，且红的原因与代码无关** ——
+ * 而那正是让人开始习惯性忽略门禁的第一步（不是删掉它，而是不再看它）。
+ *
+ * <p>用法：CI 里设 `CHECK_BROWSER_CHANNEL=chromium` 并先跑
+ * `npx playwright install --with-deps chromium`；本机什么都不用设。
+ */
+const BROWSER_CHANNEL = process.env.CHECK_BROWSER_CHANNEL ?? 'chrome'
+// 传 `undefined` 与传 `'chromium'` 不是一回事：前者让 Playwright 用自带的默认内核，
+// 后者是一个**名为 chromium 的频道**。这里用条件展开，避免把两者混起来
+const browser = await chromium.launch(
+  BROWSER_CHANNEL === 'chromium' ? {} : { channel: BROWSER_CHANNEL },
+)
 const page = await browser.newPage({ viewport: { width: 1100, height: 900 } })
 
 const consoleErrors = []
@@ -148,7 +171,12 @@ await page.goto(URL, { waitUntil: 'networkidle' })
 console.log('[2] 流式模式')
 await box().fill('你好')
 await box().press('Enter')
-await page.waitForTimeout(2500)
+// 同样从"固定 sleep + 毫秒级等待"改成"轮询等结果"（理由见下面 [3] 那一段长注释）。
+// ⚠️ 但这里的**语义要保住**：这一节验的是"流式回答能渲染"，
+// 而不是"回答渲染得足够快"。所以先等它出现，再给一小段稳定时间让增量收尾 ——
+// 两件事分开写，比把它们混在一个 waitForTimeout 里更经得起负载变化
+await waitFor(async () => (await page.locator('.caret, .markdown').count()) > 0, 20000)
+await page.waitForTimeout(500)
 const hasCaret = (await page.locator('.caret, .markdown').count()) > 0
 expect('流式回答已渲染', hasCaret)
 const streamBody = await page.locator('.message-list').innerText()
@@ -161,7 +189,31 @@ await page.waitForTimeout(300)
 await box().fill('SSE 是什么？')
 await box().press('Enter')
 await page.locator('.structured-card').first().waitFor({ state: 'visible', timeout: 30000 })
-await page.waitForTimeout(1200)
+
+// 【★ 这里必须等"数据到了"，而不是等一个固定时长 —— 实测踩到，值得记】
+//
+// 原来写的是 `await page.waitForTimeout(1200)` 然后直接读 `.structured-card .ant-tag`。
+// 那个写法在**空载**时永远够（mock 是瞬时返回），但在 CI 上翻过车：
+// 结构化自检整段超时，报的是
+//     locator.innerText: Timeout 30000ms exceeded
+//     waiting for locator('.structured-card .ant-tag').first()
+// 而**同一个自检单独跑三遍全过** —— 典型的"只在有负载时才红"。
+//
+// 根因有两层，第二层才是关键：
+//   ① `.structured-card` 这个**容器**在提交的瞬间就渲染出来了（那是骨架），
+//      所以上面那句 `waitFor({state:'visible'})` 通过得毫无意义 ——
+//      它证明的是"卡片在"，不是"数据到了"。**"容器在"不等于"内容在"**
+//      （与踩坑 #71 那条"卡片在不等于列表有行"是同一个形状）；
+//   ② 于是唯一的同步机制就是那 1200ms 的固定 sleep，而它在机器忙时不够。
+//
+// 修法用本项目已有的 `waitFor` 轮询助手：快的时候立刻继续、慢的时候一直等，
+// 而不是"赌一个时长"。**"等一个固定时长"在慢操作上一定会有一个环境是错的**
+// （这正是踩坑 #39 的教训，第十三轮又在别处踩了一次）。
+const structuredReady = await waitFor(
+  async () => (await page.locator('.structured-card .ant-tag').count()) > 0,
+  20000,
+)
+expect('结构化卡片等到了数据（而不是只有空骨架）', structuredReady)
 
 const badge = (await page.locator('.structured-card .ant-tag').first().innerText()).trim()
 expect('徽标显示轮次与回灌', /轮/.test(badge), badge)
@@ -594,20 +646,58 @@ await page.waitForTimeout(900)
 // 这不是把断言放宽，而是**顺序本来就有依赖** —— 之前没暴露是因为那时假后端只有一条轨迹。
 
 // —— 历史运行列表 ——
-const runsCard = page.locator('.diag-card', { hasText: '历史运行' }).first()
+//
+// ⚠️ 这里用的是**精确标题**而不是 hasText 子串匹配，理由是一个实测踩到的真问题：
+// `'历史运行'` / `'运行详情'` 这类短串会被**后来新增的卡片**意外命中。
+// 第十三轮加了"五层 trace"卡之后，标题写的是
+// 「五层 trace：会话 → 运行 → LLM 调用 → 工具调用 → 检索」——
+// 它**不含** '运行详情'，所以这次没踩到；但同一类匹配在别的短串上就会踩到
+// （例如如果哪天有卡片的标题里出现"详情"二字）。
+// 用 `^历史运行` 这种锚定前缀，让"匹配到一张意料之外的卡"变成**不会静默发生**的事。
+const runsCard = page.locator('.diag-card').filter({ has: page.locator('.ant-card-head-title', { hasText: /^历史运行/ }) }).first()
 expect('历史运行卡片存在', (await runsCard.count()) > 0)
-if ((await runsCard.count()) > 0) {
-  await runsCard
-    .locator('.ant-table-tbody tr')
-    .first()
-    .waitFor({ state: 'visible', timeout: 30000 })
-    .catch(() => {})
-  await page.waitForTimeout(300)
-  const runsText = (await runsCard.innerText()).trim()
-  // 刚刚跑过的那次一定在列表里（两条路径都成立：它就在这一次自检里跑出来的）
-  expect('列出了刚刚跑过的任务', /Agent 工具调用面板|分块策略的结论是什么/.test(runsText))
 
-  if (EXPECT_REFLECTION) {
+if ((await runsCard.count()) > 0) {
+  /*
+    【★ 这一节按"有没有数据"分岔，而不是硬断言"至少有 1 行" —— 实测踩到，值得记】
+
+    第一版在这里写的是"等到 tbody 里有行（最多等 20 秒）"，跑真后端时红了：
+        ✗ 历史运行列表里至少有 1 行 — 实际 0 行
+    而**那是环境，不是缺陷**：真后端用的是内存库（`ai.jdbc:h2:mem:`），
+    一个刚起来的进程里一条运行都没有是**完全正常**的。
+    列表为空时页面显示空状态，那也是对的。
+
+    这与本节下面那条"刚刚跑过的任务"是同一个毛病（踩坑 #90 / #80）：
+    **断言越界去测了别人的职责** ——「库里有数据」取决于这次自检有没有成功跑过 `/ask`，
+    而假 key 下必然 401；这一节（历史运行列表）自己负责任的性质只有两条：
+      ① 卡片渲染出来了；
+      ② **有数据时，数据能被渲染出来**。
+    ② 是条件断言，条件就是"确实有数据"。
+
+    ⚠️ 关键是把"没数据所以跳过"这件事**显式说出来**：静默跳过与通过长得一样，
+    而"一个从未执行过的断言与一个永远通过的断言，在任何观测上都相同"（踩坑 #90）。
+  */
+  const hasRows = await waitFor(async () => (await runsCard.locator('.ant-table-tbody tr').count()) > 0, 5000)
+  if (!hasRows) {
+    console.log('    （历史运行列表是空的 —— 真后端的内存库重启后本来就没有数据，' +
+      '所以本节只验证"卡片渲染出来了"，不验证行内容。这**不是**跳过一条断言，' +
+      '而是这一节对"库里有数据"这件事本来就没有主张）')
+  }
+  const runsText = (await runsCard.innerText()).trim()
+  expect('历史运行卡片渲染出了内容（空状态也要有说明）', runsText.length > 5, `${runsText.length} 字符`)
+
+  if (hasRows && EXPECT_REFLECTION) {
+    // 【"刚刚跑过的任务在列表里"只在假后端路径上成立】
+    // 原来这条是本节的共用断言，写的是 `/Agent 工具调用面板|分块策略的结论是什么/` ——
+    // 而那个问题是**假数据里写死的**，真后端上永远不会有。
+    // 实测：真后端路径上它确实红了（那次恰好列表非空，于是断言真的执行了）。
+    //
+    // 这与踩坑 #80 是同一个毛病：**断言越界去测了别人的职责** ——
+    // 「列表里有**这一次**刚跑出来的任务」不是 §6.6 这一节能保证的事
+    // （它取决于 `/ask` 有没有成功落库，而假 key 下必然 401）。
+    // 假后端里那份历史是固定的，所以在那里做这条内容断言才有确定性。
+    expect('列出了刚刚跑过的任务（假数据里有那条固定问题）',
+      /Agent 工具调用面板|分块策略的结论是什么/.test(runsText))
     // 假后端给了一份"包含各种结局"的历史，所以这些状态标签都能验证
     expect('显示了状态标签', /已回答/.test(runsText))
     // **等待恢复的提示必须显眼**：默认配置不会自动恢复，不说的话那些运行会一直躺着没人管，

@@ -47,6 +47,31 @@
 		  （Tika 那次是 4.0.0 在 Central 上只有 pom 没有 jar，见下方 dependency 的注释）。
 		-->
 		<h2.version>2.3.232</h2.version>
+		<!--
+		  【阶段四第 4 件：评测接入 CI】源码与**测试输出**都用 UTF-8。
+
+		  为什么输出编码也必须钉：这个项目的台账、报告、断言信息**全是中文**，
+		  而 Maven 的 stdout 默认跟随**平台编码**（本机 Windows 上是 GBK）。
+		  后果不是"字乱码而已"，而是很具体的一类误判：
+		    · CI 日志里那句失败原因读不出来 → 人只会看到 "BUILD FAILURE"；
+		    · 本机却正常（控制台恰好能显示），于是**只有 CI 上读不到**，
+		      而 CI 恰恰是这条信息唯一的读者。
+		  实测：`mvn test` 的中文报告在日志里是乱码，而同一个字符串写进 UTF-8 文件是好的。
+
+		  ⚠️ 它与 `-Dfile.encoding` 是**两个不同的开关**，两个都要：
+		  `project.build.sourceEncoding` 管编译期（源码里有中文注释与中文字符串字面量），
+		  下面 surefire 的 `argLine` 管运行期（`System.out` 的编码）。
+		  只配一个的话，另一半照样乱码 —— 而乱码的那一半看起来"只是显示问题"，很容易被放过。
+		-->
+		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+		<project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+		<!--
+		  给测试 JVM 也定住编码。
+		  ⚠️ Java 18 起 `file.encoding` 默认是 UTF-8，但 **`stdout.encoding` 跟随控制台**，
+		  所以只写 file.encoding 不够 —— 这一点在 JDK 19+ 上尤其容易漏（JEP 400 只动了前者）。
+		  两个都写上，且与 CI 的 locale 无关。
+		-->
+		<test.stdout.encoding>UTF-8</test.stdout.encoding>
 	</properties>
 	<dependencies>
 		<!--
@@ -358,6 +383,20 @@
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
+			</plugin>
+			<!--
+			  【阶段四第 4 件】给测试 JVM 显式定编码。
+
+			  没有这一段时，测试里 `System.out.println("中文…")` 的输出会按**平台编码**编码，
+			  在 Windows 上变成乱码写进 surefire 报告 —— 而那正是失败原因所在的那几行。
+			  也就是：**最需要被读懂的信息，恰好是唯一会被编码破坏的信息。**
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<argLine>-Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8</argLine>
+				</configuration>
 			</plugin>
 		</plugins>
 	</build>

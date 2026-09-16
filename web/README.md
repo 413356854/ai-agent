@@ -29,6 +29,15 @@ pnpm dev:mock       # 终端 B：前端代理指向假后端
 
 ## 界面自检（浏览器真跑一遍）
 
+> **推荐先试一条命令**（第十四轮起）：从仓库根目录跑
+> ```bash
+> node scripts/ci.mjs --with-ui          # 自己起假后端与 vite，把自检连跑两遍
+> node scripts/ci.mjs --with-ui --with-real-ui   # 再加真后端路径（需 8080 先起后端）
+> ```
+> 它会自己管服务生命周期（起、等就绪、任何退出路径都清理），
+> 所以**不必**手工开两个终端。下面那几条手工命令仍然有效，适合只想单独跑界面自检的时候。
+> 完整说明（含"它不回答什么"）见 `docs/CI回归门禁.md`。
+
 ```bash
 pnpm mock           # 终端 A（或先起真后端）
 pnpm dev            # 终端 B
@@ -45,14 +54,32 @@ CHECK_EXPECT_REFLECTION=0 UI_URL=http://127.0.0.1:5199 pnpm check:ui
 假后端里那些结果是写死的，断言才有确定性；真实模型没有"必然回灌""必然降级"的输入，
 硬断言必然误报。降级路径由后端单测覆盖（`StructuredChatServiceImplTest#fallsBackAfterExhaustingAttempts`）。
 
+### 用哪个浏览器内核（`CHECK_BROWSER_CHANNEL`）
+
+默认 `chrome`（用系统已装的 Chrome，理由见踩坑库 #25：本机 Playwright 自带的
+chromium 内核版本对不上，直接 launch 会报 `Executable doesn't exist`）。
+
+⚠️ **在 CI 上必须设成 `chromium`**，并先装内核：
+
+```bash
+npx playwright install --with-deps chromium
+CHECK_BROWSER_CHANNEL=chromium node scripts/ci.mjs --with-ui
+```
+
+不设的话它会去找系统 Chrome，而干净的 runner 上没有 ——
+失败信息是 `Executable doesn't exist`，**看起来像"界面坏了"，其实是环境问题**。
+（这个开关是第十四轮加的：在那之前频道是写死的 `chrome`，
+而那意味着这道门禁**在 CI 上永远红** —— 一道"红的原因与代码无关"的门禁，
+几次之后就会被加进忽略列表，那时它保护的东西就悄悄没了。）
+
 ### 两条路径为什么条数不同、以及各验的是什么
 
 **实测（第十三轮，2026-09-17）**：
 
 | 路径 | 实际执行 |
 |---|---|
-| 假后端（默认） | **281 项，全过**，控制台干净 |
-| 真后端（`CHECK_EXPECT_REFLECTION=0`） | **180 项执行，179 过**（唯一那条红是"流式回答已渲染"—— 真后端需要真 key，与本轮改动无关） |
+| 假后端（默认） | **283 项，全过**，控制台干净 |
+| 真后端（`CHECK_EXPECT_REFLECTION=0`） | **182 项执行，181 过**（唯一那条红是"流式回答已渲染"—— 真后端需要真 key，与本轮改动无关） |
 
 > 上一轮（第十二轮）是 253 / 170，而**那一次两条路径都是全过**。
 > 真后端那条红是既有的：假 key 一律 401，流式回答自然没有内容。
