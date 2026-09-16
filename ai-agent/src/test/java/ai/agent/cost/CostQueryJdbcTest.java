@@ -73,12 +73,12 @@ class CostQueryJdbcTest {
 	private String seedRichRun(String intent, String model, int promptPerStep, int cachedPerStep, int completion,
 			RunStatus status, AgentStopReason stopReason) {
 		String runId = UUID.randomUUID().toString();
-		store.start(runId, "问题 " + runId, properties.node(), intent);
+		store.start(new AgentRunStore.Start(runId, "问题 " + runId, properties.node(), intent, null));
 		for (int step = 1; step <= 2; step++) {
 			store.recordToolCall(new AgentRunRecord.ToolCallRecord(runId, step, 0, "call_" + step,
 					step == 1 ? "search_docs" : "read_section", "{}", "OK", "回填", 10L));
 			store.checkpoint(new AgentRunRecord.StepCheckpoint(runId, step, "{\"messages\":[]}", "思考" + step,
-					promptPerStep, completion, 100L, cachedPerStep, model));
+					promptPerStep, completion, 100L, cachedPerStep, model, ""));
 		}
 		// 第 3 次工具调用：一次执行异常（用于验证"失败数按 stage 归因"）
 		store.recordToolCall(new AgentRunRecord.ToolCallRecord(runId, 2, 1, "call_x", "search_docs", "{}",
@@ -91,7 +91,7 @@ class CostQueryJdbcTest {
 	/** 造一次"一步都没有"的运行（死在第一步之前，例如鉴权失败）。 */
 	private String seedEmptyRun(String intent) {
 		String runId = UUID.randomUUID().toString();
-		store.start(runId, "空运行", properties.node(), intent);
+		store.start(new AgentRunStore.Start(runId, "空运行", properties.node(), intent, null));
 		store.finish(runId, RunStatus.FAILED, AgentStopReason.MODEL_ERROR, null, 0, 0, 5L, "鉴权失败", null);
 		return runId;
 	}
@@ -230,8 +230,8 @@ class CostQueryJdbcTest {
 	@DisplayName("按工具分桶：失败数只算 EXECUTION_ERROR，被拒/解析错/未知工具各自单列")
 	void toolBreakdownSeparatesFailureKinds() {
 		String runId = UUID.randomUUID().toString();
-		store.start(runId, "工具归因", properties.node(), "工具-" + UUID.randomUUID());
-		store.checkpoint(new AgentRunRecord.StepCheckpoint(runId, 1, "{}", "t", 10, 10, 1L, 0, "m"));
+		store.start(new AgentRunStore.Start(runId, "工具归因", properties.node(), "工具-" + UUID.randomUUID(), null));
+		store.checkpoint(new AgentRunRecord.StepCheckpoint(runId, 1, "{}", "t", 10, 10, 1L, 0, "m", ""));
 		store.recordToolCall(new AgentRunRecord.ToolCallRecord(runId, 1, 0, "c1", "search_docs", "{}", "OK", "", 1L));
 		store.recordToolCall(new AgentRunRecord.ToolCallRecord(runId, 1, 1, "c2", "search_docs", "{}",
 				"VALIDATION_ERROR", "", 1L));

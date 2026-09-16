@@ -6,6 +6,7 @@ import ai.agent.rag.retrieve.LexicalRetriever;
 import ai.agent.rag.retrieve.RetrievalHit;
 import ai.agent.tool.AgentTool;
 import ai.agent.tool.AgentToolResult;
+import ai.agent.tool.RetrievalTrace;
 import ai.agent.tool.model.AgentToolDefinition;
 import ai.agent.tool.model.ToolHints;
 import jakarta.validation.constraints.Max;
@@ -32,6 +33,14 @@ import java.util.List;
  * think → act → observe 三步里，它的返回值就是 observe。
  * 所以这里的返回文本是<b>给人读的</b>（带标题路径、带片段的开头），而不是抽象结构 ——
  * 模型要拿它去判断"够不够回答用户的问题"，字段名对判断没有帮助。
+ *
+ * <p><b>但"给人读的"有两个读者，而它们的需要不一样</b>（阶段四第 2 件加的那一半）：
+ * 模型读的是段落文本（它只需要判断相关性），而排查的人需要的是
+ * <b>名次、来源文档、标题路径、每块 token、得分</b> —— 那些塞进文本里只会白占模型的上下文。
+ * 所以一次检索现在产出两份东西：文本给模型（{@code payload}），
+ * 明细给人与 trace（{@link RetrievalTrace}）。两者由同一次检索产出，
+ * 所以"页面显示的命中"与"模型看到的命中"结构上不可能不一致。
+ * <p>⚠️ 明细<b>不进模型上下文</b>：它不占 token，也不该被模型读到（那是另一个决定）。
  *
  * <h2>两个刻意的取舍</h2>
  * <ol>
@@ -92,21 +101,35 @@ public class SearchDocsTool implements AgentTool<SearchDocsTool.Params> {
 
 	@Override
 	public AgentToolResult invoke(Params parameters) {
+		long startedAt = System.nanoTime();
 		List<Chunk> chunks = evaluationService.chunkCorpus("structural");
 		LexicalRetriever retriever = new LexicalRetriever();
 		retriever.index(chunks);
 
 		int topK = parameters.topK() == null ? DEFAULT_TOP_K : parameters.topK();
 		List<RetrievalHit> hits = retriever.retrieve(parameters.query(), topK);
-		log.info("search_docs query=\"{}\" topK={} 命中={} 索引块数={}", parameters.query(), topK, hits.size(),
-				chunks.size());
+		long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000;
+		log.info("search_docs query=\"{}\" topK={} 命中={} 索引块数={} elapsed={}ms", parameters.query(), topK,
+				hits.size(), chunks.size(), elapsedMs);
 
+		// 【阶段四 trace 的「检索」那一层：同一次检索，产出两份东西】
+		//   ① 文本（下面那个 sb）：给**模型**看 —— 它要判断"够不够回答问题"，字段名帮不上忙；
+		//   ② 明细（RetrievalTrace）：给**人**看 —— 名次、来源文档、标题路径、每块 token、得分。
+		// 两者**由同一次检索产出**，所以不可能出现"页面显示的命中"与"模型看到的命中"不一致。
+		// 这正是这一层要防的事：如果明细是事后从文本里解析出来的，那两份就已经是两件事了。
 		if (hits.isEmpty()) {
 			// 空结果是正常结果 → Success，不是 Failure。
 			// 但"下一步怎么办"必须写出来，否则模型会原样重试（见类注释）
-			return AgentToolResult.ok(
+			//
+			// 【空结果同样要带明细，而且这里是最需要它的一次】
+			// "0 条命中"有两种完全相反的成因：索引是空的（环境问题，该修部署），
+			// 还是索引有 516 块但没匹配上（语料/查询词问题，该改问法）。
+			// 只有把 indexSize 与 query 一起落下来，事后才分得清是哪一种 ——
+			// 而只留一段文本的话，两者在页面上长得一模一样。
+			return AgentToolResult.Success.withRetrieval(
 					"在 %d 个文档片段里没有找到与「%s」相关的内容。\n建议：换用更宽泛的关键词、或改用文档里可能出现的同义词再试一次。"
-							.formatted(chunks.size(), parameters.query()));
+							.formatted(chunks.size(), parameters.query()),
+					RetrievalTrace.empty(parameters.query(), topK, chunks.size(), elapsedMs));
 		}
 
 		StringBuilder sb = new StringBuilder();
@@ -118,7 +141,8 @@ public class SearchDocsTool implements AgentTool<SearchDocsTool.Params> {
 			sb.append("    来源：%s  估算 %d token\n".formatted(chunk.documentId(), chunk.tokenCount()));
 			sb.append("    内容：%s\n".formatted(excerpt(chunk.text())));
 		}
-		return AgentToolResult.ok(sb.toString().strip());
+		return AgentToolResult.Success.withRetrieval(sb.toString().strip(),
+				RetrievalTrace.of(parameters.query(), topK, chunks.size(), hits, elapsedMs));
 	}
 
 	/**

@@ -180,6 +180,309 @@ function detailFromScript(runId, question, overrides = {}) {
   }
 }
 
+/**
+ * 五层 trace 的假数据（阶段四第 2 件）。
+ *
+ * <h2>形状必须与 `AgentTraceView.of()` **逐字段一致**</h2>
+ * 这是这个文件里反复吃过亏的一条（见 `/runs/{id}` 那段关于 `approvals` 层级的注释）：
+ * 形状不一致的假数据比没有假数据更坏 —— 自检会红在一个与真实代码无关的地方，
+ * 而排查方向会跑到组件上去。
+ *
+ * <h2>刻意造出的三件事（都是这一件要证明的性质）</h2>
+ * <ol>
+ *   <li><b>一次检索 + 五条命中</b>：第 3 步那次 search_docs 后面挂着真实形状的命中明细
+ *       （名次 / 块 id / 来源 / 标题路径 / 每块 token / 得分 / 摘录）——
+ *       界面"检索那一层"有没有画出来，靠它验证；</li>
+ *   <li><b>一次 0 命中的检索</b>：第 1 步那次查了个不存在的词。0 条是**正常结果**，
+ *       但界面必须把它显示成"这次没查到"，而不是"这一块没有数据" ——
+ *       两者对排查的人含义完全相反；</li>
+ *   <li><b>一条只列文档、不检索的运行</b>（第 4 步）：那一层为空且 `expected=false`。
+ *       界面必须说"这次运行没有检索"，而不是画一个空的表格让人以为漏记了。</li>
+ * </ol>
+ */
+function traceFromScript(runId, known) {
+  const isFailed = known && known.status === 'FAILED'
+  const isStopped = known && known.status === 'STOPPED'
+  const isInterrupted = known && known.status === 'INTERRUPTED'
+
+  /* 会话里共 3 次运行，且必须有一条 current=true —— 界面靠它标出"你在看哪一次" */
+  const conversationId = 'conv-mock-0001'
+  const conversationRuns = [
+    { id: 'run-demo-0003', question: 'token 预算的系数怎么校准的？', status: 'ANSWERED', stopReason: 'ANSWERED', totalTokens: 5108, createdAt: '2026-09-15T21:38:02', current: false },
+    { id: 'run-demo-0004', question: '分块策略的结论是什么？', status: 'ANSWERED', stopReason: 'ANSWERED', totalTokens: 7234, createdAt: '2026-09-15T21:40:12', current: false },
+    { id: 'run-demo-0005', question: '那个自相矛盾的地方是哪一处？', status: 'ANSWERED', stopReason: 'ANSWERED', totalTokens: 3110, createdAt: '2026-09-15T21:42:30', current: false },
+  ].map(r => ({ ...r, current: r.id === runId }))
+  // 被查的那个运行也要出现在会话里 —— 否则"我在看的那次"标不出来
+  if (!conversationRuns.some(r => r.current)) {
+    conversationRuns.push({
+      id: runId,
+      question: (known && known.question) || '（未命名运行）',
+      status: (known && known.status) || 'RUNNING',
+      stopReason: (known && known.stopReason) || '',
+      totalTokens: (known && known.totalTokens) || 0,
+      createdAt: (known && known.createdAt) || '2026-09-15T21:44:00',
+      current: true,
+    })
+  }
+
+  const retrievalCallStep3 = {
+    stepIndex: 3,
+    callIndex: 0,
+    toolName: 'search_docs',
+    query: '分块策略 结论',
+    topK: 3,
+    hitCount: 3,
+    indexSize: 516,
+    hitTokens: 612,
+    elapsedMs: 47,
+    shortOfTopK: false,
+    hits: [
+      {
+        rank: 1,
+        chunkId: 'ledger-progress.md#41',
+        documentId: 'ledger-progress.md',
+        breadcrumb: '学习进度台账 > 二·六、阶段二 · 块大小对齐实验',
+        tokenCount: 203,
+        score: 14.8271,
+        excerpt: '块大小对齐之后，结论反了：结构分块并没有"更省 token"的优势，那个优势来自"它的块更小"……',
+      },
+      {
+        rank: 2,
+        chunkId: 'ledger-progress.md#44',
+        documentId: 'ledger-progress.md',
+        breadcrumb: '学习进度台账 > 二·六、阶段二 · 实测主表',
+        tokenCount: 218,
+        score: 11.2309,
+        excerpt: '两组平均块都到 ~203 token（差 0.39）后：Recall@5 0.7907 vs 0.7442、MRR 0.6347 vs 0.5244……',
+      },
+      {
+        rank: 3,
+        chunkId: 'route-java.md#12',
+        documentId: 'route-java.md',
+        breadcrumb: 'Java 开发者转型路线 > 阶段二 · RAG',
+        tokenCount: 191,
+        score: 8.6644,
+        excerpt: '重点在「定位问题」而非「跑通 Demo」—— 没有对照组的"语义分块更好"只是一句信仰……',
+      },
+    ],
+  }
+
+  /* 第 1 步那次 0 命中的检索：query / indexSize 都在，hits 是空数组 */
+  const retrievalCallStep1Empty = {
+    stepIndex: 1,
+    callIndex: 1,
+    toolName: 'search_docs',
+    query: 'qqzzxxvvjwkp',
+    topK: 3,
+    hitCount: 0,
+    indexSize: 516,
+    hitTokens: 0,
+    elapsedMs: 12,
+    shortOfTopK: true,
+    hits: [],
+  }
+
+  const steps = [
+    {
+      stepIndex: 1,
+      thoughtText: '先把工具名记错的教训用上：查一个不存在的词看看它会不会自己纠偏。',
+      promptTokens: 1520,
+      completionTokens: 44,
+      totalTokens: 1564,
+      cacheReadTokens: 1200,
+      modelName: 'deepseek-flash',
+      elapsedMs: 1180,
+      promptFingerprint: 'v3:9ab12cd34ef5',
+      transcriptChars: 1630,
+      toolCalls: [
+        {
+          callIndex: 0,
+          callId: 'call_1_0',
+          toolName: 'doc_search',
+          arguments: '{"query":"分块策略"}',
+          stage: 'UNKNOWN_TOOL',
+          countsAsToolFailure: false,
+          elapsedMs: 1,
+          feedback: '工具调用被拒绝：没有名为「doc_search」的工具。\n可用工具：list_documents、read_section、search_docs',
+          retrievals: [],
+        },
+        {
+          callIndex: 1,
+          callId: 'call_1_1',
+          toolName: 'search_docs',
+          arguments: '{"query":"qqzzxxvvjwkp","topK":3}',
+          stage: 'OK',
+          countsAsToolFailure: false,
+          elapsedMs: 12,
+          feedback: '在 516 个文档片段里没有找到与「qqzzxxvvjwkp」相关的内容。\n建议：换用更宽泛的关键词、或改用文档里可能出现的同义词再试一次。',
+          retrievals: [retrievalCallStep1Empty],
+        },
+      ],
+      retrievalCalls: [retrievalCallStep1Empty],
+      retrievalCount: 1,
+      retrievalHitTokens: 0,
+    },
+    {
+      stepIndex: 2,
+      thoughtText: '这个查询词太窄了，换成文档里会出现的说法再查一次。',
+      promptTokens: 1880,
+      completionTokens: 61,
+      totalTokens: 1941,
+      cacheReadTokens: 1500,
+      modelName: 'deepseek-flash',
+      elapsedMs: 1920,
+      promptFingerprint: 'v3:9ab12cd34ef5',
+      transcriptChars: 2490,
+      toolCalls: [
+        {
+          callIndex: 0,
+          callId: 'call_2_0',
+          toolName: 'read_section',
+          arguments: '{"documentId":"ledger-progress.md","section":"二·六"}',
+          stage: 'OK',
+          countsAsToolFailure: false,
+          elapsedMs: 3,
+          feedback: '【工具「read_section」的返回结果】已读取 ledger-progress.md 的「二·六、阶段二 · 块大小对齐实验」一节。',
+          retrievals: [],
+        },
+      ],
+      retrievalCalls: [],
+      retrievalCount: 0,
+      retrievalHitTokens: 0,
+    },
+    {
+      stepIndex: 3,
+      thoughtText: '工具名记错了，改成 search_docs 再查一次。',
+      promptTokens: 2040,
+      completionTokens: 58,
+      totalTokens: 2098,
+      cacheReadTokens: 1700,
+      modelName: 'deepseek-flash',
+      elapsedMs: 1860,
+      promptFingerprint: 'v3:9ab12cd34ef5',
+      transcriptChars: 3120,
+      toolCalls: [
+        {
+          callIndex: 0,
+          callId: 'call_3_0',
+          toolName: 'search_docs',
+          arguments: '{"query":"分块策略 结论","topK":3}',
+          stage: 'OK',
+          countsAsToolFailure: false,
+          elapsedMs: 47,
+          feedback: '在 516 个文档片段里找到 3 条相关内容（按相关度排序）：\n\n[1] 章节：学习进度台账 > 二·六、阶段二 · 块大小对齐实验',
+          retrievals: [retrievalCallStep3],
+        },
+      ],
+      retrievalCalls: [retrievalCallStep3],
+      retrievalCount: 1,
+      retrievalHitTokens: 612,
+    },
+    {
+      stepIndex: 4,
+      thoughtText: '',
+      promptTokens: 2240,
+      completionTokens: 156,
+      totalTokens: 2396,
+      cacheReadTokens: 1900,
+      modelName: 'deepseek-flash',
+      elapsedMs: 2380,
+      promptFingerprint: 'v3:9ab12cd34ef5',
+      transcriptChars: 4180,
+      toolCalls: [],
+      retrievalCalls: [],
+      retrievalCount: 0,
+      retrievalHitTokens: 0,
+    },
+  ]
+
+  // 被上限拦下 / 失败 / 中断的运行：把 trace 截到它真正跑到的那一步 ——
+  // 【这一步很重要】一个"停在第 2 步"的运行如果在假数据里显示 4 步，
+  // 自检就会以为界面读错了数据，而真相是假数据不自洽
+  const visibleSteps = isInterrupted ? steps.slice(0, 1) : isStopped ? steps.slice(0, 2) : isFailed ? steps.slice(0, 2) : steps
+  const retrievals = visibleSteps.flatMap(s => s.retrievalCalls)
+  const hitTokens = retrievals.reduce((sum, r) => sum + r.hitTokens, 0)
+  const hitCount = retrievals.reduce((sum, r) => sum + r.hitCount, 0)
+  const promptTokens = visibleSteps.reduce((sum, s) => sum + s.promptTokens, 0)
+
+  return {
+    ok: true,
+    run: {
+      id: runId,
+      question: (known && known.question) || '（未命名运行）',
+      status: (known && known.status) || 'ANSWERED',
+      stopReason: (known && known.stopReason) || 'ANSWERED',
+      failureCause: (known && known.failureCause) || '',
+      failureAdvice: '',
+      finalAnswer: known && known.status === 'ANSWERED' ? '块大小对齐之后的结论是：固定字数硬切全面占优。' : '',
+      totalTokens: (known && known.totalTokens) || 7234,
+      toolCalls: (known && known.toolCalls) || 3,
+      elapsedMs: (known && known.elapsedMs) || 7402,
+      node: 'local',
+      intent: '文档问答',
+      createdAt: (known && known.createdAt) || '2026-09-15T21:40:12',
+      updatedAt: '2026-09-15T21:40:19',
+    },
+    conversation: {
+      present: true,
+      id: conversationId,
+      runCount: conversationRuns.length,
+      truncated: false,
+      runs: conversationRuns,
+    },
+    steps: visibleSteps,
+    retrieval: {
+      calls: retrievals.length,
+      hitCount,
+      hitTokens,
+      hitTokensEstimated: true,
+      emptyCalls: retrievals.filter(r => r.hitCount === 0).length,
+      steps: visibleSteps.length,
+      promptTokensForShare: promptTokens,
+      shareOfPrompt: promptTokens === 0 ? 0 : Math.round((hitTokens * 10000) / promptTokens) / 10000,
+      note: 'hitTokens 是估算的（来自块自带的估算器计数），与成本看板那边「来自上游 usage」的 token 不是同一个口径。',
+    },
+    cost: {
+      // 【刻意的默认态】价格表在本项目里默认是空的 —— 所以这里 `amount` 必须是 null，
+      // 而不是 0。假数据里写一个数字的话，那面"算不出来就显示算不出"的红旗
+      // 就永远不会被自检看到，而它恰恰是成本那一块最重要的一条纪律
+      pricingConfigured: false,
+      currency: 'CNY',
+      uncachedPromptTokens: promptTokens - visibleSteps.reduce((s, x) => s + x.cacheReadTokens, 0),
+      cachedPromptTokens: visibleSteps.reduce((s, x) => s + x.cacheReadTokens, 0),
+      completionTokens: visibleSteps.reduce((s, x) => s + x.completionTokens, 0),
+      totalTokens: promptTokens + visibleSteps.reduce((s, x) => s + x.completionTokens, 0),
+      byModel: {
+        'deepseek-flash': {
+          model: 'deepseek-flash',
+          uncachedPromptTokens: promptTokens - visibleSteps.reduce((s, x) => s + x.cacheReadTokens, 0),
+          cachedPromptTokens: visibleSteps.reduce((s, x) => s + x.cacheReadTokens, 0),
+          completionTokens: visibleSteps.reduce((s, x) => s + x.completionTokens, 0),
+          amount: null,
+          amountMicros: null,
+          amountReason: '没有匹配的价格规则（model=deepseek-flash）—— 在 ai.cost.prices 里补一条',
+        },
+      },
+      unpricedModels: ['deepseek-flash'],
+      amount: null,
+      amountMicros: null,
+      amountReason: '价格未配置（ai.cost.prices 是空的）—— 这里刻意不显示 0：0 会被读成「这次不花钱」，而真相是「我们不知道它花多少」',
+    },
+    approvals: [],
+    layers: [
+      { index: 1, name: '会话', key: 'conversation', storage: 'agent_run.conversation_id', expected: true },
+      { index: 2, name: '轮次 / 运行', key: 'run', storage: 'agent_run', expected: true },
+      { index: 3, name: 'LLM 调用', key: 'step', storage: 'agent_step', expected: visibleSteps.length > 0 },
+      { index: 4, name: '工具调用', key: 'toolCall', storage: 'agent_tool_invocation', expected: visibleSteps.some(s => s.toolCalls.length > 0) },
+      { index: 5, name: '检索', key: 'retrieval', storage: 'retrieval_call + retrieval_hit', expected: retrievals.length > 0 },
+    ],
+    notes: [
+      '提示词指纹形如 v3:9ab12cd34ef5 —— 版本号是「指针」、指纹是「内容」。',
+      '检索明细里的 token 是估算的（块自带的估算器计数），用来回答「RAG 大概占了输入多大一块」。',
+    ],
+  }
+}
+
 /** 最近几次运行（含一条被中断的 —— 那是"等恢复"提示的触发条件） */
 const RUNS = [
   {
@@ -656,6 +959,24 @@ export function handleAgentRoutes(req, res, url, json) {
       // 1 条 INTERRUPTED —— 界面上那条"等待恢复"的告警靠它触发
       awaitingRecovery: 1,
     })
+    return true
+  }
+
+  /*
+    ⚠️ 这一条必须在下面那条更宽的 `startsWith('/api/agent/runs/')` 之前 ——
+    否则 `runId` 会变成 `${id}/trace`，详情端点收到一个带斜杠的 id。
+    与 `/approvals` 那一条是同一条规矩（见函数头注释）。
+  */
+  if (req.method === 'GET' && pathname.endsWith('/trace') && pathname.startsWith('/api/agent/runs/')) {
+    const runId = decodeURIComponent(pathname.slice('/api/agent/runs/'.length, -'/trace'.length))
+    const known = RUNS.find(r => r.id === runId)
+    const isPendingRun = runId === approvalState.runId
+    if (!known && !isPendingRun) {
+      json(res, { ok: false, error: `没有这个运行：${runId}` })
+      return true
+    }
+    const source = known ?? { id: runId, question: '把台账里那个自相矛盾的地方提交成一条审查工单' }
+    json(res, traceFromScript(source.id, known))
     return true
   }
 

@@ -5,6 +5,7 @@ import ai.agent.agent.store.AgentRunRecord;
 import ai.agent.agent.store.AgentRunStore;
 import ai.agent.agent.store.RunStatus;
 import ai.agent.config.AgentStoreProperties;
+import ai.agent.tool.RetrievalTrace;
 import org.h2.jdbcx.JdbcConnectionPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,7 +24,9 @@ import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -119,27 +122,24 @@ public class JdbcAgentRunStore implements AgentRunStore {
 	// ------------------------------------------------------------------
 
 	@Override
-	public void start(String runId, String question, String node) {
-		start(runId, question, node, null);
-	}
-
-	@Override
-	public void start(String runId, String question, String node, String intent) {
+	public void start(Start start) {
 		try (Connection conn = pool.getConnection();
 				PreparedStatement ps = conn.prepareStatement(
-						"INSERT INTO agent_run (id, question, status, node, intent) VALUES (?, ?, ?, ?, ?)")) {
-			ps.setString(1, runId);
-			ps.setString(2, question);
+						"INSERT INTO agent_run (id, question, status, node, intent, conversation_id) "
+								+ "VALUES (?, ?, ?, ?, ?, ?)")) {
+			ps.setString(1, start.runId());
+			ps.setString(2, start.question());
 			ps.setString(3, RunStatus.RUNNING.name());
-			ps.setString(4, node);
-			// 空白归因键存 NULL 而不是空串：**"没标注"和"标注成了空"是两件事**，
-			// 而看板把这两种都归到「未标注」时，数据库里至少要能看出原本是哪种。
-			// （空串在 VARCHAR 上是一个合法的取值，它会让人以为"归因字段在用，只是值是空的"）
-			ps.setString(5, intent == null || intent.isBlank() ? null : intent);
+			ps.setString(4, start.node());
+			// 归因键与会话 id 的空白值已在 Start 的紧凑构造器里归一成 NULL，
+			// 所以这里直接写 —— 不在两处判 blank：**归一化只能有一个地方**，
+			// 两处判的话，"哪一处是权威"会在下一次改动时变成一个问题
+			ps.setString(5, start.intent());
+			ps.setString(6, start.conversationId());
 			ps.executeUpdate();
 		}
 		catch (SQLException e) {
-			throw new AgentStoreException("开一次 Agent 运行失败 runId=" + runId, e);
+			throw new AgentStoreException("开一次 Agent 运行失败 runId=" + start.runId(), e);
 		}
 	}
 
@@ -148,14 +148,15 @@ public class JdbcAgentRunStore implements AgentRunStore {
 		String sql = """
 				INSERT INTO agent_step
 				  (run_id, step_index, thought_text, prompt_tokens, completion_tokens, cache_read_tokens,
-				   model_name, elapsed_ms, transcript)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+				   model_name, prompt_fingerprint, elapsed_ms, transcript)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				ON DUPLICATE KEY UPDATE
 				  thought_text = VALUES(thought_text),
 				  prompt_tokens = VALUES(prompt_tokens),
 				  completion_tokens = VALUES(completion_tokens),
 				  cache_read_tokens = VALUES(cache_read_tokens),
 				  model_name = VALUES(model_name),
+				  prompt_fingerprint = VALUES(prompt_fingerprint),
 				  elapsed_ms = VALUES(elapsed_ms),
 				  transcript = VALUES(transcript)
 				""";
@@ -168,9 +169,13 @@ public class JdbcAgentRunStore implements AgentRunStore {
 			ps.setInt(6, checkpoint.cacheReadTokens());
 			// 模型名 NOT NULL DEFAULT ''：空串是"取不到名字"，与"某个叫空串的模型"不会混淆
 			// （后者不是一个合法的模型名）。存 NULL 则要多一处 null 判断，收益为零
-			ps.setString(7, checkpoint.modelName() == null ? "" : checkpoint.modelName());
-			ps.setLong(8, checkpoint.elapsedMs());
-			ps.setString(9, checkpoint.transcriptJson());
+			ps.setString(7, checkpoint.modelName());
+			// 提示词指纹同理：空串 = 库里读不到那一版（老数据 / 提示词服务不可用），
+			// 与"某个叫空串的版本"不会混淆（后者不是一个合法指纹）。
+			// 归一化已经在 StepCheckpoint 的紧凑构造器里做过，这里不再判 null
+			ps.setString(8, checkpoint.promptFingerprint());
+			ps.setLong(9, checkpoint.elapsedMs());
+			ps.setString(10, checkpoint.transcriptJson());
 			ps.executeUpdate();
 		}
 		catch (SQLException e) {
@@ -208,9 +213,100 @@ public class JdbcAgentRunStore implements AgentRunStore {
 		}
 	}
 
+	/**
+	 * 写一次检索的明细：<b>一行调用 + N 行命中</b>。
+	 *
+	 * <h2>为什么必须在一个事务里</h2>
+	 * 两半各自都写得进去，所以"分开写"在本地永远看不出问题 ——
+	 * 但半截数据是有具体后果的：
+	 * <ul>
+	 *   <li>只有命中行、没有调用行 → 页面上出现一批<b>没有查询词的命中</b>，
+	 *       而"它拿什么词查的"正是最该回答的那个问题；</li>
+	 *   <li>只有调用行、没有命中行 → 一次<b>看起来"0 条命中"</b>的检索。
+	 *       那是最坏的一种：它与"真的没查到"在数据上完全一样，
+	 *       于是"语料里没有"与"写库写丢了一半"分不开。</li>
+	 * </ul>
+	 * 后者尤其危险，因为它是**静默**的：0 条命中本来就是一个正常结果。
+	 */
 	@Override
-	public void updateProgress(String runId, int totalTokens, int toolCallCount, long elapsedMs) {
-		try (Connection conn = pool.getConnection();
+	public void recordRetrieval(AgentRunRecord.RetrievalRecord record) {
+		String callSql = """
+				INSERT INTO retrieval_call
+				  (run_id, step_index, call_index, tool_name, query, top_k, hit_count, index_size, elapsed_ms)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE
+				  tool_name = VALUES(tool_name), query = VALUES(query), top_k = VALUES(top_k),
+				  hit_count = VALUES(hit_count), index_size = VALUES(index_size), elapsed_ms = VALUES(elapsed_ms)
+				""";
+		String hitSql = """
+				INSERT INTO retrieval_hit
+				  (run_id, step_index, call_index, hit_rank, chunk_id, document_id, breadcrumb,
+				   token_count, score, excerpt)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE
+				  chunk_id = VALUES(chunk_id), document_id = VALUES(document_id),
+				  breadcrumb = VALUES(breadcrumb), token_count = VALUES(token_count),
+				  score = VALUES(score), excerpt = VALUES(excerpt)
+				""";
+		RetrievalTrace trace = record.trace();
+		try (Connection conn = pool.getConnection()) {
+			conn.setAutoCommit(false);
+			try {
+				try (PreparedStatement ps = conn.prepareStatement(callSql)) {
+					ps.setString(1, record.runId());
+					ps.setInt(2, record.stepIndex());
+					ps.setInt(3, record.callIndex());
+					// 工具名 NOT NULL DEFAULT ''：空串是"取不到名字"，与"某把叫空串的工具"不会混淆
+					// （后者不是一个合法工具名）。存 NULL 则要多一处 null 判断，收益为零
+					ps.setString(4, record.toolName() == null ? "" : record.toolName());
+					ps.setString(5, trace.query());
+					ps.setInt(6, trace.topK());
+					ps.setInt(7, trace.hitCount());
+					ps.setInt(8, trace.indexSize());
+					// 落的是**检索自己**的耗时，不是整个工具调用的耗时。
+					// 后者含参数解析与闸门排队，而"检索花了多久"是另一个问题
+					// （工具调用的那个数已经在 agent_tool_invocation 里了，两处给同一个数没用）
+					ps.setLong(9, trace.elapsedMs());
+					ps.executeUpdate();
+				}
+				try (PreparedStatement ps = conn.prepareStatement(hitSql)) {
+					for (RetrievalTrace.Hit hit : trace.hits()) {
+						ps.setString(1, record.runId());
+						ps.setInt(2, record.stepIndex());
+						ps.setInt(3, record.callIndex());
+						ps.setInt(4, hit.rank());
+						ps.setString(5, hit.chunkId());
+						ps.setString(6, hit.documentId());
+						ps.setString(7, hit.breadcrumb());
+						ps.setInt(8, hit.tokenCount());
+						ps.setDouble(9, hit.score());
+						ps.setString(10, hit.excerpt());
+						ps.addBatch();
+					}
+					// 0 条命中时不执行 batch：`executeBatch` 在空 batch 上是合法的（返回空数组），
+					// 但显式跳过能让"这次检索真的没有命中"这件事在代码里也读得出来
+					if (trace.hitCount() > 0) {
+						ps.executeBatch();
+					}
+				}
+				conn.commit();
+			}
+			catch (SQLException e) {
+				conn.rollback();
+				throw e;
+			}
+			finally {
+				conn.setAutoCommit(true);
+			}
+		}
+		catch (SQLException e) {
+			throw new AgentStoreException("记检索明细失败 runId=" + record.runId() + " step=" + record.stepIndex()
+					+ " call=" + record.callIndex(), e);
+		}
+	}
+
+	@Override
+	public void updateProgress(String runId, int totalTokens, int toolCallCount, long elapsedMs) {		try (Connection conn = pool.getConnection();
 				PreparedStatement ps = conn.prepareStatement(
 						"UPDATE agent_run SET total_tokens = ?, tool_calls = ?, elapsed_ms = ? WHERE id = ?")) {
 			ps.setInt(1, totalTokens);
@@ -299,11 +395,83 @@ public class JdbcAgentRunStore implements AgentRunStore {
 		}
 	}
 
+	/**
+	 * 读一次运行的全部检索明细，<b>按调用归组</b>。
+	 *
+	 * <h2>为什么用两条查询 + 内存里归组，而不是一条 JOIN</h2>
+	 * 一条 {@code LEFT JOIN} 看起来更"省一次往返"，但它有一个安静的陷阱：
+	 * <b>调用行会被命中的条数放大</b>（一次 5 条命中的检索会变成 5 行），
+	 * 于是"这次运行检索了几次"要写成 {@code COUNT(DISTINCT ...)} ——
+	 * 而任何一处漏了 DISTINCT，统计就把"检索 3 次"报成"检索 11 次"，
+	 * 且数字看起来完全合理。成本看板那条"JOIN 不能把 token 放大"是同一个坑。
+	 *
+	 * <p>两条查询的总行数是 {@code 调用数 + 命中数}，量级很小（一次运行几十行），
+	 * 所以这个选择在数据量上也没有代价。
+	 */
+	@Override
+	public List<AgentRunRecord.RetrievalRecord> retrievalsOf(String runId) {
+		String callSql = """
+				SELECT step_index, call_index, tool_name, query, top_k, index_size, elapsed_ms
+				  FROM retrieval_call
+				 WHERE run_id = ?
+				 ORDER BY step_index, call_index
+				""";
+		// ⚠️ 命中那一侧**查不出"哪把工具发起的"**：retrieval_hit 的主键里没有 tool_name。
+		// 所以工具名从 retrieval_call 那一侧取，join 的键是 (step_index, call_index)。
+		// 这里用 JOIN 把工具名一次带出来，而不是再查一遍 agent_tool_invocation ——
+		// retrieval_call 本来就是"哪把工具在检索"的权威来源（写入时由调用方给出）
+		String hitSql = """
+				SELECT h.step_index, h.call_index, h.hit_rank, h.chunk_id, h.document_id, h.breadcrumb,
+				       h.token_count, h.score, h.excerpt, c.tool_name
+				  FROM retrieval_hit h
+				  JOIN retrieval_call c
+				    ON c.run_id = h.run_id AND c.step_index = h.step_index AND c.call_index = h.call_index
+				 WHERE h.run_id = ?
+				 ORDER BY h.step_index, h.call_index, h.hit_rank
+				""";
+		try (Connection conn = pool.getConnection()) {
+			// (step, call) → 命中列表
+			Map<String, List<RetrievalTrace.Hit>> hitsByCall = new LinkedHashMap<>();
+			try (PreparedStatement ps = conn.prepareStatement(hitSql)) {
+				ps.setString(1, runId);
+				try (ResultSet rs = ps.executeQuery()) {
+					while (rs.next()) {
+						String key = rs.getInt("step_index") + ":" + rs.getInt("call_index");
+						hitsByCall.computeIfAbsent(key, k -> new ArrayList<>())
+								.add(new RetrievalTrace.Hit(rs.getInt("hit_rank"), rs.getString("chunk_id"),
+										rs.getString("document_id"), rs.getString("breadcrumb"),
+										rs.getInt("token_count"), rs.getDouble("score"), rs.getString("excerpt")));
+					}
+				}
+			}
+
+			List<AgentRunRecord.RetrievalRecord> out = new ArrayList<>();
+			try (PreparedStatement ps = conn.prepareStatement(callSql)) {
+				ps.setString(1, runId);
+				try (ResultSet rs = ps.executeQuery()) {
+					while (rs.next()) {
+						int stepIndex = rs.getInt("step_index");
+						int callIndex = rs.getInt("call_index");
+						List<RetrievalTrace.Hit> hits = hitsByCall.getOrDefault(stepIndex + ":" + callIndex,
+								List.of());
+						out.add(new AgentRunRecord.RetrievalRecord(runId, stepIndex, callIndex,
+								rs.getString("tool_name"), new RetrievalTrace(rs.getString("query"),
+										rs.getInt("top_k"), rs.getInt("index_size"), hits, rs.getLong("elapsed_ms"))));
+					}
+				}
+			}
+			return List.copyOf(out);
+		}
+		catch (SQLException e) {
+			throw new AgentStoreException("读检索明细失败 runId=" + runId, e);
+		}
+	}
+
 	@Override
 	public Optional<AgentRunRecord.StepCheckpoint> latestCheckpoint(String runId) {
 		String sql = """
 				SELECT run_id, step_index, thought_text, prompt_tokens, completion_tokens, cache_read_tokens,
-				       model_name, elapsed_ms, transcript
+				       model_name, prompt_fingerprint, elapsed_ms, transcript
 				  FROM agent_step
 				 WHERE run_id = ?
 				 ORDER BY step_index DESC
@@ -324,7 +492,7 @@ public class JdbcAgentRunStore implements AgentRunStore {
 	public List<AgentRunRecord.StepCheckpoint> stepsOf(String runId) {
 		String sql = """
 				SELECT run_id, step_index, thought_text, prompt_tokens, completion_tokens, cache_read_tokens,
-				       model_name, elapsed_ms, transcript
+				       model_name, prompt_fingerprint, elapsed_ms, transcript
 				  FROM agent_step
 				 WHERE run_id = ?
 				 ORDER BY step_index
@@ -464,6 +632,35 @@ public class JdbcAgentRunStore implements AgentRunStore {
 		}
 	}
 
+	/**
+	 * 同一个会话里的全部运行（按创建时间<b>正序</b>）。
+	 *
+	 * <p>空白键返回空列表，**不是**"返回全部"：一个空白键如果被当成通配，
+	 * 那么这个方法的调用方会在某次传参写错时拿到一份看起来完全正常的完整列表 ——
+	 * 而"这段对话只有一次运行"与"没按会话过滤"在页面上会长得一样。
+	 */
+	@Override
+	public List<AgentRunRecord> runsOfConversation(String conversationId) {
+		if (conversationId == null || conversationId.isBlank()) {
+			return List.of();
+		}
+		try (Connection conn = pool.getConnection();
+				PreparedStatement ps = conn.prepareStatement(
+						"SELECT * FROM agent_run WHERE conversation_id = ? ORDER BY created_at, id")) {
+			ps.setString(1, conversationId);
+			try (ResultSet rs = ps.executeQuery()) {
+				List<AgentRunRecord> runs = new ArrayList<>();
+				while (rs.next()) {
+					runs.add(mapRun(rs));
+				}
+				return List.copyOf(runs);
+			}
+		}
+		catch (SQLException e) {
+			throw new AgentStoreException("读会话运行失败 conversationId=" + conversationId, e);
+		}
+	}
+
 	// ------------------------------------------------------------------
 	//  映射
 	// ------------------------------------------------------------------
@@ -478,14 +675,18 @@ public class JdbcAgentRunStore implements AgentRunStore {
 				// 老数据这一列是 NULL → 读成 null，页面显示"未细分"。
 				// **不给它编一个默认值**：编一个具体的默认值等于给一个假归因
 				rs.getString("failure_cause") == null ? null
-						: ai.agent.agent.AgentFailureCause.valueOf(rs.getString("failure_cause")));
+						: ai.agent.agent.AgentFailureCause.valueOf(rs.getString("failure_cause")),
+				// 归因键与会话 id 都是"可以没有"的事实，NULL 就原样读成 null。
+				// 同样不编默认值：编一个（例如"默认会话"）会让所有没有会话信息的运行
+				// 在页面上聚成一段**不存在的对话**
+				rs.getString("intent"), rs.getString("conversation_id"));
 	}
 
 	private static AgentRunRecord.StepCheckpoint mapStep(ResultSet rs) throws SQLException {
 		return new AgentRunRecord.StepCheckpoint(rs.getString("run_id"), rs.getInt("step_index"),
 				rs.getString("transcript"), rs.getString("thought_text"), rs.getInt("prompt_tokens"),
 				rs.getInt("completion_tokens"), rs.getLong("elapsed_ms"), rs.getInt("cache_read_tokens"),
-				rs.getString("model_name"));
+				rs.getString("model_name"), rs.getString("prompt_fingerprint"));
 	}
 
 	private static Instant toInstant(Timestamp timestamp) {

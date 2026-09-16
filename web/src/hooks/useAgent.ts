@@ -7,6 +7,7 @@ import {
   getAgentLimits,
   getAgentRunDetail,
   getAgentRuns,
+  getAgentTrace,
 } from '../api/agent'
 import type {
   AgentApprovalsResponse,
@@ -15,6 +16,7 @@ import type {
   AgentLimitsResponse,
   AgentRunDetail,
   AgentRunsResponse,
+  AgentTrace,
 } from '../api/agent'
 import type { Remote } from '../types'
 
@@ -25,6 +27,15 @@ export interface UseAgentResult {
   runs: Remote<AgentRunsResponse>
   /** 点开某一次运行的完整过程；null 表示没在看详情 */
   detail: Remote<AgentRunDetail>
+  /**
+   * 同一次运行的**五层 trace**（阶段四第 2 件）。
+   *
+   * <p>它与 {@link detail} 是**两个独立的 Remote 态**，而不是一个合并的。
+   * 理由很具体：两者读的是两个端点、代价不同（trace 要读五张表 + 算金额），
+   * 而且它们的失败要能分开看 —— 合成一个的话，
+   * "trace 读不到"会让整个详情页变成错误态，连状态与答案都看不到。
+   */
+  trace: Remote<AgentTrace>
   /** 四层保护的状态 */
   limits: Remote<AgentLimitsResponse>
   /** 任务正在跑 */
@@ -116,6 +127,7 @@ export function useAgent(active: boolean): UseAgentResult {
   const [current, setCurrent] = useState<Remote<AgentAskResponse>>({ status: 'idle' })
   const [runs, setRuns] = useState<Remote<AgentRunsResponse>>({ status: 'idle' })
   const [detail, setDetail] = useState<Remote<AgentRunDetail>>({ status: 'idle' })
+  const [trace, setTrace] = useState<Remote<AgentTrace>>({ status: 'idle' })
   const [limits, setLimits] = useState<Remote<AgentLimitsResponse>>({ status: 'idle' })
   const [running, setRunning] = useState(false)
 
@@ -244,17 +256,42 @@ export function useAgent(active: boolean): UseAgentResult {
     [deciding, loadApprovals, loadRuns],
   )
 
+  /**
+   * 打开一次运行：**详情与 trace 一起拉**。
+   *
+   * <h2>为什么两个请求并发发，而不是等详情回来再拉 trace</h2>
+   * 它们是两个独立的只读端点，没有任何数据依赖（都用 runId）。
+   * 串行化只会让页面多等一个来回 —— 而这一页正是排查入口，
+   * 人在"用户说这次答得不对"的时候打开它，等待时间直接落在他身上。
+   *
+   * <p>刻意**不**把两个状态合成一个：trace 读失败时详情那一块还能正常显示
+   * （状态、答案、步骤、工具调用都在详情里），排查才不至于因为一个次级端点挂了而全黑。
+   */
   const openDetail = useCallback(async (runId: string) => {
     setDetail({ status: 'loading' })
-    try {
-      setDetail({ status: 'ok', data: await getAgentRunDetail(runId) })
-    }
-    catch (e) {
-      setDetail({ status: 'error', error: describeError(e) })
-    }
+    setTrace({ status: 'loading' })
+    const [detailResult, traceResult] = await Promise.allSettled([
+      getAgentRunDetail(runId),
+      getAgentTrace(runId),
+    ])
+    setDetail(
+      detailResult.status === 'fulfilled'
+        ? { status: 'ok', data: detailResult.value }
+        : { status: 'error', error: describeError(detailResult.reason) },
+    )
+    setTrace(
+      traceResult.status === 'fulfilled'
+        ? { status: 'ok', data: traceResult.value }
+        : { status: 'error', error: describeError(traceResult.reason) },
+    )
   }, [])
 
-  const closeDetail = useCallback(() => setDetail({ status: 'idle' }), [])
+  const closeDetail = useCallback(() => {
+    setDetail({ status: 'idle' })
+    // trace 也要一起清：留着它会让"关掉详情再点另一次运行"的瞬间
+    // 先渲染出上一条运行的 trace —— 那种"闪一下旧数据"看起来像读错了运行
+    setTrace({ status: 'idle' })
+  }, [])
 
   const clearDecision = useCallback(() => {
     setDecision(null)
@@ -292,6 +329,7 @@ export function useAgent(active: boolean): UseAgentResult {
     current,
     runs,
     detail,
+    trace,
     limits,
     running,
     approvals,

@@ -518,7 +518,7 @@ class AgentApprovalTest {
 		AgentProgressListener countingListener = new AgentProgressListener() {
 			@Override
 			public void afterStep(String runId, int stepIndex, AgentRun.Step step, java.util.List<org.springframework.ai.chat.messages.Message> messages,
-					int totalTokensSoFar, int toolCallsSoFar, long elapsedMsSoFar) {
+					int totalTokensSoFar, int toolCallsSoFar, long elapsedMsSoFar, String promptFingerprint) {
 				checkpoints.incrementAndGet();
 			}
 		};

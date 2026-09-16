@@ -36,6 +36,23 @@ CREATE TABLE IF NOT EXISTS agent_run (
   -- NULL 表示"这次运行没有标注归因" —— 看板会把它显示成「未标注」，
   -- 而不是悄悄并进某一个业务里（那会让那一项虚高，且无从发现）
   intent        VARCHAR(64)  NULL,
+  -- 【阶段四 Agent trace】**会话 id**：把"同一次对话里的多次运行"串起来（trace 五层的第一层）。
+  --
+  -- 【它与 id 的分工，别混】
+  --   id            = 一次运行（一个用户问题），恢复与对账的凭据；
+  --   conversation_id = 一段对话（可能包含多个问题、多次运行）。
+  --
+  -- 为什么必须真的加一列，而不是"把同一段对话里的问题拼成一个 run"：
+  -- ① 一次运行有唯一的状态、停止原因、检查点与成本，把多个问题塞进一个 run
+  --    会让"这次运行成功了吗"这个问题失去答案（三个问题里两个成了、一个失败）；
+  -- ② 断点恢复的粒度就是"一次运行"，改大之后恢复会带着别人的问题一起重跑。
+  -- 所以是"多次运行 → 一个会话"，而不是"一个问题 = 一个会话"。
+  --
+  -- NULL / 空串 = **没有会话信息**（curl 直接调的、外部系统调的）。
+  -- 刻意不自动生成一个：给每次孤立调用编一个会话 id，会让"有会话"这件事
+  -- 看起来处处成立，而真相是"我们不知道这些运行属不属于同一段对话" ——
+  -- 那与成本看板"没标注就显示未标注"是同一条规矩。
+  conversation_id VARCHAR(64) NULL,
   created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id)
@@ -65,6 +82,22 @@ CREATE TABLE IF NOT EXISTS agent_step (
   -- "整个运行只用一个模型"时才成立，而那正是灰度/切换期间不成立的前提。
   -- 上游没报 / 取不到名字时为空串，看板显示成「未知模型」，且**不给它算命**
   model_name        VARCHAR(128) NOT NULL DEFAULT '',
+  -- 【阶段四 Agent trace】这一步用的是**哪一版系统提示词**（指纹形如 `v3:9ab12cd34ef5`）。
+  --
+  -- 【为什么必须落这一列，而且落的是指纹不是版本号】
+  -- 提示词可以在两次运行之间换版本，而**报告里看不出来** ——
+  -- 于是"某天的答案变差了"追不到"那天换了提示词"，只能靠回忆。
+  --
+  -- 存指纹（SHA-256 前 12 位）而不是只存版本号，是因为版本号是**指针**、指纹是**内容**：
+  --   ① 版本号会被复用吗？不会（历史只追加）—— 但"第 3 版"在库被重建/迁移之后
+  --      可能对应另一份正文，而指纹不会；
+  --   ② 断言需要的是"发出去的确实是这一版的内容"。这正是阶段四第 3 件
+  --      （PromptHotReloadTest）证明热更新时用的同一个判据 —— 那次是逐字节比对，
+  --      这里把它**落成数据**，让"当时用的是哪一版"在事后也能回答。
+  --
+  -- 空串 = 库里读不到这一版（老数据、或提示词服务不可用），
+  -- 与"某个叫空串的版本"不会混淆（后者不是一个合法的指纹）。
+  prompt_fingerprint VARCHAR(64) NOT NULL DEFAULT '',
   elapsed_ms        BIGINT      NOT NULL DEFAULT 0,
   transcript        TEXT        NOT NULL,            -- 这一步之后的完整消息列表（JSON）
   created_at        TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -92,6 +125,11 @@ CREATE TABLE IF NOT EXISTS agent_tool_invocation (
 
 -- 恢复时最常见的查询是"这个实例上还有哪些没跑完的运行"
 CREATE INDEX IF NOT EXISTS idx_agent_run_status ON agent_run (status, updated_at);
+
+-- 【阶段四 Agent trace】按会话把多次运行串起来读（trace 的第一层）。
+-- 没有它，"这段对话里一共跑了几次、各自花了多少"只能全表扫 ——
+-- 而那个查询恰恰是排查"用户说这个功能今天一直不对"时的第一个动作。
+CREATE INDEX IF NOT EXISTS idx_agent_run_conversation ON agent_run (conversation_id, created_at);
 
 -- 【阶段四成本看板】看板的每一次查询都带一个时间窗（默认最近 7 天），
 -- 且按天分桶。所以这个索引是"看板能不能在数据量上来之后还跑得动"的落点 ——
@@ -138,3 +176,72 @@ CREATE INDEX IF NOT EXISTS idx_agent_tool_approval_status ON agent_tool_approval
 
 -- 运行详情里要按 run 取全部审批记录
 CREATE INDEX IF NOT EXISTS idx_agent_tool_approval_run ON agent_tool_approval (run_id, requested_at);
+
+-- ============================================================================
+--  检索明细（阶段四第 2 件：调用日志 + Agent trace 五层里的**「检索」那一层**）
+--
+--  【为什么它必须单独一层，而不能继续藏在 agent_tool_invocation.feedback 里】
+--  search_docs 的返回内容一直是**文本**（回填给模型的那段）。文本对模型是对的 ——
+--  它要读的是"有没有相关内容"，不是字段名。但对**人**它什么都回答不了：
+--    · "这次任务一共检索了几次" —— 要数 feedback 里出现了几次"在 516 个文档片段里找到"；
+--    · "命中的是哪几个块" —— 要正则解析那段中文；
+--    · "检索塞进 prompt 的 token 有多少" —— 文本里根本没有这个数。
+--  也就是说，阶段二量出来的 token 口径（avgTokensUsed）在这条链路上**追不到**，
+--  而路线文档的验收要的恰恰是「日志能不能还原执行过程」。
+--
+--  【为什么不复用 agent_tool_invocation】
+--  那条记录的主键是 (run_id, step_index, call_index) —— 它是**一次调用**的粒度。
+--  而一次检索调用会有 N 条命中（N 默认 5、上限 10），把它们挤进那条记录只有两种下场：
+--  ① 拼成 JSON 存进 feedback 旁边一列（那就等于把结构化数据退化成字符串，
+--     正是这一层要消灭的东西）；② 把 feedback 顶爆（它有 max-chars 上限）。
+--  所以是子表：调用一次 → N 行命中。
+--
+--  【三层的关系（这一层的坐标）】
+--    会话 → 轮次/运行（agent_run，含 conversation_id）
+--         → LLM 调用（agent_step，含 prompt_fingerprint）
+--         → 工具调用（agent_tool_invocation）
+--         → **检索命中（retrieval_hit）** ← 本表
+--  前三层是"谁在什么上下文里做了什么"，本表是"它到底看到了什么"。
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS retrieval_hit (
+  run_id       VARCHAR(64)  NOT NULL,
+  step_index   INT          NOT NULL,               -- 第几步发起的检索
+  call_index   INT          NOT NULL,               -- 这一步里的第几次工具调用（与 agent_tool_invocation 同一套编号）
+  hit_rank     INT          NOT NULL,               -- 第几名（从 1 开始，**就是模型看到的名次**）
+  chunk_id     VARCHAR(256) NULL,                   -- 块 id（`文档id#序号`）—— 能直接回到分块结果
+  document_id  VARCHAR(256) NULL,                   -- 来源文档
+  breadcrumb   VARCHAR(512) NULL,                   -- 标题路径（"这条命中属于哪一节"）
+  token_count  INT          NOT NULL DEFAULT 0,     -- 这个块**估算**的 token（进 prompt 的量级）
+  -- 相关性得分。**只在同一次检索内可比** —— 不同检索引擎的量纲不同（这正是混合检索
+  -- 必须按名次融合、不能直接相加的原因）。落它不是为了与别次比较，而是为了回答
+  -- "第 3 条与第 4 条的分差有多大"（分差极小说明这次检索其实没区分度）
+  score        DOUBLE       NOT NULL DEFAULT 0,
+  excerpt      VARCHAR(512) NULL,                   -- 片段开头（截断）—— 让人不下钻也能认出召回对不对
+  created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (run_id, step_index, call_index, hit_rank)
+);
+
+-- 【检索调用的参数与汇总单独一行，因为它不是"命中"的属性】
+-- query（查的是什么词）与 topK（要了几条）属于**调用**，不属于任何一条命中 ——
+-- 把它们冗余到每一行上会在"0 条命中"时整个丢失（而那恰恰是最需要查的一次：
+-- 用户说"它答不上来"，第一件要看的就是"它拿什么词去查的、一条都没查到吗"）。
+-- 一次没有命中的检索**同样要留痕**，所以它必须有自己的行。
+CREATE TABLE IF NOT EXISTS retrieval_call (
+  run_id       VARCHAR(64)  NOT NULL,
+  step_index   INT          NOT NULL,
+  call_index   INT          NOT NULL,
+  -- 哪把工具发起的检索。今天只有 search_docs 一把，但记下来才能回答
+  -- "将来的第二把检索工具用得怎么样" —— 而那个问题在没有这一列时**无法补算**
+  -- （agent_tool_invocation 里有，但那里分不出"检索类"与"非检索类"的调用）
+  tool_name    VARCHAR(128) NOT NULL DEFAULT '',
+  query        VARCHAR(512) NULL,                   -- 实际拿去检索的查询词
+  top_k        INT          NOT NULL DEFAULT 0,     -- 模型要了几条（不是引擎实际返回几条）
+  hit_count    INT          NOT NULL DEFAULT 0,     -- 实际命中几条（0 是正常结果，不是故障）
+  index_size   INT          NOT NULL DEFAULT 0,     -- 当时索引里有多少块（回答"库是不是空的"）
+  elapsed_ms   BIGINT       NOT NULL DEFAULT 0,
+  created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (run_id, step_index, call_index)
+);
+
+-- 按会话/运行读检索明细时，永远先按 run_id 过滤 —— 与另两张表明细表同一个形状
+CREATE INDEX IF NOT EXISTS idx_retrieval_hit_document ON retrieval_hit (document_id);

@@ -73,6 +73,35 @@ public record ToolCallOutcome(ToolInvocation invocation, ToolCallStage stage, Ag
 	}
 
 	/**
+	 * 这次调用带回来的<b>结构化观察</b>（阶段四 trace 的「检索」那一层的来源）。
+	 *
+	 * <h2>为什么是"从结果里派生"，而不是记录的一个字段</h2>
+	 * 因为它们是<b>同一件事</b>：观察是工具结果的一部分，不是这次调用的独立属性。
+	 * 存成两个字段就会出现"结果里有、outcome 里没有"（或反过来）的中间状态 ——
+	 * 而那种不一致没有任何测试能自然覆盖到，只会在某次重构里悄悄出现。
+	 *
+	 * <h2>为什么 stage 不是 OK 时返回空列表</h2>
+	 * 那一路上 {@code toolResult} 是 {@code null}（参数没通过、工具炸了、被人拒了），
+	 * 而"没有结果"的不变式就应该是"没有观察"。返回空列表让调用方
+	 * （持久化监听器、trace 装配）不必各自写一遍 null 判断 ——
+	 * 那种判断写三遍，迟早有一遍写成 {@code List.of()} 与 {@code null} 混淆。
+	 */
+	public List<AgentToolResult.Observation> observations() {
+		if (toolResult instanceof AgentToolResult.Success success) {
+			return success.observations();
+		}
+		return List.of();
+	}
+
+	/** 这次调用产生的检索明细；不是检索类调用就为空。 */
+	public java.util.Optional<RetrievalTrace> retrievalTrace() {
+		if (toolResult instanceof AgentToolResult.Success success) {
+			return success.retrievalTrace();
+		}
+		return java.util.Optional.empty();
+	}
+
+	/**
 	 * 这次调用是不是<b>停下来等人</b>了（不是失败，也不是成功）。
 	 *
 	 * <p>给它一个方法而不是让调用方去比较枚举：这个判断会出现在循环、持久化、

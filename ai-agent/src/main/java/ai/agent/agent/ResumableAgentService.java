@@ -5,8 +5,7 @@ import ai.agent.agent.approval.ApprovalStatus;
 import ai.agent.agent.approval.ToolApprovalRecord;
 import ai.agent.agent.store.AgentRunRecord;
 import ai.agent.agent.store.AgentRunStore;
-import ai.agent.agent.store.RunStatus;
-import ai.agent.agent.store.support.TranscriptCodec;
+import ai.agent.agent.store.RunStatus;import ai.agent.agent.store.support.TranscriptCodec;
 import ai.agent.config.AgentStoreProperties;
 import ai.agent.tool.ApprovalGrant;
 import ai.agent.tool.ToolInvocation;
@@ -119,7 +118,17 @@ public class ResumableAgentService {
 	 * @param intent 业务归因键；{@code null} 表示未标注
 	 */
 	public AgentRun runWithId(String runId, String question, String intent) {
-		return runWithId(runId, question, null, intent);
+		return runWithId(runId, question, null, intent, null);
+	}
+
+	/**
+	 * 用指定 id 与<b>归因键 + 会话 id</b>跑一次（阶段四第 2 件：Agent trace 的第一层）。
+	 *
+	 * @param intent 业务归因键；{@code null} 表示未标注
+	 * @param conversationId 会话 id；{@code null} / 空白 = 没有会话信息
+	 */
+	public AgentRun runWithId(String runId, String question, String intent, String conversationId) {
+		return runWithId(runId, question, null, intent, conversationId);
 	}
 
 	/**
@@ -137,12 +146,18 @@ public class ResumableAgentService {
 	 * @param modelTurn 覆盖默认模型；传 {@code null} 表示用容器里那个
 	 */
 	public AgentRun runWithId(String runId, String question, ModelTurn modelTurn) {
-		return runWithId(runId, question, modelTurn, null);
+		return runWithId(runId, question, modelTurn, null, null);
 	}
 
-	/** 完整入口：id + 问题 + 覆盖模型 + 业务归因键。 */
+	/** 完整入口：id + 问题 + 覆盖模型 + 业务归因键（不带会话）。 */
 	public AgentRun runWithId(String runId, String question, ModelTurn modelTurn, String intent) {
-		store.start(runId, question, properties.node(), intent);
+		return runWithId(runId, question, modelTurn, intent, null);
+	}
+
+	/** 完整入口：id + 问题 + 覆盖模型 + 业务归因键 + 会话 id。 */
+	public AgentRun runWithId(String runId, String question, ModelTurn modelTurn, String intent,
+			String conversationId) {
+		store.start(new AgentRunStore.Start(runId, question, properties.node(), intent, conversationId));
 		// 把"这次实际用哪个模型"传给监听器 —— 它是成本归因的一部分（见 PersistingListener.override）
 		PersistingListener listener = new PersistingListener(runId, modelTurn);
 		try {
@@ -251,7 +266,7 @@ public class ResumableAgentService {
 					pending.describe());
 		}
 
-		return continueRun(record, checkpoint, pending);
+		return continueRun(record, checkpoint, pending, null);
 	}
 
 	/**
@@ -340,11 +355,21 @@ public class ResumableAgentService {
 			ToolInvocation pending, ApprovalGrant grant) {
 		List<Message> messages = codec.decode(checkpoint.latestStep().transcriptJson());
 		PersistingListener listener = new PersistingListener(record.id());
-		AgentRun run = loop.run(record.id(), record.question(), messages, checkpoint.resumeFromStep(), listener, pending,
-				grant);
+		// 【续跑时的提示词指纹：沿用检查点里那一步记的，不重新去读】
+		//
+		// 理由写在 AgentLoop 那个重载的注释里，这里只说结论：续跑的步骤用的确实是**原来那一版**
+		// （系统消息就写在检查点里，本次不会重新注入）。让它重新读一次当前版本会造成两个错：
+		//  ① 假话 —— 那几步并不是用新版跑的；
+		//  ② 更坏的是它会把一条运行切成两版（前 2 步记 v3、续跑的 3~5 步记 v4），
+		//     于是"这次运行到底用的哪一版"这个问题得到两个都"有据可查"的答案。
+		// 而正是为了回答那个问题才有这一列 —— 一个会自相矛盾的观测字段比没有更糟。
+		AgentRun run = loop.run(record.id(), record.question(), messages, checkpoint.resumeFromStep(), listener,
+				pending, grant, checkpoint.latestStep().promptFingerprint());
 		store.persistCompletedRun(record.id(), run);
-		log.info("运行 {} 已从第 {} 步{}结束：{}", record.id(), checkpoint.resumeFromStep(),
-				grant == null ? "恢复并" : "（人工批准后）接着跑，", run.stopReason());
+		log.info("运行 {} 已从第 {} 步{}结束：{}（提示词指纹 {}）", record.id(), checkpoint.resumeFromStep(),
+				grant == null ? "恢复并" : "（人工批准后）接着跑，", run.stopReason(),
+				checkpoint.latestStep().promptFingerprint().isBlank() ? "(未记录)"
+						: checkpoint.latestStep().promptFingerprint());
 		return ResumeResult.resumed(record.id(), checkpoint.resumeFromStep(), run, pending);
 	}
 
@@ -400,9 +425,24 @@ public class ResumableAgentService {
 		return store.recentRuns(limit);
 	}
 
+	/** 同一个会话里的全部运行（按时间正序）—— Agent trace 的第一层。 */
+	public List<AgentRunRecord> runsOfConversation(String conversationId) {
+		return store.runsOfConversation(conversationId);
+	}
+
 	/** 一次运行的完整步骤（还原执行过程用）。 */
 	public List<AgentRunRecord.StepCheckpoint> stepsOf(String runId) {
 		return store.stepsOf(runId);
+	}
+
+	/** 一次运行的全部检索明细（trace 的「检索」那一层）。 */
+	public List<AgentRunRecord.RetrievalRecord> retrievalsOf(String runId) {
+		return store.retrievalsOf(runId);
+	}
+
+	/** 一次运行的全部工具调用（trace 的「工具调用」那一层）。 */
+	public List<AgentRunRecord.ToolCallRecord> toolCallsOf(String runId) {
+		return store.toolCallsOf(runId);
 	}
 
 	/**
@@ -460,23 +500,57 @@ public class ResumableAgentService {
 
 		@Override
 		public void afterStep(String runId, int stepIndex, AgentRun.Step step, List<Message> messages,
-				int totalTokensSoFar, int toolCallsSoFar, long elapsedMsSoFar) {			// 先写工具调用明细，再写检查点。
+				int totalTokensSoFar, int toolCallsSoFar, long elapsedMsSoFar, String promptFingerprint) {
+			// 先写工具调用明细，再写检查点。
 			// 顺序有讲究：检查点是"这一步完成了"的凭据，如果先写它、
 			// 后写明细时失败，恢复时就会看到一个"完成"的步骤却缺了工具记录 ——
 			// 而那是无法从检查点本身发现的（检查点里只有对话，没有 stage 分类）
+			//
+			// 【callIndex 的记法：只对"有结论的"那一次自增】
+			// 这一点很讲究，改之前先看完。`step.outcomes()` 可能**短于**
+			// `step.invocations()`：循环在"重复动作"与"停在人工闸门"两处会提前 break，
+			// 那时后面的意图压根没有结论。
+			// 所以 outcomes 与 invocations 是**同一个前缀**，下标 i 对得上。
+			// 判据用 `i < invocations.size()` 而不是"总是取 invocations.get(i)"，
+			// 是为了让"万一将来多出一个没有对应意图的结论"退化成丢一个 callId，
+			// 而不是抛 IndexOutOfBounds 把整次运行打断
 			int callIndex = 0;
+			List<ai.agent.tool.ToolInvocation> invocations = step.invocations();
 			for (var outcome : step.outcomes()) {
-				store.recordToolCall(new AgentRunRecord.ToolCallRecord(runId, stepIndex, callIndex++,
-						outcome.invocation().id(), outcome.invocation().name(),
-						outcome.invocation().argumentsForFeedback(2000), outcome.stage().name(), outcome.feedback(),
-						outcome.elapsedMs()));
+				String callId = callIndex < invocations.size() ? invocations.get(callIndex).id() : null;
+				store.recordToolCall(new AgentRunRecord.ToolCallRecord(runId, stepIndex, callIndex, callId,
+						outcome.invocation().name(), outcome.invocation().argumentsForFeedback(2000),
+						outcome.stage().name(), outcome.feedback(), outcome.elapsedMs()));
+
+				// 【阶段四 trace 的「检索」那一层】
+				//
+				// 判据是"这次调用有没有带回检索明细"，而不是"工具名是不是 search_docs"：
+				//   - 按工具名判 → 将来第二把检索工具出现时必须记得来这里加一个名字，
+				//     而忘了的表现是"新工具的检索明细一条都不落库"，且**不报错**；
+				//   - 按明细判 → 谁产出明细就落谁的，工具名只是记录里的一个字段。
+				// 这正是把"结构化观察"做成类型（AgentToolResult.Observation）而不是
+				// 约定（"检索类工具记得调一下 XXX"）的收益。
+				//
+				// 非检索调用**什么都不写** —— 写一个空明细会让"这次任务检索了几次"
+				// 这个数字变大，而它恰恰是这一层最常被问的数
+				//
+				// 取一个方法局部的副本再进 lambda：`callIndex` 是本循环的可变变量，
+				// 而 lambda 只能捕获有效终结（effectively final）的变量。
+				// 写成 `final int index = callIndex` 同时表达了一件事：
+				// **这一次落库用的就是当下这个下标**，它不随循环继续而变
+				final int index = callIndex;
+				outcome.retrievalTrace().ifPresent(trace -> store.recordRetrieval(
+						new AgentRunRecord.RetrievalRecord(runId, stepIndex, index,
+								outcome.invocation().name(), trace)));
+				callIndex++;
 			}
-			// 缓存命中与模型名一起落库：它们是成本看板的两个输入口径。
-			// 少了前者，成本只能按最贵那一档算（偏高，且高估倍数随上游缓存命中率浮动）；
-			// 少了后者，"换了模型之后钱花在哪"这个问题没有数据可答
+			// 缓存命中、模型名与提示词指纹一起落库：它们是 trace 与成本看板的三个输入口径。
+			// 少了缓存命中，成本只能按最贵那一档算（偏高，且高估倍数随上游命中率浮动）；
+			// 少了模型名，"换了模型之后钱花在哪"没有数据可答；
+			// 少了提示词指纹，"答案变差了是不是因为换了提示词"没有数据可答
 			store.checkpoint(new AgentRunRecord.StepCheckpoint(runId, stepIndex, codec.encode(messages),
 					step.thoughtText(), step.promptTokens(), step.completionTokens(), step.elapsedMs(),
-					step.cachedPromptTokens(), resolveModelName()));
+					step.cachedPromptTokens(), resolveModelName(), promptFingerprint));
 			store.updateProgress(runId, totalTokensSoFar, toolCallsSoFar, elapsedMsSoFar);
 		}
 	}

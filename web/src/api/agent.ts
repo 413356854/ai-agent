@@ -322,6 +322,186 @@ export interface AgentRunDetail {
   pendingApprovals?: number
 }
 
+// ---------------------------------------------------------------------------
+//  五层 trace（阶段四第 2 件）
+//
+//  唯一事实来源：ai.agent.agent.trace.AgentTraceView。改那边就要同步改这里。
+//  ⚠️ 这个文件里已经写过一次教训了（见运行详情那条注释）：形状不一致的契约
+//  会让界面报一个与真实代码无关的错 —— 所以这里的字段名逐一对照后端。
+// ---------------------------------------------------------------------------
+
+/** 一条检索命中（trace 第 5 层的一行）。 */
+export interface AgentTraceHit {
+  /** 名次，从 1 开始 —— **就是模型看到的名次** */
+  rank: number
+  /** 块 id（`文档id#序号`）—— 能直接回到分块结果 */
+  chunkId: string
+  documentId: string
+  /** 标题路径（"这条命中属于哪一节"） */
+  breadcrumb: string
+  /** 这个块**估算**的 token（估算口径，不是上游 usage） */
+  tokenCount: number
+  /** 相关性得分。**只在同一次检索内可比** —— 不同引擎的量纲不同 */
+  score: number
+  excerpt: string
+}
+
+/** 一次检索调用（阶段四第 2 件的核心：原先只存在于回填文本里的那一层）。 */
+export interface AgentTraceRetrieval {
+  stepIndex: number
+  callIndex: number
+  toolName: string
+  /** 实际拿去检索的查询词（模型给的原词，未归一化） */
+  query: string
+  /** 模型要了几条 */
+  topK: number
+  /** 实际命中几条。**0 是正常结果，不是故障** */
+  hitCount: number
+  /** 当时索引里有多少块 —— 它是"0 条命中"的分母 */
+  indexSize: number
+  /** 命中块的估算 token 合计 */
+  hitTokens: number
+  elapsedMs: number
+  /** 命中小等于 topK（召回可能不足） */
+  shortOfTopK: boolean
+  hits: AgentTraceHit[]
+}
+
+/** trace 里的一步（比 `/runs/{id}` 的步骤多出提示词指纹与检索明细）。 */
+export interface AgentTraceStep extends AgentStep {
+  stepIndex: number
+  totalTokens: number
+  cacheReadTokens: number
+  modelName: string
+  /**
+   * **这一步用的是哪一版系统提示词**（形如 `v3:9ab12cd34ef5`）。
+   *
+   * 空串 = 库里读不到那一版（老数据 / 提示词服务当时不可用）——
+   * 页面必须把这两种情况都说出来，而不是显示成一个空白格。
+   */
+  promptFingerprint: string
+  /** 这一步的每一次工具调用，各自带着它的检索明细 */
+  toolCalls: (AgentToolCall & { retrievals: AgentTraceRetrieval[] })[]
+  retrievalCalls: AgentTraceRetrieval[]
+  retrievalCount: number
+  retrievalHitTokens: number
+}
+
+/** 会话里的一次运行（trace 第 1 层）。 */
+export interface AgentTraceConversationRun {
+  id: string
+  question: string
+  status: string
+  stopReason: string
+  totalTokens: number
+  createdAt: string
+  /** **我正在看的是哪一次** —— 一段对话里所有运行的形状都一样，不标就分不清 */
+  current: boolean
+}
+
+/** 会话那一层。`present=false` 表示**这次运行没有会话信息**（调用方没传）。 */
+export interface AgentTraceConversation {
+  present: boolean
+  id: string
+  runCount: number
+  truncated?: boolean
+  runs: AgentTraceConversationRun[]
+  note?: string
+}
+
+/** 检索汇总：回答"这次任务查了几次、一共看了多少字"。 */
+export interface AgentTraceRetrievalSummary {
+  calls: number
+  hitCount: number
+  /** **估算**口径，见 `note` */
+  hitTokens: number
+  hitTokensEstimated: boolean
+  /** 一次都没查到的检索次数 —— 它最该被单独看见（白跑一轮照样花钱） */
+  emptyCalls: number
+  steps: number
+  promptTokensForShare: number
+  shareOfPrompt: number
+  note: string
+}
+
+/** 一次运行里某个模型的 token 与金额。 */
+export interface AgentTraceModelCost {
+  model: string
+  uncachedPromptTokens: number
+  cachedPromptTokens: number
+  completionTokens: number
+  /** `null` = **算不出来**（没价格），与 0 完全不是一回事 */
+  amount: string | null
+  amountMicros: number | null
+  amountReason: string | null
+  priceRule?: string
+  priceSource?: string
+}
+
+/**
+ * 金额。
+ *
+ * ⚠️ `amount === null` 时**绝不能显示 ¥0.00** —— 那会被读成"这次不花钱"，
+ * 而真相是"我们不知道它花多少"。`amountReason` 里有能照着做的说明。
+ */
+export interface AgentTraceCost {
+  pricingConfigured: boolean
+  currency: string
+  uncachedPromptTokens: number
+  cachedPromptTokens: number
+  completionTokens: number
+  totalTokens: number
+  byModel: Record<string, AgentTraceModelCost>
+  unpricedModels: string[]
+  amount: string | null
+  amountMicros: number | null
+  amountReason: string | null
+}
+
+/**
+ * 五层的**到场清单**：每一层有没有数据、以及**这一层该不该有数据**。
+ *
+ * `expected=false` 表示"这一层本来就不该有内容"（例如一次没调工具的运行在第 4、5 层）。
+ * 没有这个布尔的话，「空」与「漏记」在页面上长得完全一样，而它们的含义正好相反。
+ */
+export interface AgentTraceLayer {
+  index: number
+  name: string
+  key: string
+  storage: string
+  expected: boolean
+}
+
+/** `GET /api/agent/runs/{id}/trace` 的响应 —— 五层完整还原。 */
+export interface AgentTrace {
+  ok: boolean
+  error?: string
+  run: {
+    id: string
+    question: string
+    status: string
+    stopReason: string
+    failureCause: string
+    failureAdvice: string
+    finalAnswer: string
+    totalTokens: number
+    toolCalls: number
+    elapsedMs: number
+    node: string
+    /** 业务归因键；空串 = 未标注 */
+    intent: string
+    createdAt: string
+    updatedAt: string
+  }
+  conversation: AgentTraceConversation
+  steps: AgentTraceStep[]
+  retrieval: AgentTraceRetrievalSummary
+  cost: AgentTraceCost
+  approvals: AgentRunApprovalRow[]
+  layers: AgentTraceLayer[]
+  notes: string[]
+}
+
 /** 模型侧闸门的快照。`available=false` 表示这一层**没装上**，不是"没有流量"。 */
 export interface ModelGateSnapshot {
   available: boolean
@@ -393,8 +573,12 @@ export interface AgentLimitsResponse {
  *            <p>它由**调用方**给而不是后端自己推：后端只能看到问题文本，
  *            而"这段文本属于哪个业务"是业务侧才知道的事（同一个问题可能被两个业务问）。
  */
-export function askAgent(question: string, intent = ''): Promise<AgentAskResponse> {
-  return postJson<AgentAskResponse>('/api/agent/ask', { question, intent }, '跑 Agent 任务')
+export function askAgent(question: string, intent = '', conversationId = AGENT_CONVERSATION_ID): Promise<AgentAskResponse> {
+  return postJson<AgentAskResponse>(
+    '/api/agent/ask',
+    { question, intent, [AGENT_CONVERSATION_FIELD]: conversationId },
+    '跑 Agent 任务',
+  )
 }
 
 /** 历史运行列表。 */
@@ -407,10 +591,54 @@ export function getAgentRunDetail(runId: string): Promise<AgentRunDetail> {
   return getJson<AgentRunDetail>(`/api/agent/runs/${encodeURIComponent(runId)}`, 'Agent 运行详情')
 }
 
+/**
+ * **本次页面会话的会话 id**（阶段四第 2 件：Agent trace 的第一层）。
+ *
+ * <h2>为什么生成在前端，而不是后端自动生成</h2>
+ * 因为"这两个问题属于同一段对话"是<b>只有调用方才知道的事实</b>。
+ * 后端只看得到问题文本，它无从判断两次 `/ask` 是不是同一段对话 ——
+ * 硬猜（比如"同一个 IP 就是同一段会话"）会让两段无关的对话被并成一段，
+ * 而那种错在页面上表现为"这段对话里怎么有个我没问过的问题"。
+ *
+ * <p>界面上发起任务是同一个人在同一页里连续问的，所以这一段会话就是
+ * "这个页面从打开到关掉"。后端那边**刻意不自动生成**（见 `AskRequest.conversationId`
+ * 的注释）：curl 直接调时没有会话信息，界面必须能把它显示成"没有会话信息"
+ * 而不是伪装成一段只有一次运行的对话。
+ *
+ * <h2>为什么是模块级常量而不是每次请求新建一个</h2>
+ * 每次请求新建 = 每次运行都是一段独立会话，这一层就白做了。
+ * 这一层要回答的正是"这段对话里一共跑了几次、谁挂了、一共花了多少"。
+ *
+ * <p>⚠️ 已知边界：**刷新页面就会换一个新的会话 id**（模块级变量随页面重载重置）。
+ * 也就是说"刷新前后的两次提问"在 trace 里是两段对话。
+ * 这是刻意的取舍 —— 要跨刷新保持就得落 sessionStorage，
+ * 而那种持久化会让"清掉浏览器数据"与"换一段对话"变成两个不同的动作，
+ * 复杂度大于它解决的问题。真正的多轮对话应当由后端的对话记忆那条链路承担
+ * （它有自己的 conversationId，与本字段是两件事）。
+ */
+export const AGENT_CONVERSATION_ID =
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? `web-${crypto.randomUUID()}`
+    : `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+
+/** 一次运行的<b>五层 trace</b>（阶段四第 2 件）。 */
+export function getAgentTrace(runId: string): Promise<AgentTrace> {
+  return getJson<AgentTrace>(`/api/agent/runs/${encodeURIComponent(runId)}/trace`, 'Agent trace')
+}
+
 /** 四层保护的当前状态。 */
 export function getAgentLimits(): Promise<AgentLimitsResponse> {
   return getJson<AgentLimitsResponse>('/api/agent/limits', 'Agent 限额状态')
 }
+
+/**
+ * 请求体里的会话 id 字段名。
+ *
+ * <p>抽成常量是因为它同时出现在"发请求"与自检里 —— 拼错一处不会报错，
+ * 只会让会话那一层悄悄变成"没有会话信息"（而后端对这种缺失是**如实显示**的，
+ * 所以现象是"会话那一块说没有会话信息"，看不出是前端字段名写错了）。
+ */
+export const AGENT_CONVERSATION_FIELD = 'conversationId'
 
 // ---------------------------------------------------------------------------
 //  HITL：人工确认（第九轮）

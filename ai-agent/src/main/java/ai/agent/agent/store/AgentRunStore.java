@@ -29,30 +29,69 @@ import java.util.Optional;
 public interface AgentRunStore {
 
 	/**
-	 * 开一次运行（写入 RUNNING 行）。
+	 * 开一次运行并记下它的<b>全部启动元信息</b>：节点、业务归因键、会话 id。
 	 *
-	 * <p><b>为什么必须在跑之前就写</b>：如果等结束才写，那么"进程在第一步就挂了"
-	 * 这件事在库里**不留任何痕迹** —— 用户看到的现象是"点了没反应，也没有记录"，
-	 * 而这正是断点恢复要解决的第一个问题。
+	 * <h2>为什么"开一次运行"的参数被包成了一个 {@link Start}，而不是继续加参数</h2>
+	 * 这是这一轮唯一一处刻意的接口改动，理由很具体：这些字段<b>全是同一类东西</b> ——
+	 * 调用方在运行开始之前就知道、运行自己推不出来的事实。它们已经有两个了
+	 * （归因键、会话 id），而"按租户细分成本"那条已排在阶段四第 6 件，很快是三个。
+	 *
+	 * <p>继续加重载的代价在这一轮已经出现过一次预演：一个
+	 * {@code start(id, question, node, "会话A")} 的调用在"第四个参数是归因键"的
+	 * 重载下可以编译通过，于是那个会话 id 被<b>静默写进归因列</b> ——
+	 * 现象是成本看板上多出一个叫「会话A」的业务，而"按会话串起来"一次都不生效。
+	 * 两边都不报错，也没有任何断言会自然覆盖到。
+	 * 包成对象之后，这种写错在<b>编译期</b>就不可能发生（字段有名字）。
+	 *
+	 * <h2>为什么这次写必须发生在"跑"之前</h2>
+	 * 如果等结束才写，那么"进程在第一步就挂了"这件事在库里<b>不留任何痕迹</b> ——
+	 * 用户看到的现象是"点了没反应，也没有记录"，而这正是断点恢复要解决的第一个问题。
+	 * 同理，失败与中断的运行<b>同样花了钱</b>，看板上不能凭空少一块。
+	 *
+	 * @param start 启动元信息（见 {@link Start}）
 	 */
-	void start(String runId, String question, String node);
+	void start(Start start);
 
 	/**
-	 * 开一次运行，并记下**业务归因键**（阶段四成本看板）。
+	 * 「一次运行开始时的全部已知事实」。
 	 *
-	 * <h2>为什么归因键在"开始"时就写，而不是结束之后补</h2>
-	 * 两个理由，都不是风格问题：
-	 * <ol>
-	 *   <li><b>它是调用方的输入，不是运行的结果</b>。"这次运行属于哪个业务"在我们发起它之前
-	 *       就已经确定了；等结束再补，就需要在整条链路上多传一个参数（而中途失败的那次运行
-	 *       恰恰补不上 —— 而**失败的运行同样花了钱**，看板上不能凭空少一块）；</li>
-	 *   <li><b>失败与中断的运行最需要归因</b>：钱花了、事没办成，那正是要按业务去看的地方。
-	 *       补写式的设计会把它们全落进"未标注"，于是"哪个业务在烧钱又不出活"永远看不出来。</li>
-	 * </ol>
+	 * <h2>为什么 node 也在这里面</h2>
+	 * 因为它的性质与另外两个完全相同：都是调用方在开始时就确定、运行自己推不出来的。
+	 * 让它单独留在参数列表里会破坏这个类存在的理由（"所有启动元信息在一处"）。
 	 *
-	 * @param intent 业务归因键（例如"客服问答"/"报表助手"）；{@code null} 或空白表示未标注
+	 * @param runId 运行 id（恢复时的对账凭据）
+	 * @param question 用户原始问题
+	 * @param node 哪个实例在跑（多实例下回答"这是谁挂的"）
+	 * @param intent 业务归因键（例如"客服问答"/"报表助手"）；{@code null} 或空白 = 未标注
+	 * @param conversationId 会话 id；{@code null} 或空白 = **没有会话信息**
+	 *            （curl 直接调、外部系统调）。**刻意不自动生成**：给每次孤立调用编一个
+	 *            会话 id 会让"有会话"看起来处处成立，而真相是我们不知道它们属不属于同一段对话
 	 */
-	void start(String runId, String question, String node, String intent);
+	record Start(String runId, String question, String node, String intent, String conversationId) {
+
+		/**
+		 * 把空白字符串一律归一成 {@code null}。
+		 *
+		 * <p>理由与归因键那一条相同，而且更硬：**"没标注"与"标注成了空"是两件事**，
+		 * 而"只有空格的会话 id"比两者都糟 —— 它既不是"没有会话信息"，
+		 * 也不是一个能用来分组的键（所有只打了空格的运行会挤在同一组里，
+		 * 看起来像"这些人属于同一段对话"）。
+		 * 归一化只做一次，做在构造期：让下游任何一处都不必再判 blank。
+		 */
+		public Start {
+			intent = blankToNull(intent);
+			conversationId = blankToNull(conversationId);
+		}
+
+		/** 同一个节点模板，换一次运行的 id 与问题（服务层为每次运行派生一个）。 */
+		public Start forRun(String runId, String question) {
+			return new Start(runId, question, node, intent, conversationId);
+		}
+
+		private static String blankToNull(String value) {
+			return value == null || value.isBlank() ? null : value;
+		}
+	}
 
 	/**
 	 * 写一个检查点：这一步的完整对话 + 累计用量。
@@ -65,6 +104,31 @@ public interface AgentRunStore {
 
 	/** 记一次工具调用（**含被拒绝的**）。 */
 	void recordToolCall(AgentRunRecord.ToolCallRecord record);
+
+	/**
+	 * 记一次<b>检索</b>的明细（阶段四 trace 的「检索」那一层）。
+	 *
+	 * <h2>为什么它挂在 {@link #recordToolCall} 旁边，而不是被它包着</h2>
+	 * 因为粒度不同，而粒度正是这一层存在的理由：一次工具调用是<b>一条</b>记录，
+	 * 一次检索会带 N 条命中（默认 5、上限 10）。前者是一行，后者是一组行。
+	 *
+	 * <h2>为什么调用方必须先判"这次是不是检索"</h2>
+	 * 不是检索的调用<b>不该</b>产生任何行。写一个"空明细"占位会让
+	 * "这次任务检索了几次"这个数字变大 —— 而它恰恰是这一层最常被问的数。
+	 * 判据是 {@code outcome.retrievalTrace().isPresent()}，见 {@code PersistingListener}。
+	 */
+	void recordRetrieval(AgentRunRecord.RetrievalRecord record);
+
+	/**
+	 * 读某次运行的全部检索明细（按步、按调用、按名次）。
+	 *
+	 * <p>返回的是<b>已按调用归组</b>的形状，而不是一个摊平的命中列表：
+	 * 页面上要显示的正是"第 2 步的第一次检索查了什么词、命中哪 5 条"，
+	 * 而摊平之后调用与命中的关系要靠调用方自己按 (step, call) 重新分组 ——
+	 * 那种分组写两遍就会出现两处不一致（一处把空命中的调用丢了，一处没丢）。
+	 * 所以分组做在存储这一侧，只做一次。
+	 */
+	List<AgentRunRecord.RetrievalRecord> retrievalsOf(String runId);
 
 	/** 把一次运行的累计用量更新到库里（不改变状态）。 */
 	void updateProgress(String runId, int totalTokens, int toolCallCount, long elapsedMs);
@@ -143,6 +207,20 @@ public interface AgentRunStore {
 
 	/** 全部运行（按创建时间倒序）——给界面与排查用。 */
 	List<AgentRunRecord> recentRuns(int limit);
+
+	/**
+	 * 同一个<b>会话</b>里的全部运行（按创建时间正序 —— 对话的时间顺序）。
+	 *
+	 * <h2>为什么按正序，而 {@link #recentRuns} 按倒序</h2>
+	 * 两者要回答的问题不同：列表页问"最近发生了什么"（倒序），
+	 * 而会话里问"这段对话是怎么一步步走到这里的"（正序）。
+	 * 混用会让排查时把因果读反 —— 而那种错不会报错，只是结论反过来。
+	 *
+	 * @param conversationId 会话 id；空白时返回空列表（**不是**"返回全部运行"）——
+	 *            一个空白键如果被当成"匹配所有"，那这个方法的调用方会在
+	 *            某次传参写错时得到一份看起来正常的完整列表
+	 */
+	List<AgentRunRecord> runsOfConversation(String conversationId);
 
 	/** 一次运行的全部步骤检查点（按步序）——用于还原执行过程（阶段四 Agent trace 的基础）。 */
 	List<AgentRunRecord.StepCheckpoint> stepsOf(String runId);

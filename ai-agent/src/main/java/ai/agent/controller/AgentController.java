@@ -8,6 +8,7 @@ import ai.agent.agent.limit.AgentConcurrencyLimitsView;
 import ai.agent.agent.store.AgentRunRecord;
 import ai.agent.agent.store.AgentRunStore;
 import ai.agent.agent.store.RunStatus;
+import ai.agent.agent.trace.AgentTraceView;
 import ai.agent.config.AgentApprovalProperties;
 import ai.agent.tool.ToolCallOutcome;
 import org.slf4j.Logger;
@@ -81,13 +82,23 @@ public class AgentController {
 	/** 审批时限（秒），给界面显示"还剩多久就超时"。 */
 	private final long approvalTimeoutSeconds;
 
+	/**
+	 * 五层 trace 的装配（阶段四第 2 件）。
+	 *
+	 * <p>本类只把它转出去，不做任何装配：那一层要读五张表、要算金额、要对齐会话，
+	 * 放在控制器里会让这个"只做读+组装"的类变成一个有业务判断的类 ——
+	 * 而类注释里写的第一条纪律正是"一旦这里出现业务判断，它就会与别处两处维护"。
+	 */
+	private final AgentTraceView traceView;
+
 	public AgentController(ResumableAgentService service, AgentRunStore store, AgentConcurrencyLimitsView limitsView,
-			AgentApprovalService approvals, AgentApprovalProperties approvalProperties) {
+			AgentApprovalService approvals, AgentApprovalProperties approvalProperties, AgentTraceView traceView) {
 		this.service = service;
 		this.store = store;
 		this.limitsView = limitsView;
 		this.approvals = approvals;
 		this.approvalTimeoutSeconds = approvalProperties.timeout().toSeconds();
+		this.traceView = traceView;
 	}
 
 	/**
@@ -126,16 +137,45 @@ public class AgentController {
 		// 一个超长的归因键会在写库那一刻抛 SQL 异常 —— 于是"用户多打了几个字"
 		// 变成"这次任务直接失败"，而那个失败看起来像存储出了问题。
 		// 裁剪是这里唯一合理的处理：归因键是给人看的标签，不是数据本体
-		String intent = request == null || request.intent() == null ? null : request.intent().strip();
-		if (intent != null && intent.length() > MAX_INTENT_CHARS) {
-			intent = intent.substring(0, MAX_INTENT_CHARS);
-		}
-		AgentRun run = service.runWithId(runId, question, intent);
+		String intent = clamp(request == null ? null : request.intent(), MAX_INTENT_CHARS);
+		// 【阶段四第 2 件：Agent trace 的第一层】会话 id。
+		//
+		// 与归因键同一条理由，而且更硬：它是**调用方的输入**，在这次运行存在之前就定了；
+		// 等结束再补的写法在"中途失败/被中断"的运行上补不上 ——
+		// 而"这一段对话里哪几次跑挂了"恰恰是靠它才问得出来的问题。
+		//
+		// 长度裁剪同样是必需的，理由与归因键一字不差（超长 → 写库抛 SQL 异常 →
+		// 用户的几个字变成"这次任务失败了"）
+		String conversationId = clamp(request == null ? null : request.conversationId(), MAX_CONVERSATION_CHARS);
+		AgentRun run = service.runWithId(runId, question, intent, conversationId);
 		return assemble(runId, run);
 	}
 
 	/** 归因键的最大长度（与 {@code agent_run.intent} 的列宽一致，改一处要一起改）。 */
 	private static final int MAX_INTENT_CHARS = 64;
+
+	/**
+	 * 会话 id 的最大长度（与 {@code agent_run.conversation_id} 的列宽一致）。
+	 *
+	 * <p>界面上生成的是一个 UUID（36 字符），所以 64 对正常调用方绰绰有余 ——
+	 * 裁剪只对"外部系统自己拼了一个超长 id"生效。
+	 */
+	private static final int MAX_CONVERSATION_CHARS = 64;
+
+	/**
+	 * 裁剪到列宽，空白归一成 {@code null}。
+	 *
+	 * <p>抽成一个方法而不是两处各写一遍判空：这两处的判据必须完全一致，
+	 * 而"归因键判了 blank、会话 id 忘了判"会让一个只打了空格的会话 id
+	 * 变成一个合法的分组键（所有这样的运行会挤在一段**不存在的对话**里）。
+	 */
+	private static String clamp(String value, int maxChars) {
+		if (value == null || value.isBlank()) {
+			return null;
+		}
+		String trimmed = value.strip();
+		return trimmed.length() > maxChars ? trimmed.substring(0, maxChars) : trimmed;
+	}
 
 	/** 历史运行列表（最近的在前）。 */
 	@GetMapping("/runs")
@@ -258,6 +298,28 @@ public class AgentController {
 	}
 
 	/**
+	 * <b>五层 trace</b>：把一次运行的过程按层级完整还原（阶段四第 2 件）。
+	 *
+	 * <h2>它为什么与 {@code /runs/{runId}} 并存，而不是把那个端点改大</h2>
+	 * 两个端点回答的是<b>两个不同的问题</b>，而混在一起会让两边都变模糊：
+	 * <ul>
+	 *   <li>{@code /runs/{id}} = 「这次运行怎么样」：状态、答案、每步的 token 与工具调用。
+	 *       它是**读一次运行**，两条查询就够；</li>
+	 *   <li>{@code /runs/{id}/trace} = 「这次运行<b>到底发生了什么</b>」：五层对齐 +
+	 *       会话上下文 + 检索明细 + 金额 + 提示词指纹。
+	 *       它要读五张表，而且响应明显更大。</li>
+	 * </ul>
+	 * 后者是排查入口（"用户说这次答得不对"），前者是列表点进来的概览。
+	 * 把排查需要的东西全塞进概览端点，会让每次点开历史运行都付一遍五层装配的代价 ——
+	 * 而其中大部分字段（例如检索明细）在概览里根本不会被看。
+	 */
+	@GetMapping("/runs/{runId}/trace")
+	public Map<String, Object> trace(@PathVariable String runId) {
+		return traceView.of(runId)
+				.orElseGet(() -> Map.of("ok", false, "error", "没有这个运行：" + runId));
+	}
+
+	/**
 	 * 四层保护的当前状态。
 	 *
 	 * <p>为什么把它和运行列表分开：这一页回答的是"系统现在健康吗"，
@@ -361,12 +423,26 @@ public class AgentController {
 	 *            而且它是**成本表的分组键**，一旦被 URL 转义规则改写（比如
 	 *            加号变成空格），就会出现两个只差一个空格的业务分组 ——
 	 *            那种错误在看板上表现为"这个业务怎么有两行"，而没人会想到是转义
+	 * @param conversationId <b>会话 id</b>（阶段四第 2 件）：这段对话的标识。
+	 *            同一段对话里的多次 {@code /ask} 传同一个值，trace 才能把它们串起来。
+	 *            <p>可空 —— 空表示"没有会话信息"（curl 直接调、外部系统调）。
+	 *            <b>后端刻意不自动生成一个</b>：给每次孤立调用编一个会话 id，
+	 *            会让"有会话"这件事看起来处处成立，而真相是我们不知道这些运行
+	 *            属不属于同一段对话。这与归因键"没标注就显示未标注"是同一条规矩。
+	 *            <p>它同样进请求体（理由与 intent 一字不差：它是分组键，
+	 *            被 URL 转义改写会让同一段对话裂成两段 —— 而那种错在页面上
+	 *            表现为"这段对话怎么只有一次运行"，没人会想到是转义）
 	 */
-	public record AskRequest(String question, String intent) {
+	public record AskRequest(String question, String intent, String conversationId) {
 
-		/** 不带归因键的构造器（旧调用点与测试用）—— 归因键为空就是"未标注"。 */
+		/** 不带归因键与会话的构造器（旧调用点与测试用）。 */
 		public AskRequest(String question) {
-			this(question, null);
+			this(question, null, null);
+		}
+
+		/** 带归因键、不带会话的构造器（成本看板那批调用点用）。 */
+		public AskRequest(String question, String intent) {
+			this(question, intent, null);
 		}
 	}
 

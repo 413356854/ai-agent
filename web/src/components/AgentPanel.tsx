@@ -10,6 +10,7 @@ import type {
   AgentRunDetail,
   AgentRunRow,
   AgentToolCall,
+  AgentTrace,
 } from '../api/agent'
 import type { Remote } from '../types'
 
@@ -62,6 +63,13 @@ export function AgentPanel({ agent }: { agent: UseAgentResult }) {
       <AskCard remote={agent.current} running={agent.running} onAsk={agent.ask} />
 
       {agent.detail.status !== 'idle' && <DetailCard remote={agent.detail} onClose={agent.closeDetail} />}
+
+      {/*
+        五层 trace 紧跟在运行详情下面（阶段四第 2 件）。
+        它**不**塞进 DetailCard 里：那是另一个端点（要读五张表、要算金额），
+        而且它读失败时详情那一块必须还能正常用 —— 排查入口不能因为一个次级端点挂了而全黑。
+      */}
+      {agent.trace.status !== 'idle' && <TraceCard remote={agent.trace} />}
 
       <RunsCard remote={agent.runs} onReload={agent.loadRuns} onOpen={agent.openDetail} />
 
@@ -950,6 +958,346 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
 // ---------------------------------------------------------------------------
 //  3. 某一次运行的详情
 // ---------------------------------------------------------------------------
+
+/**
+ * **五层 trace**（阶段四第 2 件）：把一次运行按"会话 → 运行 → LLM 调用 → 工具调用 → 检索"还原。
+ *
+ * <h2>它与上面那张"运行详情"的分工</h2>
+ * 运行详情回答「这次运行怎么样」（状态 / 答案 / 每步 token / 每次工具调用）；
+ * 这一张回答「这次运行<b>到底发生了什么</b>」，多出来的是三样：
+ * <ol>
+ *   <li><b>检索那一层</b>（第 5 层）：命中了哪几个块、各占多少 token、得分多少。
+ *       在此之前它只存在于回填给模型的<u>一段中文文本</u>里 ——
+ *       要数"检索了几次"得数文本里出现了几次「在 516 个文档片段里找到」，
+ *       而"检索占了输入多大一块"那段文本里根本没有这个数；</li>
+ *   <li><b>会话那一层</b>（第 1 层）：这段对话里一共跑了几次、各自什么结局；</li>
+ *   <li><b>提示词指纹</b>：这一步用的是哪一版系统提示词 ——
+ *       没有它，"某天的答案变差了是不是因为那天换了提示词"永远追不到。</li>
+ * </ol>
+ *
+ * <h2>界面上的三条纪律（都是这一页最容易做错的地方）</h2>
+ * <ol>
+ *   <li><b>金额算不出来时显示「算不出」，绝不显示 ¥0.00</b>。
+ *       那个 0 会被读成"这次不花钱"，而真相是"我们不知道它花多少"。
+ *       这与成本看板是同一条纪律，两处的写法必须一致；</li>
+ *   <li><b>检索 token 必须标成「估算」</b>。它来自块自带的估算器，
+ *       而账目口径的 token 来自上游 usage —— 两个口径混排而不加区分，
+ *       等于把估算当事实记账；</li>
+ *   <li><b>「空」必须区分「本来就不该有」与「漏记了」</b>。
+ *       判据由后端的 `layers[].expected` 给（前端不自己判 —— 那会是第二份判据）。
+ *       一次没调工具的运行在第 4、5 层本来就是空的，那是正常的；
+ *       而一次调了检索却查不到明细，说明落库链路有问题。两者长得一样、含义相反。
+ * </ol>
+ */
+function TraceCard({ remote }: { remote: Remote<AgentTrace> }) {
+  return (
+    <Card size="small" className="diag-card diag-card-wide" title="五层 trace：会话 → 运行 → LLM 调用 → 工具调用 → 检索">
+      {remote.status === 'loading' && <LoadingLine text="正在读五层 trace（会话 / 步骤 / 工具 / 检索 / 金额）……" />}
+      {remote.status === 'error' && <InlineError title="trace 读取失败" message={remote.error} />}
+      {remote.status === 'ok' && <TraceBody data={remote.data} />}
+    </Card>
+  )
+}
+
+function TraceBody({ data }: { data: AgentTrace }) {
+  if (!data.ok) {
+    return <InlineError title="读不到这次 trace" message={data.error ?? '未知原因'} />
+  }
+
+  return (
+    <Flex vertical gap={14}>
+      {/*
+        ── 五层到场清单排在最上面 ──
+        理由与"待确认卡排第一"同一条：它是**读这一页之前必须先知道的事**。
+        不看它就直接往下读，会把"这一层本来就没内容"误读成"漏记了"。
+      */}
+      <div>
+        <Typography.Title level={5} className="rag-subtitle">
+          五层到场情况
+        </Typography.Title>
+        <Flex wrap gap={8} data-testid="trace-layers">
+          {data.layers.map(layer => (
+            <Tag
+              key={layer.index}
+              /* 颜色编码的是**这一层有没有内容**，而判断依据是后端给的 expected：
+                 有内容=绿；没内容但不该有=默认灰（正常）；没内容却该有=红（缺陷） */
+              color={layer.expected ? 'green' : 'default'}
+              data-testid={`trace-layer-${layer.key}`}
+              data-expected={layer.expected ? '1' : '0'}
+              title={layer.storage}
+            >
+              {layer.index}. {layer.name}
+              {layer.expected ? ' ✓' : '（本次无）'}
+            </Tag>
+          ))}
+        </Flex>
+      </div>
+
+      {/* ── 第 1 层：会话 ── */}
+      <div>
+        <Typography.Title level={5} className="rag-subtitle">
+          ① 会话{data.conversation.present ? `：这段对话里一共 ${data.conversation.runCount} 次运行` : ''}
+        </Typography.Title>
+        {!data.conversation.present ? (
+          /*
+            【这两种情况必须分开说】
+            "这段对话只有一次运行"与"这次运行没有会话信息"在界面上都会渲染成一个空列表 ——
+            而它们对使用者是两件不同的事：后者说明调用方没传会话 id。
+            后端给了 present 布尔与一句 note，这里只负责显示，不自己猜。
+          */
+          <Alert
+            type="info"
+            showIcon
+            data-testid="trace-conversation-absent"
+            title="这次运行没有会话信息"
+            description={data.conversation.note ?? '调用方没有传会话 id。'}
+          />
+        ) : (
+          <>
+            <Typography.Text type="secondary" className="diag-note">
+              会话 id：<code>{data.conversation.id}</code>
+              {data.conversation.truncated ? '（只显示最近若干次）' : ''}
+            </Typography.Text>
+            <div className="rag-table-scroll">
+              <table className="rag-metric-table">
+                <thead>
+                  <tr>
+                    <th>运行</th>
+                    <th>问题</th>
+                    <th>状态</th>
+                    <th>token</th>
+                    <th>时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.conversation.runs.map(run => (
+                    <tr key={run.id} data-current={run.current ? '1' : '0'} className={run.current ? 'is-baseline' : undefined}>
+                      <td className="is-mono">
+                        {run.current && <Tag color="blue">正在看</Tag>}
+                        {run.id}
+                      </td>
+                      <td className="is-excerpt">{run.question}</td>
+                      <td>{STATUS_META[run.status]?.label ?? run.status}</td>
+                      <td className="is-mono">{run.totalTokens}</td>
+                      <td className="is-mono">{run.createdAt}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* ── 第 5 层：检索（本件的主角） ── */}
+      <div>
+        <Typography.Title level={5} className="rag-subtitle">
+          ⑤ 检索：这次任务查了 {data.retrieval.calls} 次
+          {data.retrieval.emptyCalls > 0 ? `，其中 ${data.retrieval.emptyCalls} 次一条都没查到` : ''}
+        </Typography.Title>
+        {data.retrieval.calls === 0 ? (
+          <Typography.Text type="secondary" className="diag-note" data-testid="trace-retrieval-none">
+            {data.layers.find(l => l.key === 'retrieval')?.expected === false
+              ? '这次运行没有检索 —— 它没有调用过检索类工具，所以这一层为空是正常的（不是漏记）。'
+              : '没读到检索明细，但这次运行调用过检索类工具 —— 这说明落库链路可能有问题。'}
+          </Typography.Text>
+        ) : (
+          <>
+            <div className="stat-grid">
+              <Stat label="检索次数" value={data.retrieval.calls} />
+              <Stat label="命中条数" value={data.retrieval.hitCount} />
+              {/* 「估算」两个字必须显示出来 —— 见类注释第 2 条纪律 */}
+              <Stat label="命中 token（估算）" value={data.retrieval.hitTokens} />
+              <Stat
+                label="占输入比例"
+                value={`${(data.retrieval.shareOfPrompt * 100).toFixed(1)}%`}
+                accent={data.retrieval.shareOfPrompt > 0.3}
+              />
+              <Stat label="空命中次数" value={data.retrieval.emptyCalls} accent={data.retrieval.emptyCalls > 0} />
+            </div>
+            <Typography.Text type="secondary" className="diag-note">
+              {data.retrieval.note}
+            </Typography.Text>
+
+            {data.steps
+              .filter(step => step.retrievalCalls.length > 0)
+              .map(step => (
+                <div key={step.stepIndex} style={{ marginTop: 12 }}>
+                  {step.retrievalCalls.map(rc => (
+                    <div key={`${rc.stepIndex}-${rc.callIndex}`} className="rag-chunk" data-testid="trace-retrieval-call">
+                      <div className="rag-chunk-head">
+                        <Typography.Text strong>
+                          第 {rc.stepIndex} 步 · 第 {rc.callIndex + 1} 次调用 · {rc.toolName}
+                        </Typography.Text>
+                        <Tag color={rc.hitCount === 0 ? 'orange' : 'blue'}>
+                          {rc.hitCount === 0 ? '一条都没查到' : `命中 ${rc.hitCount} 条`}
+                        </Tag>
+                        {/*
+                          「召回不足」单独一个标签：它**不是错误**（语料里可能真的只有两条相关），
+                          但它是"语料不够"与"检索没找着"分界线上最便宜的一个信号 ——
+                          而这两者要改的东西完全相反
+                        */}
+                        {rc.shortOfTopK && rc.hitCount > 0 && (
+                          <Tag color="gold">少于要的 {rc.topK} 条（可能召回不足）</Tag>
+                        )}
+                      </div>
+                      {/*
+                        查询词、要几条、索引多大 —— 这三个数就是"0 条命中"的全部上下文。
+                        没有索引规模就分不清"库是空的"与"没匹配上"，而那两种的改法相反
+                      */}
+                      <Typography.Text type="secondary" className="diag-note">
+                        查询词：<code>{rc.query}</code>　要 {rc.topK} 条　索引 {rc.indexSize} 块　
+                        {rc.hitTokens} token（估算）　耗时 {rc.elapsedMs} ms
+                      </Typography.Text>
+                      {rc.hits.length > 0 && (
+                        <div className="rag-table-scroll">
+                          <table className="rag-hit-table">
+                            <thead>
+                              <tr>
+                                <th>名次</th>
+                                <th>得分</th>
+                                <th>来源 / 章节</th>
+                                <th>token</th>
+                                <th>片段开头</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {rc.hits.map(hit => (
+                                <tr key={hit.rank}>
+                                  {/* 名次就是**模型看到的名次** —— 后端断言了它连续且从 1 开始 */}
+                                  <td className="is-rank">{hit.rank}</td>
+                                  <td className="is-mono" title="只在同一次检索内可比：不同引擎的量纲不同">
+                                    {hit.score.toFixed(4)}
+                                  </td>
+                                  <td className="is-breadcrumb">
+                                    <div className="is-mono">{hit.documentId}</div>
+                                    <div className="rag-breadcrumb">{hit.breadcrumb || '（无标题）'}</div>
+                                  </td>
+                                  <td className="is-mono">{hit.tokenCount}</td>
+                                  <td className="is-excerpt">{hit.excerpt}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ))}
+          </>
+        )}
+      </div>
+
+      {/* ── 第 3 层：LLM 调用（含提示词指纹） ── */}
+      <div>
+        <Typography.Title level={5} className="rag-subtitle">
+          ③ LLM 调用：每一步用的是哪一版提示词
+        </Typography.Title>
+        {data.steps.length === 0 ? (
+          <Typography.Text type="secondary" className="diag-note">
+            这次运行一个步骤都没有（大多死在第一步之前，例如上游鉴权失败）—— 记的是 0 token，
+            那不是"没花钱"，而是"没有可记录的花费"。
+          </Typography.Text>
+        ) : (
+          <div className="rag-table-scroll">
+            <table className="rag-metric-table">
+              <thead>
+                <tr>
+                  <th>步</th>
+                  <th>提示词指纹</th>
+                  <th>模型</th>
+                  <th>prompt</th>
+                  <th>命中缓存</th>
+                  <th>completion</th>
+                  <th>检索</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.steps.map(step => (
+                  <tr key={step.stepIndex} data-testid="trace-step">
+                    <td className="is-mono">{step.stepIndex}</td>
+                    <td className="is-mono">
+                      {step.promptFingerprint ? (
+                        <span className="prompt-hash" title="版本号是「指针」、指纹是「内容」">
+                          {step.promptFingerprint}
+                        </span>
+                      ) : (
+                        /*
+                          空指纹有两种成因（老数据 / 提示词服务当时读不到当前版本），
+                          它们要做的动作不同 —— 所以不合并成一句"未知"
+                        */
+                        <Typography.Text type="secondary" title="可能是这一列加上之前的老数据，也可能是提示词服务当时读不到当前版本（日志里有 WARN）">
+                          未记录
+                        </Typography.Text>
+                      )}
+                    </td>
+                    <td className="is-mono">{step.modelName || '(未上报)'}</td>
+                    <td className="is-mono">{step.promptTokens}</td>
+                    <td className="is-mono">{step.cacheReadTokens}</td>
+                    <td className="is-mono">{step.completionTokens}</td>
+                    <td className="is-mono">
+                      {step.retrievalCount === 0 ? '—' : `${step.retrievalCount} 次 / ${step.retrievalHitTokens} token`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── 金额：算不出来就说算不出来 ── */}
+      <div>
+        <Typography.Title level={5} className="rag-subtitle">
+          这次运行花了多少
+        </Typography.Title>
+        <div className="stat-grid">
+          <Stat label="输入（未命中缓存）" value={data.cost.uncachedPromptTokens} />
+          <Stat label="输入（命中缓存）" value={data.cost.cachedPromptTokens} />
+          <Stat label="输出" value={data.cost.completionTokens} />
+          <Stat label="token 合计" value={data.cost.totalTokens} />
+        </div>
+        {data.cost.amount === null ? (
+          /* ★ 这里**绝不能**显示 ¥0.00 —— 见类注释第 1 条纪律 */
+          <Alert
+            type="warning"
+            showIcon
+            className="cost-needs-alert"
+            data-testid="trace-cost-unknown"
+            title="算不出金额"
+            description={data.cost.amountReason ?? '价格未配置'}
+          />
+        ) : (
+          <Typography.Text className="cost-amount" data-testid="trace-cost-amount">
+            {data.cost.amount} {data.cost.currency}
+          </Typography.Text>
+        )}
+        {Object.values(data.cost.byModel).map(row => (
+          <Typography.Text key={row.model} type="secondary" className="diag-note">
+            模型 <code>{row.model || '(未上报)'}</code>：
+            {row.amount === null ? `算不出（${row.amountReason ?? '无价格'}）` : `${row.amount} ${data.cost.currency}`}
+            {row.priceRule ? `　价格规则：${row.priceRule}` : ''}
+          </Typography.Text>
+        ))}
+      </div>
+
+      {/* ── 边界说明 ── */}
+      {data.notes.length > 0 && (
+        <div>
+          <Typography.Title level={5} className="rag-subtitle">
+            这一页的边界
+          </Typography.Title>
+          <ul className="cost-notes">
+            {data.notes.map((note, i) => (
+              <li key={i}>{note}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Flex>
+  )
+}
 
 function DetailCard({ remote, onClose }: { remote: Remote<AgentRunDetail>; onClose: () => void }) {
   return (

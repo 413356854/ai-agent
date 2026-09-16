@@ -157,15 +157,58 @@ public class AgentLoop {
 	 */
 	public AgentRun run(String runId, String question, List<Message> resumeMessages, int resumeStepIndex,
 			AgentProgressListener listener, ToolInvocation pendingInvocation, ApprovalGrant grant) {
+		return run(runId, question, resumeMessages, resumeStepIndex, listener, pendingInvocation, grant, null);
+	}
+
+	/**
+	 * 完整形态，多一个<b>续跑时的提示词指纹</b>（{@code fallbackPromptFingerprint}）。
+	 *
+	 * <h2>为什么恢复路径必须显式把这个值传进来，而不是让它留空</h2>
+	 * 恢复走的是"检查点里已经有系统消息"那条分支，所以本次运行<b>不会去读提示词</b>
+	 * （{@link #loadSystemPrompt()} 只在 {@code messages.isEmpty()} 时调用）。
+	 * 如果那时记空串，就会出现一个很坏的后果：<b>恢复会把原来那几步的指纹覆盖掉</b> ——
+	 * 因为检查点按 {@code (run_id, step_index)} 覆盖写，而恢复后的步号是接着数的，
+	 * 但"最新那一步"在恢复开始时就已经存在了。
+	 *
+	 * <p>更根本的是语义：那一步用的确实是<b>原来那一版</b>的提示词
+	 * （它就写在检查点的系统消息里）。记成"本次读到的版本"是假话，
+	 * 记成空串则是"不知道"—— 而这两者都不是事实。
+	 * 所以服务层从检查点里把原指纹取出来传真，让恢复后的步骤
+	 * 与它前面那几步<b>记的是同一版</b>，而那也是"当时到底用的哪一版"的正确答案。
+	 *
+	 * @param fallbackPromptFingerprint 本次没有读提示词时使用的指纹（恢复路径传原值）；
+	 *            为 {@code null} 表示"确实没有"（新起的运行会自己去读）
+	 */
+	public AgentRun run(String runId, String question, List<Message> resumeMessages, int resumeStepIndex,
+			AgentProgressListener listener, ToolInvocation pendingInvocation, ApprovalGrant grant,
+			String fallbackPromptFingerprint) {
 		long startedAt = System.nanoTime();
 
 		List<Message> messages = new ArrayList<>(resumeMessages);
+		// 【阶段四 trace：这一步用的是哪一版提示词】
+		//
+		// 在这里读**一次**，然后每一步都传同一个值。三个理由，按重要性排：
+		//  ① 与热更新的粒度对齐：提示词只在"下一次运行"生效。如果每一步各读一次，
+		//     那么运行中途换版本时，同一份对话的前后两轮会遵循不同的指令 ——
+		//     报告里"它为什么这么选"就变得无法解释（这正是 PromptService 注释里
+		//     写死的那个取舍）；
+		//  ② 本方法下面有三个 afterStep 调用点（作答 / 暂停等人 / 正常一步）。
+		//     各自读一次就要三处都记得读 —— 漏一处的表现是"某些运行没有指纹"，
+		//     而那看起来像存储坏了；
+		//  ③ 它是**事实**，不是配置：一次运行用的就是这一版，读到一次就定了。
+		//
+		// 新起的运行（messages 为空）：自己去读一次。
+		// 续跑：不读（系统消息已经在检查点里），改用服务层从检查点取来的原指纹。
+		String promptFingerprint;
 		if (messages.isEmpty()) {
+			promptFingerprint = currentPromptFingerprint();
 			messages.add(new SystemMessage(loadSystemPrompt()));
 			messages.add(new UserMessage(question));
 		}
-		else if (grant != null) {
-			// 【顺序很关键：先判 grant、再判 pendingInvocation】
+		else {
+			promptFingerprint = fallbackPromptFingerprint == null ? "" : fallbackPromptFingerprint;
+
+			// 【下面的顺序很关键：先判 grant、再判 pendingInvocation】
 			//
 			// 两者在恢复时**会同时存在**（那个被批准的调用，在"结果未知"这个意义上
 			// 也是一个"没有返回的调用"）。而它们的说明文本是完全相反的：
@@ -175,12 +218,14 @@ public class AgentLoop {
 			// 那句话在语义上没说错，但它**没有告诉模型"这次已经批过了"**，
 			// 于是模型很可能改一版参数（"既然没成功，我换个写法"）——
 			// 而换参数意味着**重新审批**：人刚点完的那一下白费了。
-			messages.add(new UserMessage(approvalNotice(grant)));
-		}
-		else if (pendingInvocation != null) {
-			// 中断说明：只加文字，不加假的 tool 消息 ——
-			// 伪造一条"工具返回了 X"是最危险的做法：模型会把它当成事实
-			messages.add(new UserMessage(interruptionNotice(pendingInvocation)));
+			if (grant != null) {
+				messages.add(new UserMessage(approvalNotice(grant)));
+			}
+			else if (pendingInvocation != null) {
+				// 中断说明：只加文字，不加假的 tool 消息 ——
+				// 伪造一条"工具返回了 X"是最危险的做法：模型会把它当成事实
+				messages.add(new UserMessage(interruptionNotice(pendingInvocation)));
+			}
 		}
 
 		List<AgentRun.Step> steps = new ArrayList<>();
@@ -252,7 +297,7 @@ public class AgentLoop {
 				// 而不是"每一次工具调用之后"—— 后者在纯文字回答的任务上一次都不写。
 				messages.add(new AssistantMessage(reply.text()));
 				listener.afterStep(runId, round, step, List.copyOf(messages), totalTokens, toolCallCount,
-						elapsedMs(startedAt));
+						elapsedMs(startedAt), promptFingerprint);
 				log.info("Agent 在 {} 轮后给出答案，共 {} tokens / {}ms", round, totalTokens, elapsedMs(startedAt));
 				AgentRun answered = new AgentRun(question, steps, reply.text(), AgentStopReason.ANSWERED, totalTokens,
 						elapsedMs(startedAt), toolCallCount);
@@ -331,7 +376,7 @@ public class AgentLoop {
 						reply.promptTokens(), reply.completionTokens(), elapsedMs(stepStarted),
 						reply.cachedPromptTokens());
 				listener.afterStep(runId, round, partialStep, List.copyOf(messages), totalTokens, toolCallCount,
-						elapsedMs(startedAt));
+						elapsedMs(startedAt), promptFingerprint);
 
 				AgentStopReason reason = AgentStopReason.WAITING_FOR_APPROVAL;
 				AgentRun waiting = new AgentRun(question, steps, null, reason, totalTokens, elapsedMs(startedAt),
@@ -350,7 +395,7 @@ public class AgentLoop {
 			// 重复动作是一个"正常出口"，它这一步的上下文是完整可用的 ——
 			// 放后面的话，恰恰在最需要看到"它在原地打转"的那次运行里会丢掉最后一步
 			listener.afterStep(runId, round, step, List.copyOf(messages), totalTokens, toolCallCount,
-					elapsedMs(startedAt));
+					elapsedMs(startedAt), promptFingerprint);
 
 			if (duplicateHit) {
 				// 不把"重复"当成正常一步继续：模型已经证明它没有新信息可用，
@@ -476,6 +521,35 @@ public class AgentLoop {
 			return base;
 		}
 		return base + "\n\n## 你当前可以使用的工具\n\n" + catalog;
+	}
+
+	/**
+	 * 读这一版提示词的指纹（trace 用），<b>读不到就返回空串</b>。
+	 *
+	 * <h2>为什么这里吞掉异常，而 {@link #loadSystemPrompt()} 不吞</h2>
+	 * 因为两者的失败后果完全不同：
+	 * <ul>
+	 *   <li>{@code loadSystemPrompt} 失败 → 这次运行<b>没有系统提示词</b>。
+	 *       模型会用默认人格回答，而答案看起来"只是变笨了" ——
+	 *       这必须让它炸，否则事故会被读成"模型能力不行"；</li>
+	 *   <li>本方法失败 → 只是<b>这一列没有值</b>。任务照样能跑、答案照样对，
+	 *       代价是"这次运行用的是哪一版"事后查不到。</li>
+	 * </ul>
+	 * 让后者把整个运行打断，等于"因为一个观测字段而拒绝服务" —— 那个取舍在
+	 * 阶段三的并发闸门那边已经定过一次（观测不该比业务更硬）。
+	 * <p>但**必须留一条 WARN**：静默地少一个字段，与"这一版本来就没有指纹"分不开，
+	 * 而那条日志正是两者的分界。
+	 */
+	private String currentPromptFingerprint() {
+		try {
+			String fingerprint = prompts.currentFingerprint(PromptKind.AGENT_LOOP);
+			return fingerprint == null ? "" : fingerprint;
+		}
+		catch (RuntimeException e) {
+			log.warn("读不到当前提示词版本的指纹（这次运行的 prompt_fingerprint 会是空的，不影响执行）：{}",
+					e.getMessage());
+			return "";
+		}
 	}
 
 	private static long elapsedMs(long startedAt) {

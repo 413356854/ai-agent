@@ -250,7 +250,7 @@ class AgentRunRecoveryTest {
 	void runWithoutCheckpointIsNotResumed() {
 		// 起一个运行但一步都没走完
 		String runId = UUID.randomUUID().toString();
-		store.start(runId, "还没开始就挂了", properties.node());
+		store.start(new AgentRunStore.Start(runId, "还没开始就挂了", properties.node(), null, null));
 
 		List<ResumableAgentService.ResumeResult> results = service.resumeInterruptedRuns();
 
@@ -270,8 +270,8 @@ class AgentRunRecoveryTest {
 	void claimingIsScopedToNode() {
 		String mine = UUID.randomUUID().toString();
 		String theirs = UUID.randomUUID().toString();
-		store.start(mine, "我的任务", properties.node());
-		store.start(theirs, "别人的任务", "another-node");
+		store.start(new AgentRunStore.Start(mine, "我的任务", properties.node(), null, null));
+		store.start(new AgentRunStore.Start(theirs, "别人的任务", "another-node", null, null));
 
 		List<AgentRunRecord> claimed = store.markInterruptedRuns(properties.node());
 
@@ -286,7 +286,7 @@ class AgentRunRecoveryTest {
 	@DisplayName("认领是幂等的：第二次调用不会再认领同一批（否则会恢复两次）")
 	void claimingIsIdempotent() {
 		String runId = UUID.randomUUID().toString();
-		store.start(runId, "任务", properties.node());
+		store.start(new AgentRunStore.Start(runId, "任务", properties.node(), null, null));
 
 		assertThat(store.markInterruptedRuns(properties.node())).hasSize(1);
 		assertThat(store.markInterruptedRuns(properties.node()))

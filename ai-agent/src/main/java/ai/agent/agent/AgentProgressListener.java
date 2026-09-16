@@ -49,9 +49,18 @@ public interface AgentProgressListener {
 	 * @param totalTokensSoFar 到这一步为止累计的 token
 	 * @param toolCallsSoFar 到这一步为止累计的工具调用次数（含被拒绝的）
 	 * @param elapsedMsSoFar 到这一步为止的累计耗时
+	 * @param promptFingerprint <b>这一步用的系统提示词指纹</b>（阶段四第 2 件）。
+	 *        <p>它由 {@code AgentLoop} 在<b>运行开始时读一次</b>，然后每一步都传同一个值 ——
+	 *        这不是偷懒，而是与热更新的粒度对齐：提示词的更换只在<b>下一次运行</b>生效
+	 *        （同一次运行中途换会让前后两轮遵循不同指令，报告就没法解释"它为什么这么选"）。
+	 *        如果每一步各自去读一次，那么"某一步用的是哪一版"就会在运行中途换版本时
+	 *        出现同一份对话里两版混用 —— 而那正是热更新刻意避免的形态。
+	 *        <p>恢复路径上它是<b>空串</b>：那一步用的是检查点里已经注入过的系统消息，
+	 *        而不是本次读到的这一版。空串表示"本次运行没有读提示词"，
+	 *        与"某个叫空串的版本"不会混淆
 	 */
 	default void afterStep(String runId, int stepIndex, AgentRun.Step step, List<Message> messages,
-			int totalTokensSoFar, int toolCallsSoFar, long elapsedMsSoFar) {
+			int totalTokensSoFar, int toolCallsSoFar, long elapsedMsSoFar, String promptFingerprint) {
 	}
 
 	/** 任务结束（任何出口都会调用一次）。 */

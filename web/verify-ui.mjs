@@ -676,6 +676,141 @@ if ((await runsCard.count()) > 0) {
       expect('详情显示了检查点上下文大小', /字符/.test(detailText))
     }
 
+    // ================================================================
+    //  五层 trace（阶段四第 2 件）—— 在关掉详情**之前**验证
+    //
+    //  【这一段要证明的是"第 5 层真的被摆出来了"】
+    //  检索明细在此之前只存在于**回填给模型的那段中文文本**里（回填文本确实也显示
+    //  在这一页上），所以核心断言是"页面上能读出<u>结构化</u>的检索明细"
+    //  （查询词 / 索引规模 / 名次 / 每块 token / 得分），而不是"页面上出现了「检索」两个字"
+    //  —— 后者在一个只显示回填文本的实现上同样会过。
+    //
+    //  ⚠️ 位置很关键：`closeDetail` 会把 trace 与详情**一起**清掉（理由见 `useAgent` 里
+    //  那段注释：留着它会让人"关掉再点另一次"时先看到上一条运行的 trace）。
+    //  所以这一段必须在点「关闭」之前跑完。
+    // ================================================================
+    const traceCard = page.locator('.diag-card', { hasText: '五层 trace' }).first()
+    await traceCard.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {})
+    await page.waitForTimeout(300)
+    expect('★ 详情打开时五层 trace 卡同时出现（两个端点是并发拉的）', (await traceCard.count()) > 0)
+
+    if ((await traceCard.count()) > 0) {
+      const traceText = (await traceCard.innerText()).trim()
+
+      // ---- 两条路径共用的断言（不依赖假数据）----
+
+      // 【五层到场清单】它是读这一页之前必须先知道的事：
+      // 不看它会把"这一层本来就没内容"误读成"漏记了"
+      const layerTags = traceCard.locator('[data-testid^="trace-layer-"]')
+      const layerCount = await layerTags.count()
+      expect('五层到场清单列出了 5 层', layerCount === 5, `实际 ${layerCount} 层`)
+      expect('清单里点名了会话那一层', layerCount > 0 && /会话/.test(await layerTags.first().innerText()))
+      expect('清单里点名了检索那一层', (await traceCard.locator('[data-testid="trace-layer-retrieval"]').count()) > 0)
+
+      // 【★ 这一条钉的是"空"与"漏记"必须分得开】
+      // 判据由后端给（`expected` 布尔），前端只负责显示 —— 页面自己判的话就是第二份判据。
+      // 两条路径上真后端那次运行大多死在第一步之前（假 key 401），所以层次会缺 ——
+      // 但**每一层的标签与后端给的 expected 必须自洽**，这是任何路径上都成立的性质
+      {
+        const inconsistencies = await traceCard.evaluate(card =>
+          [...card.querySelectorAll('[data-testid^="trace-layer-"]')]
+            .filter(tag => {
+              const expected = tag.getAttribute('data-expected') === '1'
+              const saysHasContent = tag.textContent.includes('✓')
+              return expected !== saysHasContent
+            })
+            .map(tag => tag.textContent.trim()),
+        )
+        expect(
+          '每一层的标签与后端给的 expected 自洽（「空」与「该有」必须分得开）',
+          inconsistencies.length === 0,
+          inconsistencies.join('、'),
+        )
+      }
+
+      // 会话那一层：要么给出会话 id 与运行列表，要么**明说没有会话信息**。
+      // ⚠️ 两种渲染都不能是"一片空白" —— 空白会让人以为功能没做
+      {
+        const saysAbsent = (await traceCard.locator('[data-testid="trace-conversation-absent"]').count()) > 0
+        const hasConversationId = /会话 id/.test(traceText)
+        expect('会话那一层给出了会话 id 或明说没有会话信息', hasConversationId || saysAbsent)
+      }
+
+      // 提示词指纹那一列必须存在（"这一步用的是哪一版"是本件三件之一）
+      expect('LLM 调用表里有「提示词指纹」列', /提示词指纹/.test(traceText))
+
+      // 【★ 金额算不出来时绝不能显示 ¥0.00】
+      // 与成本看板同一条纪律，而它在界面上只有这一条判据：amount 为 null 时
+      // 必须渲染成「算不出金额」，而不是任何形式的 0。
+      // 真后端上价格表默认是空的，所以这条在两条路径上都该成立
+      {
+        const unknownBox = traceCard.locator('[data-testid="trace-cost-unknown"]')
+        const knownAmount = traceCard.locator('[data-testid="trace-cost-amount"]')
+        const hasUnknown = (await unknownBox.count()) > 0
+        const hasKnown = (await knownAmount.count()) > 0
+        expect('金额要么给数字、要么明说「算不出」', hasUnknown || hasKnown)
+        if (hasUnknown) {
+          const text = await unknownBox.innerText()
+          expect('「算不出」那一块写明了原因', text.length > 10, text.slice(0, 60))
+          expect('「算不出」时页面上没有 ¥0.00', !/¥\s*0\.0{2,}/.test(traceText))
+        }
+      }
+
+      // ---- 假后端路径特有的断言：那里有确定性的检索明细 ----
+      if (EXPECT_REFLECTION) {
+        const retrievalCalls = traceCard.locator('[data-testid="trace-retrieval-call"]')
+        const callCount = await retrievalCalls.count()
+        expect('★ 检索那一层被摆出来了（每一次检索一个明细块）', callCount > 0, `实际 ${callCount} 块`)
+
+        if (callCount > 0) {
+          const first = await retrievalCalls.first().innerText()
+          // 这三个数就是"0 条命中"的全部上下文 —— 没有索引规模就分不清
+          // "库是空的"与"没匹配上"，而那两种的改法正好相反
+          expect('检索明细里有查询词', /查询词/.test(first))
+          expect('检索明细里有索引规模', /索引 \d+ 块/.test(first))
+          expect('检索明细里标了 token 是估算的', /估算/.test(first))
+
+          // 命中的结构：名次 / 得分 / 来源 / 每块 token / 摘录
+          const hitTable = retrievalCalls.filter({ has: page.locator('.rag-hit-table') }).first()
+          const hitRows = hitTable.locator('.rag-hit-table tbody tr')
+          const hitCount = await hitRows.count()
+          expect('★ 命中的块逐条列出（不是一段文本）', hitCount > 0, `实际 ${hitCount} 行`)
+          if (hitCount > 0) {
+            const hitHeader = await hitTable.locator('.rag-hit-table thead').innerText()
+            expect('命中表有名次列', /名次/.test(hitHeader))
+            expect('命中表有得分列', /得分/.test(hitHeader))
+            expect('命中表有来源/章节列', /来源/.test(hitHeader))
+            expect('命中表有每块 token 列', /token/.test(hitHeader))
+            expect('命中表有片段摘录列', /片段开头/.test(hitHeader))
+
+            // 名次必须从 1 开始且连续 —— 后端断言过同一条性质，这里是它在页面上的样子。
+            // （后端在写库时把名次与列表顺序对齐，页面直接渲染；两边都钉住才叫闭环）
+            const ranks = await hitRows.evaluateAll(rows =>
+              rows.map(r => Number((r.querySelector('td')?.textContent ?? '').trim())),
+            )
+            expect(
+              '名次从 1 开始且连续（它就是模型看到的名次）',
+              ranks.length > 0 && ranks.every((r, i) => r === i + 1),
+              ranks.join(','),
+            )
+          }
+        }
+
+        // 【0 命中的检索同样留痕，而且页面要说清是"没查到"】
+        // 假数据里刻意造了一次 0 命中：它是最该被单独看见的一种检索
+        // （白跑一轮照样花钱），而它混在"检索了 N 次"里完全看不出来
+        expect('★ 一次都没查到的检索也被显示出来', /一条都没查到/.test(traceText))
+        expect('检索汇总里单独给了空命中次数（没并进检索次数）', /空命中次数/.test(traceText))
+        // 检索 token 的口径必须标明是估算 —— 它与成本看板那边上游 usage 不是一回事
+        expect('检索 token 标明了是估算口径', /命中 token（估算）/.test(traceText))
+        // 占输入比例：这一格回答"RAG 到底占了多大一块"，在此之前没有数据可答
+        expect('显示了检索占输入的比例', /占输入比例/.test(traceText))
+        // 会话那一层：假数据里有 3 次运行，且必须标出"正在看哪一次"
+        expect('会话那一层列出了多次运行', /这段对话里一共 \d+ 次运行/.test(traceText))
+        expect('★ 标出了「正在看」的是哪一次', /正在看/.test(traceText))
+      }
+    }
+
     // 关掉详情。
     //
     // 这里踩了一个**老坑**（踩坑库 #48）：antd 6 会把恰好两个汉字的按钮渲染成
@@ -689,6 +824,14 @@ if ((await runsCard.count()) > 0) {
       .first()
       .click()
     await page.waitForTimeout(300)
+
+    // 【★ 关掉详情之后 trace 也必须跟着消失】
+    // 不消失的话，"关掉再点另一次运行"的瞬间会先渲染出上一条运行的 trace ——
+    // 那种"闪一下旧数据"在排查时会被读成"这次运行查到了那些东西"
+    expect(
+      '关掉详情后 trace 卡一起消失（否则会显示上一条运行的数据）',
+      (await page.locator('.diag-card', { hasText: '五层 trace' }).count()) === 0,
+    )
   }
 }
 

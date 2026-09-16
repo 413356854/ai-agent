@@ -1,6 +1,7 @@
 package ai.agent.agent.store;
 
 import ai.agent.agent.AgentStopReason;
+import ai.agent.tool.RetrievalTrace;
 
 import java.time.Instant;
 import java.util.List;
@@ -31,22 +32,58 @@ import java.util.List;
  * @param createdAt 创建时间
  * @param updatedAt 最后更新时间
  * @param failureCause 失败细分原因（第七轮新增）。老数据为 null —— 这正是"加列不破坏旧行"的好处
+ * @param intent 业务归因键（第十轮新增，成本看板）：这次运行为哪个业务/功能花的钱。
+ *            {@code null} 表示未标注 —— 刻意不用空串，因为"没标注"与"标注成了空"是两件事
+ * @param conversationId <b>会话 id</b>（第十三轮新增，Agent trace 的第一层）。
+ *            一次运行回答一个用户问题，而一段对话可能包含多次运行 ——
+ *            trace 要能回答"这段对话里一共跑了几次、各自什么结局、一共花了多少"，
+ *            靠的就是它。
+ *            <p>{@code null} = **没有会话信息**（curl 直接调的、外部系统调的）。
+ *            刻意不自动生成一个：给每次孤立调用编一个会话 id，会让"有会话"这件事
+ *            看起来处处成立，而真相是"我们不知道这些运行属不属于同一段对话" ——
+ *            那与成本看板"没标注就显示未标注"是同一条规矩。
  */
 public record AgentRunRecord(String id, String question, RunStatus status, AgentStopReason stopReason,
 		String finalAnswer, int totalTokens, int toolCallCount, long elapsedMs, String node, String error,
-		Instant createdAt, Instant updatedAt, ai.agent.agent.AgentFailureCause failureCause) {
+		Instant createdAt, Instant updatedAt, ai.agent.agent.AgentFailureCause failureCause, String intent,
+		String conversationId) {
 
 	/** 不带失败细分的构造器（保持旧调用点可编译）。 */
 	public AgentRunRecord(String id, String question, RunStatus status, AgentStopReason stopReason, String finalAnswer,
 			int totalTokens, int toolCallCount, long elapsedMs, String node, String error, Instant createdAt,
 			Instant updatedAt) {
 		this(id, question, status, stopReason, finalAnswer, totalTokens, toolCallCount, elapsedMs, node, error,
-				createdAt, updatedAt, null);
+				createdAt, updatedAt, null, null, null);
+	}
+
+	/**
+	 * 带失败细分、不带归因与会话的构造器。
+	 *
+	 * <p>保留它是因为<b>归因与会话都是"调用方才知道的事实"</b>，而有一批调用方
+	 * （测试、外部链路）确实不知道它们。让它们显式传两个 null 只会增加噪音，
+	 * 且不会有任何好处 —— 这两个字段的语义本身就是"可以没有"。
+	 */
+	public AgentRunRecord(String id, String question, RunStatus status, AgentStopReason stopReason, String finalAnswer,
+			int totalTokens, int toolCallCount, long elapsedMs, String node, String error, Instant createdAt,
+			Instant updatedAt, ai.agent.agent.AgentFailureCause failureCause) {
+		this(id, question, status, stopReason, finalAnswer, totalTokens, toolCallCount, elapsedMs, node, error,
+				createdAt, updatedAt, failureCause, null, null);
 	}
 
 	/** 失败时给页面看的下一步建议。 */
 	public String failureAdvice() {
 		return failureCause == null ? null : ai.agent.agent.ModelFailureClassifier.advice(failureCause);
+	}
+
+	/**
+	 * 这次运行有没有会话信息。
+	 *
+	 * <p>给它一个方法而不是让三处各写一遍 {@code conversationId != null && !isBlank()}：
+	 * trace 那一层、界面、断言都要这个判断，而写三遍的后果是其中一遍迟早
+	 * 漏掉空白串那一半（于是"只有空格"的会话 id 会被当成一个合法会话）。
+	 */
+	public boolean hasConversation() {
+		return conversationId != null && !conversationId.isBlank();
 	}
 
 	/**
@@ -94,20 +131,63 @@ public record AgentRunRecord(String id, String question, RunStatus status, Agent
 	 *            上游不报时为 0，读的时候按"全部未命中"算 —— 方向是保守的（偏高）
 	 * @param modelName 这一步用的模型名。它让**成本可以按模型归因**，
 	 *            也是"换了模型之后钱花在哪"这个问题的唯一数据来源
+	 * @param promptFingerprint 这一步用的**系统提示词指纹**（形如 {@code v3:9ab12cd34ef5}）。
+	 *            <p>它回答的是"某天的答案变差了，是不是那天换了提示词"—— 在它之前，
+	 *            提示词可以在两次运行之间换版本而**报告里看不出来**，只能靠回忆。
+	 *            <p>为什么落指纹而不是只落版本号：版本号是<b>指针</b>、指纹是<b>内容</b>。
+	 *            "激活了第 5 版"与"发出去的确实是第 5 版的内容"是两件事，
+	 *            而后者才是阶段四第 3 件（PromptHotReloadTest）证明热更新时用的判据 ——
+	 *            这里把那次的判据<b>落成数据</b>，让它在事后也能回答。
+	 *            <p>空串 = 库里读不到那一版（老数据 / 提示词服务不可用）。
+	 *            刻意不用 null：列有 NOT NULL DEFAULT ''，而且"空指纹"与"某个叫空串的版本"
+	 *            不会混淆（后者不是一个合法指纹）
 	 */
 	public record StepCheckpoint(String runId, int stepIndex, String transcriptJson, String thoughtText,
-			int promptTokens, int completionTokens, long elapsedMs, int cacheReadTokens, String modelName) {
+			int promptTokens, int completionTokens, long elapsedMs, int cacheReadTokens, String modelName,
+			String promptFingerprint) {
 
 		/** 不带成本口径的构造器（旧调用点与测试用）。 */
 		public StepCheckpoint(String runId, int stepIndex, String transcriptJson, String thoughtText,
 				int promptTokens, int completionTokens, long elapsedMs) {
-			this(runId, stepIndex, transcriptJson, thoughtText, promptTokens, completionTokens, elapsedMs, 0, null);
+			this(runId, stepIndex, transcriptJson, thoughtText, promptTokens, completionTokens, elapsedMs, 0, null, "");
+		}
+
+		public StepCheckpoint {
+			// 后加字段的默认值放在这里，与 ToolCallOutcome 同一条做法：
+			// 让"没传指纹"落成一个明确的空串，而不是一个会在渲染到那一行时才炸的 null
+			modelName = modelName == null ? "" : modelName;
+			promptFingerprint = promptFingerprint == null ? "" : promptFingerprint;
 		}
 	}
 
 	/** 一次工具调用的落库记录（含被拒绝的）。 */
 	public record ToolCallRecord(String runId, int stepIndex, int callIndex, String callId, String toolName,
 			String arguments, String stage, String feedback, long elapsedMs) {
+	}
+
+	/**
+	 * <b>一次检索调用</b>的落库记录（阶段四 trace 的「检索」那一层）。
+	 *
+	 * <h2>为什么它与 {@link ToolCallRecord} 分开，而不是给它加几列</h2>
+	 * 因为粒度不同，而这一层的全部价值就在粒度上：
+	 * {@code ToolCallRecord} 是<b>一次调用</b>（主键 {@code (run, step, call)}），
+	 * 而一次检索调用会带 N 条命中（默认 5、上限 10）。
+	 * 挤进同一条记录只有两种下场：把命中拼成 JSON 存一列（等于把结构化数据退化成字符串，
+	 * 正是这一层要消灭的东西），或者把回填文本顶爆（它有 {@code max-chars} 上限）。
+	 *
+	 * <h2>为什么"调用"与"命中"是两张表</h2>
+	 * 因为 {@code query} 与 {@code topK} 属于<b>调用</b>、不属于任何一条命中。
+	 * 把它们冗余到每一行命中上，会在<b>0 条命中时整个丢失</b> ——
+	 * 而"它拿什么词去查的、一条都没查到吗"恰恰是最需要查的那一次。
+	 *
+	 * @param runId 运行 id
+	 * @param stepIndex 第几步发起的检索
+	 * @param callIndex 这一步里的第几次工具调用（与 {@link ToolCallRecord#callIndex()} 同一套编号）
+	 * @param toolName 哪把工具发起的（目前只有 {@code search_docs}，
+	 *            但记下来才能回答"将来的第二把检索工具用得怎么样"）
+	 * @param trace 检索明细本身
+	 */
+	public record RetrievalRecord(String runId, int stepIndex, int callIndex, String toolName, RetrievalTrace trace) {
 	}
 
 	/** 恢复一个运行所需要的全部东西：记录本身 + 检查点 + 已发生的工具调用。 */

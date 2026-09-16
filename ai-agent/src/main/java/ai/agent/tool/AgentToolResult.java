@@ -30,7 +30,67 @@ import java.util.List;
 public sealed interface AgentToolResult {
 
 	/** 工具正常完成。注意"结果为空"也走这里 —— 空结果是一种正常结果。 */
-	record Success(String payload, boolean truncated) implements AgentToolResult {
+	record Success(String payload, boolean truncated, List<Observation> observations) implements AgentToolResult {
+
+		public Success {
+			observations = List.copyOf(observations);
+		}
+
+		/**
+		 * 不带结构化观察的构造器 —— <b>绝大多数工具用它</b>。
+		 *
+		 * <p>刻意保留这个两参数签名（而不是让所有工具都传一个空列表）：
+		 * 一个工具<b>没有</b>结构化观察是常态（它只需要回填文本），
+		 * 而"必须显式传 List.of()"会让每个工具的作者都以为自己漏了什么。
+		 */
+		public Success(String payload, boolean truncated) {
+			this(payload, truncated, List.of());
+		}
+
+		/** 这次成功带回来一份检索明细（{@code search_docs} 这一类工具用）。 */
+		public static Success withRetrieval(String payload, RetrievalTrace trace) {
+			return new Success(payload, false, List.of(new Observation.Retrieval(trace)));
+		}
+
+		/** 取这一次调用产生的检索明细；没有就返回空（**不是**返回一个空明细 —— 两者含义不同）。 */
+		public java.util.Optional<RetrievalTrace> retrievalTrace() {
+			return observations.stream()
+					.filter(Observation.Retrieval.class::isInstance)
+					.map(Observation.Retrieval.class::cast)
+					.map(Observation.Retrieval::trace)
+					.findFirst();
+		}
+	}
+
+	/**
+	 * <b>结构化观察</b>：这次调用产生的、给人（而不是给模型）看的事实。
+	 *
+	 * <h2>为什么要有这个口子，以及为什么它是 sealed 的</h2>
+	 * 模型看到的是 {@code payload}（一段文本）；而 trace 那一层要的是**结构**。
+	 * 在这次改动之前，"一次检索命中了哪几个块、各占多少 token"只存在于那段文本里 ——
+	 * 于是要看它就只能去正则解析中文，而那正是阶段四第 2 件要消灭的东西。
+	 *
+	 * <p>做成 <b>sealed</b> 的而不是一个万能 {@code Map<String,Object>}：
+	 * 一个开放的口子会被塞进各种"顺手也带上"的东西，半年后没人知道里面有什么；
+	 * 而 sealed 意味着<b>加一种观察必须改这个文件</b> —— 那一步正好逼人回答
+	 * "它是给人看的还是给模型看的、要不要落库"。
+	 *
+	 * <p>⚠️ 它<b>不是</b>给模型看的：模型只读 {@code payload}。
+	 * 把结构塞进模型上下文是另一个决定（那会占 token），不该由"顺手带上"完成。
+	 */
+	sealed interface Observation {
+
+		/** 机器可读的类型码（落库与断言用它，不用中文）。 */
+		String kind();
+
+		/** 一次检索的明细。 */
+		record Retrieval(RetrievalTrace trace) implements Observation {
+
+			@Override
+			public String kind() {
+				return "retrieval";
+			}
+		}
 	}
 
 	/**
