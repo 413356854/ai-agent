@@ -56,8 +56,8 @@ export const RAG_ALIGN_TIMEOUT_MS = 180_000
 //
 //  唯一事实来源是后端代码，改那边就要同步改这里：
 //    - ai.agent.controller.RagDiagnosticsController（各端点的返回体）
-//    - ai.agent.rag.eval.RetrievalMetrics / ChunkingComparison（指标结构）
-//    - ai.agent.rag.chunk.Chunk（块结构）
+//    - ai.agent.service.rag.eval.RetrievalMetrics / ChunkingComparison（指标结构）
+//    - ai.agent.service.rag.chunk.Chunk（块结构）
 // ---------------------------------------------------------------------------
 
 /** GET /api/diag/rag/corpus 里每份文档的一行 */

@@ -24,7 +24,7 @@ run.cmd tree         :: 依赖树
 ## 超时与重试
 
 配置全部在 `application.properties` 的 `ai.chat.*`，绑定到 `ai.agent.config.ChatCallProperties`；
-"该不该重试、等多久"的判定在 `ai.agent.chat.support.ChatRetryPolicy`（纯函数，可单测）。
+"该不该重试、等多久"的判定在 `ai.agent.service.support.chat.ChatRetryPolicy`（纯函数，可单测）。
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
@@ -99,7 +99,7 @@ curl -X POST http://localhost:8080/api/chat/structured ^
 | 输出被 `max_tokens` 截断 | 失败 | 解析器 |
 
 所以：**解析成功 ≠ 数据可用**。供应商没法从协议层保证正确性，正确性只能靠应用侧兜 ——
-这就是 `ai.agent.service.impl.StructuredChatServiceImpl`（契约在 `ai.agent.service.StructuredChatService`）存在的全部理由。
+这就是 `ai.agent.service.impl.chat.StructuredChatServiceImpl`（契约在 `ai.agent.service.chat.StructuredChatService`）存在的全部理由。
 
 ### 回灌重试（Retry & Reflection Loop）
 

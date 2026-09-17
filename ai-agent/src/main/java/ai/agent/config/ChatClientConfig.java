@@ -1,8 +1,8 @@
 package ai.agent.config;
 
-import ai.agent.prompt.PromptContextResource;
-import ai.agent.prompt.PromptKind;
-import ai.agent.prompt.PromptService;
+import ai.agent.service.prompt.PromptContextResource;
+import ai.agent.service.prompt.PromptKind;
+import ai.agent.service.prompt.PromptService;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;

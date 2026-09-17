@@ -1,13 +1,13 @@
 package ai.agent.controller;
 
-import ai.agent.agent.AgentFailureCause;
-import ai.agent.agent.AgentLoop;
-import ai.agent.agent.AgentRun;
-import ai.agent.agent.AgentStopReason;
-import ai.agent.agent.ModelFailureClassifier;
-import ai.agent.agent.ModelTurn;
-import ai.agent.agent.ScriptedModelTurn;
-import ai.agent.agent.limit.LimitedModelTurn;
+import ai.agent.service.agent.AgentFailureCause;
+import ai.agent.service.agent.AgentLoop;
+import ai.agent.service.agent.AgentRun;
+import ai.agent.service.agent.AgentStopReason;
+import ai.agent.service.agent.ModelFailureClassifier;
+import ai.agent.service.agent.ModelTurn;
+import ai.agent.service.agent.ScriptedModelTurn;
+import ai.agent.service.agent.limit.LimitedModelTurn;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

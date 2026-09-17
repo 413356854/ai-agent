@@ -72,7 +72,7 @@ export class DiagError extends Error {
 //  与后端契约对应的类型。
 //
 //  唯一事实来源是后端代码，这里改也要跟着改那边：
-//    - ai.agent.diag.ThreadDiagnostics#currentThread / #snapshot
+//    - ai.agent.service.diag.ThreadDiagnostics#currentThread / #snapshot
 //    - ai.agent.controller.ThreadDiagnosticsController#config / #carriers / #pinning
 //    - ai.agent.config.ChatCallProperties 的 VirtualThreads / Budget / Sampling 三节
 // ---------------------------------------------------------------------------

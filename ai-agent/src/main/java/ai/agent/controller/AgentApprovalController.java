@@ -1,9 +1,9 @@
 package ai.agent.controller;
 
-import ai.agent.agent.ResumableAgentService;
-import ai.agent.agent.approval.AgentApprovalService;
-import ai.agent.agent.approval.ApprovalStatus;
-import ai.agent.agent.approval.ToolApprovalRecord;
+import ai.agent.service.agent.ResumableAgentService;
+import ai.agent.service.agent.approval.AgentApprovalService;
+import ai.agent.service.agent.approval.ApprovalStatus;
+import ai.agent.service.agent.approval.ToolApprovalRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;

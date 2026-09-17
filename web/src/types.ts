@@ -2,14 +2,14 @@
  * 与后端契约对应的类型。
  *
  * 唯一事实来源是后端代码，改后端时同步改这里：
- *   - 流式请求体：ai.agent.chat.dto.ChatRequest
- *   - done 事件：ai.agent.service.impl.ChatServiceImpl#usageOf
+ *   - 流式请求体：ai.agent.service.dto.chat.ChatRequest
+ *   - done 事件：ai.agent.service.impl.chat.ChatServiceImpl#usageOf
  *   - error 事件：ai.agent.controller.ChatController#safeMessage
- *   - 结构化请求体：ai.agent.chat.structured.dto.StructuredChatRequest
- *   - 结构化响应：ai.agent.chat.structured.StructuredResult / StructuredAnswer
+ *   - 结构化请求体：ai.agent.service.dto.chat.structured.StructuredChatRequest
+ *   - 结构化响应：ai.agent.service.chat.structured.StructuredResult / StructuredAnswer
  */
 
-/** 对应后端 ai.agent.chat.dto.ChatRequest */
+/** 对应后端 ai.agent.service.dto.chat.ChatRequest */
 export interface ChatRequest {
   conversationId: string
   message: string
@@ -44,14 +44,14 @@ export const EMPTY_USAGE: TokenUsage = {
 //  结构化输出（POST /api/chat/structured）
 // ---------------------------------------------------------------------------
 
-/** 对应后端 ai.agent.chat.structured.dto.StructuredChatRequest */
+/** 对应后端 ai.agent.service.dto.chat.structured.StructuredChatRequest */
 export interface StructuredChatRequest {
   conversationId: string
   question: string
 }
 
 /**
- * 对应后端 ai.agent.chat.structured.StructuredAnswer。
+ * 对应后端 ai.agent.service.chat.structured.StructuredAnswer。
  *
  * 注意 confidence 是「模型自评」而不是系统算出来的可信度 —— 它只反映模型自己有多确定。
  * 界面上必须标明这一点，否则会被当成质量指标误用。
@@ -79,7 +79,7 @@ export interface StructuredAttempt {
   elapsedMs: number
 }
 
-/** 对应后端 ai.agent.chat.structured.StructuredResult */
+/** 对应后端 ai.agent.service.chat.structured.StructuredResult */
 export interface StructuredResult {
   /** degraded=true 时这里是后端的兜底文案，不是模型给的答案 */
   answer: StructuredAnswer

@@ -1,10 +1,10 @@
 package ai.agent.config;
 
-import ai.agent.agent.ModelTurn;
-import ai.agent.agent.OpenAiModelTurn;
-import ai.agent.agent.limit.ConcurrencyGate;
-import ai.agent.agent.limit.LimitedModelTurn;
-import ai.agent.tool.ToolRegistry;
+import ai.agent.service.agent.ModelTurn;
+import ai.agent.service.agent.OpenAiModelTurn;
+import ai.agent.service.agent.limit.ConcurrencyGate;
+import ai.agent.service.agent.limit.LimitedModelTurn;
+import ai.agent.service.tool.ToolRegistry;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;

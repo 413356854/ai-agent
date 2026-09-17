@@ -1,16 +1,16 @@
 package ai.agent.controller;
 
-import ai.agent.agent.AgentRun;
-import ai.agent.agent.AgentStopReason;
-import ai.agent.agent.ResumableAgentService;
-import ai.agent.agent.approval.AgentApprovalService;
-import ai.agent.agent.limit.AgentConcurrencyLimitsView;
-import ai.agent.agent.store.AgentRunRecord;
-import ai.agent.agent.store.AgentRunStore;
-import ai.agent.agent.store.RunStatus;
-import ai.agent.agent.trace.AgentTraceView;
+import ai.agent.service.agent.AgentRun;
+import ai.agent.service.agent.AgentStopReason;
+import ai.agent.service.agent.ResumableAgentService;
+import ai.agent.service.agent.approval.AgentApprovalService;
+import ai.agent.service.agent.limit.AgentConcurrencyLimitsView;
+import ai.agent.service.agent.store.AgentRunRecord;
+import ai.agent.service.agent.store.AgentRunStore;
+import ai.agent.service.agent.store.RunStatus;
+import ai.agent.service.agent.trace.AgentTraceView;
 import ai.agent.config.AgentApprovalProperties;
-import ai.agent.tool.ToolCallOutcome;
+import ai.agent.service.tool.ToolCallOutcome;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
@@ -430,7 +430,7 @@ public class AgentController {
 
 	private static boolean stageCountsAsFailure(String stageName) {
 		try {
-			return ai.agent.tool.ToolCallStage.valueOf(stageName).countsAsToolFailure();
+			return ai.agent.service.tool.ToolCallStage.valueOf(stageName).countsAsToolFailure();
 		}
 		catch (IllegalArgumentException e) {
 			// 库里存的是历史字符串，而枚举可能变过。**返回 false 而不是抛**：

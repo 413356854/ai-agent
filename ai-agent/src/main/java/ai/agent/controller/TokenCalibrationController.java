@@ -1,11 +1,11 @@
 package ai.agent.controller;
 
 import ai.agent.config.ChatCallProperties;
-import ai.agent.prompt.PromptKind;
-import ai.agent.prompt.PromptService;
-import ai.agent.service.ChatService;
-import ai.agent.token.TokenBudgetGuard;
-import ai.agent.token.TokenEstimator;
+import ai.agent.service.prompt.PromptKind;
+import ai.agent.service.prompt.PromptService;
+import ai.agent.service.chat.ChatService;
+import ai.agent.service.token.TokenBudgetGuard;
+import ai.agent.service.token.TokenEstimator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClientResponse;
@@ -37,7 +37,7 @@ import java.util.UUID;
  * 而"估算准不准"这件事<b>推理不出来，只能量</b>。
  *
  * <p><b>为什么要放在应用内，而不是写个脚本在外面比</b>：如果估算在脚本里算、
- * 真实值从接口拿，那么脚本里的公式一旦和 {@link ai.agent.token.impl.CharacterClassTokenEstimator}
+ * 真实值从接口拿，那么脚本里的公式一旦和 {@link ai.agent.service.impl.token.CharacterClassTokenEstimator}
  * 的真实实现漂移，校准结论就毫无意义 —— 而脚本正是最容易"改配置忘了同步"的地方。
  * 放在应用内，两侧走的是<b>同一个</b> {@link TokenBudgetGuard} 估算链路，
  * 量出来的误差就是线上真实会发生的误差。

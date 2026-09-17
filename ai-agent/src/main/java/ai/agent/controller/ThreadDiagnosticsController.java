@@ -1,7 +1,7 @@
 package ai.agent.controller;
 
 import ai.agent.config.ChatCallProperties;
-import ai.agent.diag.ThreadDiagnostics;
+import ai.agent.service.diag.ThreadDiagnostics;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;

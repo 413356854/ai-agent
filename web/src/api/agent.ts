@@ -71,9 +71,9 @@ export const AGENT_APPROVAL_POLL_MS = 2_500
 //
 //  唯一事实来源是后端代码，改那边就要同步改这里：
 //    - ai.agent.controller.AgentController（各端点的返回体）
-//    - ai.agent.tool.ToolCallStage（stage 的取值）
-//    - ai.agent.agent.AgentFailureCause（失败细分）
-//    - ai.agent.agent.limit.AgentConcurrencyLimitsView（限额快照）
+//    - ai.agent.service.tool.ToolCallStage（stage 的取值）
+//    - ai.agent.service.agent.AgentFailureCause（失败细分）
+//    - ai.agent.service.agent.limit.AgentConcurrencyLimitsView（限额快照）
 // ---------------------------------------------------------------------------
 
 /** 一次运行里的一次工具调用（`/ask` 与 `/runs/{id}` 都有这个形状）。 */
@@ -171,7 +171,7 @@ export interface AgentAskResponse {
 /**
  * 一条待批的人工确认（`GET /api/agent/approvals` 里的一行）。
  *
- * 对应后端 `ai.agent.agent.approval.ToolApprovalRecord`。
+ * 对应后端 `ai.agent.service.agent.approval.ToolApprovalRecord`。
  */
 export interface AgentApprovalRow {
   id: string
@@ -336,7 +336,7 @@ export interface AgentRunDetail {
 // ---------------------------------------------------------------------------
 //  五层 trace（阶段四第 2 件）
 //
-//  唯一事实来源：ai.agent.agent.trace.AgentTraceView。改那边就要同步改这里。
+//  唯一事实来源：ai.agent.service.agent.trace.AgentTraceView。改那边就要同步改这里。
 //  ⚠️ 这个文件里已经写过一次教训了（见运行详情那条注释）：形状不一致的契约
 //  会让界面报一个与真实代码无关的错 —— 所以这里的字段名逐一对照后端。
 // ---------------------------------------------------------------------------

@@ -1,11 +1,11 @@
 package ai.agent.controller;
 
-import ai.agent.chat.dto.ChatRequest;
-import ai.agent.chat.support.ChatRetryPolicy;
+import ai.agent.service.dto.chat.ChatRequest;
+import ai.agent.service.support.chat.ChatRetryPolicy;
 import ai.agent.config.ChatCallProperties;
-import ai.agent.service.ChatService;
-import ai.agent.token.TokenBudgetGuard;
-import ai.agent.token.impl.CharacterClassTokenEstimator;
+import ai.agent.service.chat.ChatService;
+import ai.agent.service.token.TokenBudgetGuard;
+import ai.agent.service.impl.token.CharacterClassTokenEstimator;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClientResponse;
@@ -70,7 +70,7 @@ class ChatControllerRetryTest {
 		// 预算守卫用真实实现：这些超时/重试测试的上下文都很短，
 		// 走的是"放行"路径，不会干扰重试行为；但换来的是"两条链路真的能共存"这个事实
 		TokenBudgetGuard budgetGuard = new TokenBudgetGuard(properties, new CharacterClassTokenEstimator(properties),
-				repository, new ai.agent.prompt.ClasspathPromptService(
+				repository, new ai.agent.service.prompt.ClasspathPromptService(
 						new CharacterClassTokenEstimator(properties)));
 		this.controller = new ChatController(service, new ChatRetryPolicy(properties), properties, repository,
 				budgetGuard);

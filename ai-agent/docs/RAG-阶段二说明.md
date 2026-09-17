@@ -176,7 +176,7 @@ Recall@5 / Recall@1 / MRR / token 成本 / 重复率五项全优，且三路检�
 ## 代码地图
 
 ```
-ai.agent.rag
+ai.agent.service.rag                 ← 业务层（角色在前、功能在后）
 ├── parse/                    文档解析（结构不丢）
 │   ├── DocumentParser              契约：字节流 → 带结构的块
 │   ├── RoutingDocumentParser       @Primary 路由：Markdown / 其它格式分流
@@ -187,14 +187,9 @@ ai.agent.rag
 │   └── BlockType / ParsedBlock     块类型（标题/段落/表格/代码/列表…）
 ├── chunk/                    分块（可替换策略）
 │   ├── DocumentChunker             契约（+ 带参数重载，供对齐实验改尺寸而不动全局配置）
-│   ├── Chunk                       检索单元（含标题路径与覆盖区间）
-│   └── impl/
-│       ├── FixedSizeChunker        对照组：固定字数硬切（带 overlap，不带结构）
-│       └── StructuralChunker       实验组：标题层级 + 段落边界 + 面包屑 + 重叠预算
+│   └── Chunk                       检索单元（含标题路径与覆盖区间）
 ├── vector/                   向量化与向量索引
-│   ├── EmbeddingProperties         ai.rag.vector.*（作为 RagProperties 的嵌套字段）
-│   ├── VectorIndex                 暴力精确 KNN + 余弦相似度 + **索引指纹校验漂移**
-│   └── impl/HashingEmbeddingModel  离线哈希向量（实现 **Spring AI 的** EmbeddingModel 接口）
+│   └── VectorIndex                 暴力精确 KNN + 余弦相似度 + **索引指纹校验漂移**
 ├── retrieve/                 检索（三路，同一契约）
 │   ├── Retriever                   契约（加向量那一路时评测代码一行没改）
 │   ├── LexicalRetriever            Lucene BM25，内存索引，标题字段加权
@@ -208,12 +203,20 @@ ai.agent.rag
 │   ├── BudgetAlignment             固定 token 预算下的召回（等成本对照）
 │   ├── ChunkingComparison          并排报告 + 差值表
 │   └── AlignmentExperiment         对齐实验报告（扫描 / 对照组 / 等预算表 / 检索方式）
-├── pipeline/
-│   ├── CorpusLoader                目录 → 解析好的文档（单文件失败不中断整批）
-│   ├── StrategyEvaluator           **变体是数据、流程只有一份**（切块→建索引→检索→算指标）
-│   ├── RagEvaluationService        原始对照（/compare）
-│   └── RagAlignmentService         **块大小对齐实验**（/align）：锚点外推 + 二分收敛 + 双轴
-└── config/RagProperties            ai.rag.* 配置绑定（含嵌套的 vector）
+└── pipeline/
+    ├── CorpusLoader                目录 → 解析好的文档（单文件失败不中断整批）
+    ├── StrategyEvaluator           **变体是数据、流程只有一份**（切块→建索引→检索→算指标）
+    ├── RagEvaluationService        原始对照（/compare）
+    └── RagAlignmentService         **块大小对齐实验**（/align）：锚点外推 + 二分收敛 + 双轴
+
+ai.agent.service.impl.rag            ← 实现（impl 角色在前）
+├── chunk/FixedSizeChunker          对照组：固定字数硬切（带 overlap，不带结构）
+├── chunk/StructuralChunker         实验组：标题层级 + 段落边界 + 面包屑 + 重叠预算
+└── vector/HashingEmbeddingModel    离线哈希向量（实现 **Spring AI 的** EmbeddingModel 接口）
+
+ai.agent.config.rag                  ← 配置
+├── RagProperties                   ai.rag.* 配置绑定（含嵌套的 vector）
+└── EmbeddingProperties             ai.rag.vector.*（作为 RagProperties 的嵌套字段）
 ```
 
 ## 这个模块踩过的坑（都写进了代码注释）

@@ -35,7 +35,7 @@ export const ALERT_READ_TIMEOUT_MS = 30_000
 
 // ---------------------------------------------------------------------------
 //  与后端契约对应的类型
-//  唯一事实来源是 ai.agent.alert.AlertController / ai.agent.canary.CanaryController，
+//  唯一事实来源是 ai.agent.controller.alert.AlertController / ai.agent.controller.canary.CanaryController，
 //  改那边就要同步改这里。
 // ---------------------------------------------------------------------------
 

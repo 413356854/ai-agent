@@ -3,7 +3,7 @@ package ai.agent;
 import ai.agent.config.AgentApprovalProperties;
 import ai.agent.config.ChatCallProperties;
 import ai.agent.config.ReviewProperties;
-import ai.agent.rag.config.RagProperties;
+import ai.agent.config.rag.RagProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;

@@ -1,10 +1,10 @@
 package ai.agent.controller;
 
-import ai.agent.chat.dto.ChatRequest;
-import ai.agent.chat.support.ChatRetryPolicy;
+import ai.agent.service.dto.chat.ChatRequest;
+import ai.agent.service.support.chat.ChatRetryPolicy;
 import ai.agent.config.ChatCallProperties;
-import ai.agent.service.ChatService;
-import ai.agent.token.TokenBudgetGuard;
+import ai.agent.service.chat.ChatService;
+import ai.agent.service.token.TokenBudgetGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClientResponse;
@@ -40,7 +40,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>分层约定：Controller 只做「协议层」的事——收参数、把服务返回的流翻译成 SSE 事件、
  * 兜住异常；模型调用与响应解析都在 {@link ChatService} 背后。因此 Controller 只依赖
- * 服务<b>接口</b>（{@code ai.agent.service}），不认识 {@code ChatServiceImpl}。
+ * 服务<b>接口</b>（{@code ai.agent.service.chat}），不认识 {@code ChatServiceImpl}。
  *
  * <p><b>SSE 事件契约</b>（前端按此解析，GET / POST 两条通路完全一致）：
  * <ul>

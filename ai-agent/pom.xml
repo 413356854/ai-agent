@@ -173,7 +173,7 @@
 		  Tika 的 BodyContentHandler 默认吐纯文本，标题层级、表格、列表全被拍平 ——
 		  而结构化分块的全部依据就是这些结构。
 		  所以本项目用 ToXMLContentHandler 取 XHTML，再按 DOM 结构还原成块
-		  （见 ai.agent.rag.parse.TikaDocumentParser）。这是阶段二"按标题层级切分"的前提。
+		  （见 ai.agent.service.rag.parse.TikaDocumentParser）。这是阶段二"按标题层级切分"的前提。
 		-->
 		<!--
 		  【踩坑·依赖版本】Tika 用 3.3.2，不用它的"最新版" 4.0.0
@@ -299,7 +299,7 @@
 		  分数下降会被归因到"分块策略不好"或"检索不行"，排查方向从一开始就错。
 
 		  正确做法：Markdown → HTML（flexmark）→ 再走与 Tika 同一套结构提取。
-		  见 ai.agent.rag.parse.MarkdownDocumentParser。
+		  见 ai.agent.service.rag.parse.MarkdownDocumentParser。
 
 		  【为什么选 flexmark】Markdown 的表格、嵌套列表、围栏代码块都有边界情况，
 		  自己写正则会稳定地在"表格分隔行"和"代码块里的 # 号"上出错 ——

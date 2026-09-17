@@ -1,8 +1,8 @@
 package ai.agent.controller;
 
-import ai.agent.service.ChatExecutionService;
-import ai.agent.service.ChatService;
-import ai.agent.token.TokenBudgetGuard;
+import ai.agent.service.chat.ChatExecutionService;
+import ai.agent.service.chat.ChatService;
+import ai.agent.service.token.TokenBudgetGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
