@@ -367,7 +367,7 @@ public enum AlertRule {
 	 *
 	 * <p>⚠️ <b>它的实际执行者是 {@code RagRegressionTest}，不是这个类。</b>
 	 * 这条规则在这里出现的唯一理由是：让"这个项目里被判断为异常的东西"<b>只有一份清单</b>，
-	 * 于是告警面板上能列出"构建阶段有四条门禁"，而不必让人去翻文档。
+	 * 于是告警面板上能列出"构建阶段有三条门禁"，而不必让人去翻文档。
 	 *
 	 * <p>为什么它的判定故意返回 {@link Verdict#silent()} 而不是自己算一遍：
 	 * 真正那条比较已经由 {@code RagRegressionTest} 做过了，而且做得更严格
@@ -409,14 +409,17 @@ public enum AlertRule {
 			"有指标没有登记方向（会被按默认方向静默判断）", Severity.BLOCKER, AlertPhase.GATE,
 			"把新增的指标补进方向登记表。"
 					+ "★ 这一类「给判据写测试」的断言比「给结果写测试」更值：结果会变，判据不该变",
-			snapshot -> Verdict.silent(), "RagRegressionTest#unregisteredMetricDirectionThrows"),
+			snapshot -> Verdict.silent(), "RagRegressionTest#unregisteredMetricDirectionThrows");
 
-	/** 门禁入口本身进得了版本控制吗（一个只在 CI 上现形的缺口）。 */
-	GATE_ENTRY_NOT_COMMITTABLE("gate-entry-not-committable",
-			"门禁脚本自己被 git 忽略（CI 上必然 Cannot find module）", Severity.BLOCKER, AlertPhase.GATE,
-			"在 .gitignore 里让 scripts/ci.mjs 被重新包含。"
-					+ "⚠️ 忽略目录时反向规则无效：要写 scripts/* + !scripts/ci.mjs，写 scripts/ 是无效的",
-			snapshot -> Verdict.silent(), "scripts/ci.mjs#verifyGateIsCommittable");
+	// ⚠️ 这里曾有第 4 条门禁 `GATE_ENTRY_NOT_COMMITTABLE`（"门禁脚本自己被 git 忽略"），
+	// 于 2026-09-18 **删除**。它守的那个缺口是真的（`.gitignore` 里一条 `scripts/*` 让
+	// `.github/workflows/regression.yml` 的 `run: node scripts/ci.mjs` 在 CI 上必然报
+	// Cannot find module，而本地永远正常）—— 但**修好它的方式是删掉那条忽略规则本身**
+	// （白名单比黑名单可靠：一次性的脚本删掉，留着的都有长期用途）。
+	// 规则没了，这个判据就没有可执行的判定，只留下一个永远"不响"的登记项；
+	// 而一条永远不会响的门禁与没有这条门禁在任何观测上一样，却会让人以为这里还有人守着。
+	// 它当年留下的那条判据仍然有效，已移到 `scripts/ci.mjs` 的注释里留档：
+	// **`git check-ignore -v` 的退出码不能当判据**（匹配到 `!` 开头的反向规则时它也返回 0）。
 
 	// ==================================================================
 	//  公开的阈值（给界面、文档与测试读）

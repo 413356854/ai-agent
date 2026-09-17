@@ -429,79 +429,23 @@ async function gateUiReal() {
 // ---------------------------------------------------------------------------
 //  自检：这个脚本本身进得了版本控制吗
 // ---------------------------------------------------------------------------
-
-/**
- * <b>先确认"门禁入口本身进得了版本控制"</b> —— 一个实测踩到的、只在 CI 上现形的缺口。
- *
- * <h2>为什么需要这一段</h2>
- * `.github/workflows/regression.yml` 里那句 `run: node scripts/ci.mjs` 依赖
- * 这个文件**真的被提交上去**。而本仓库的 `.gitignore` 里恰好有一条 `scripts/`
- * （那里原本只放一次性排查脚本）—— 于是这个门禁**在本地永远正常、在 CI 上必然报
- * `Cannot find module`**。
- *
- * <p>更要紧的是：**任何本地验证都发现不了它**。本地文件就在那儿、`node scripts/ci.mjs`
- * 跑得好好的、测试全绿 —— 缺的那一环是"git 会不会把它带上"，
- * 而那不是任何一条测试会去问的问题。
- *
- * <h2>★ 判据为什么不是"退出码"</h2>
- * 第一版写的是"`git check-ignore` 退出码 0 就是被忽略"，而**实测它报了一个假警**：
- * 那时 `.gitignore` 里已经有一条 `!scripts/ci.mjs`（反向规则，文件其实**没被**忽略），
- * 但 `-v` 依然打印了那条规则并返回 0。
- *
- * <p>原因：加了 `-v` 之后，`git check-ignore` 会显示**匹配到的最后一条规则**
- * ——**包括反向规则**。也就是说"匹配了规则"与"被忽略了"不是同一件事：
- * 匹配到 `!` 开头的规则恰恰意味着它**被救回来了**。
- * 所以判据必须看**规则内容**：匹配到的最后一条规则以 `!` 开头 → 未被忽略。
- *
- * <p>（这与本项目反复记的那条同族：**"命中了一条规则"与"规则的效果是什么"要分开看** ——
- * 就像"命中了一条日志"与"这个请求失败了"是两件事。）
- *
- * <p>⚠️ 这个检查**不因"没有 git"而失败**：有些环境（源码压缩包、只拷了工作区的容器）
- * 确实没有 `.git`。那时它只打一行提示，不当成错误 ——
- * 一条"环境不具备就报错"的检查会很快被加进忽略列表。
- */
-function verifyGateIsCommittable() {
-  const self = path.relative(ROOT, fileURLToPath(import.meta.url)).replaceAll('\\', '/')
-  const probe = spawnSync('git', ['check-ignore', '-v', self], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-
-  if (probe.error) {
-    console.log(`[ci] ⓘ 跳过"门禁是否被 git 忽略"的自检（没有 git 可用：${probe.error.code}）`)
-    return
-  }
-  if (probe.status === 128) {
-    console.log('[ci] ⓘ 跳过"门禁是否被 git 忽略"的自检（当前目录不是 git 仓库）')
-    return
-  }
-  // 退出码 1 = 一条规则都没匹配 → 显然没被忽略
-  if (probe.status === 1) {
-    console.log(`[ci] ✓ 门禁入口在版本控制范围内（${self}）`)
-    return
-  }
-
-  const line = (probe.stdout ?? '').trim()
-  // 形如 `.gitignore:105:!scripts/ci.mjs\tscripts/ci.mjs`
-  // 规则从"文件:行号:"之后、第一个制表符之前那一段取
-  const afterLocation = line.replace(/^[^\t]*?:\d+:/, '')
-  const rule = afterLocation.split('\t')[0]
-
-  if (rule.startsWith('!')) {
-    // 匹配到反向规则 = 被救回来了 = 没被忽略。**这一条就是第一版报假警的地方**
-    console.log(`[ci] ✓ 门禁入口在版本控制范围内（由反向规则救回：${rule}）`)
-    return
-  }
-
-  console.error('')
-  console.error('[ci] ❌ **门禁入口自己被 git 忽略了** —— 这个脚本不会被提交，')
-  console.error('     于是 CI 上那句 `run: node scripts/ci.mjs` 必然报 Cannot find module。')
-  console.error(`     命中的规则：${line || '(未知)'}`)
-  console.error('')
-  console.error('     修法：在 .gitignore 里让这个文件被重新包含。')
-  console.error('     ⚠️ 忽略**目录**时反向规则无效（git 不会进被排除的目录里看规则）：')
-  console.error('        写 `scripts/*` + `!scripts/ci.mjs` 才对，写 `scripts/` 是无效的。')
-  console.error('     验证：`git check-ignore -v scripts/ci.mjs` 与 `git add -n scripts/`。')
-  console.error('')
-  process.exit(1)
-}
+//
+// ⚠️ 这一段检查已于 2026-09-18 **删除**，因为它检查的那条 `.gitignore` 规则没了 ——
+// 一条"永远会说 ✓"的检查与没有这条检查在任何观测上一样，而它会让人以为这里还有人守着。
+//
+// 它当年守的是什么（值得留档，因为它是"本地永远发现不了"那一类里最典型的一个）：
+//   `.gitignore` 里有一条 `scripts/*`（那里原本只放一次性排查脚本），于是
+//   `.github/workflows/regression.yml` 里那句 `run: node scripts/ci.mjs` **在 CI 上必然报
+//   Cannot find module** —— 而本地文件就在那儿、`node scripts/ci.mjs` 跑得好好的、
+//   测试全绿。缺的那一环是"git 会不会把它带上"，而那不是任何一条测试会去问的问题。
+//
+// 它顺带留下的一条判据（**仍然值得记**）：`git check-ignore -v` 的**退出码不能当判据** ——
+// 加了 `-v` 之后它会显示**匹配到的最后一条规则**，**包括反向规则**（`!` 开头）。
+// 也就是说"匹配了规则"与"被忽略了"不是同一件事：匹配到 `!` 开头的规则恰恰意味着它被救回来了。
+// 判据必须看**规则内容**，不能看退出码。
+//
+// 现在这条规则被整体取消了（白名单比黑名单可靠：一次性的删掉，留着的都有长期用途），
+// 所以这个缺口在结构上不再存在 —— 而不是"被一条自检挡住了"。
 
 // ---------------------------------------------------------------------------
 //  主流程
@@ -511,7 +455,6 @@ async function main() {
   mkdirSync(LOG_DIR, { recursive: true })
   console.log('[ci] 回归门禁开始')
   console.log(`[ci] 仓库根目录：${ROOT}`)
-  verifyGateIsCommittable()
   console.log(`[ci] 门禁：后端测试（含离线评测回归基线）${WITH_UI ? ' + 界面自检（假）' : ''}${WITH_REAL_UI ? ' + 界面自检（真）' : ''}`)
 
   let failed = null

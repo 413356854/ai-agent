@@ -193,7 +193,10 @@ function initialEvents() {
 /**
  * 判据目录。
  *
- * ⚠️ 它必须**与后端的 AlertRule 一致**（8 条运行阶段 + 4 条构建阶段门禁）。
+ * ⚠️ 它必须**与后端的 AlertRule 一致**（8 条运行阶段 + 3 条构建阶段门禁）。
+ * ⚠️ 这里曾经抄过后端的第 4 条门禁 `gate-entry-not-committable`；那条判据于 2026-09-18 删除
+ * （它守的 `.gitignore` 规则被取消后就没有可执行的判定了），所以这里也一起删掉 ——
+ * **假后端多一条判据不会有任何症状**（页面上只是多一行），而这正是"假数据与真代码漂移"最常见的形态。
  * 自检里有一条断言盯着"门禁那几条必须显示『本页不评估』"—— 所以这里不能只写运行阶段那几条；
  * 反过来，**漏掉一条运行阶段的判据也不会有任何症状**（页面上只是少一行），
  * 所以自检里还有一条"运行阶段那几条必须都在页面上"的断言。
@@ -238,14 +241,6 @@ export const MOCK_RULES = [
     'GATE',
     false,
     'RagRegressionTest#unregisteredMetricDirectionThrows',
-  ),
-  rule(
-    'gate-entry-not-committable',
-    '门禁脚本自己被 git 忽略（CI 上必然 Cannot find module）',
-    'BLOCKER',
-    'GATE',
-    false,
-    'scripts/ci.mjs#verifyGateIsCommittable',
   ),
 ]
 

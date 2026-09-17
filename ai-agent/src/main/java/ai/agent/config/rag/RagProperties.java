@@ -370,8 +370,16 @@ public class RagProperties {
 	 */
 	public static class Evaluation {
 
-		/** 评测集路径。 */
-		private String evalSetLocation = "classpath:rag/eval-set.json";
+		/**
+		 * 评测集路径。
+		 *
+		 * <p>⚠️ 这里的默认值必须与实际存在的资源一致。曾经写成 {@code classpath:rag/eval-set.json}
+		 * —— 那个文件**从来不存在**，而 {@code application.properties} 里把它覆盖成了 {@code .tsv}，
+		 * 所以问题一直没被触发；但任何一处"漏配"或"直接 new 出来测试"都会读到这个路径并报文件不存在，
+		 * 而那时最自然的误判是"评测集丢了"。改掉它不改变运行时行为（properties 仍然显式覆盖），
+		 * 目的是让**代码里的默认值与资源目录说的是同一件事**。
+		 */
+		private String evalSetLocation = "classpath:rag/eval-set.tsv";
 
 		/**
 		 * 少于这么多条用例时，报告里明确标注"样本量不足，结论不可用"。

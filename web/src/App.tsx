@@ -18,13 +18,13 @@ import { useRagDiag } from './hooks/useRagDiag'
 import { useStructuredChat } from './hooks/useStructuredChat'
 import { useThreadDiag } from './hooks/useThreadDiag'
 
-/** 七种模式共用一个壳。加模式时只改三处：这个联合类型、Segmented 的 options、头部那个 Tag 的文案表 */
+/** 八种模式共用一个壳。加模式时要改四处：这个联合类型、Segmented 的 options、头部那个 Tag 的文案表、下面渲染分支的那串三元表达式 */
 type Mode = 'stream' | 'structured' | 'threads' | 'rag' | 'agent' | 'cost' | 'prompt' | 'alerts'
 
 /**
- * 七种模式的对照台。
+ * 八种模式的对照台。
  *
- * **为什么做成"模式切换"而不是七个页面**：这些模式的差别本身就是这个项目要讲的东西 ——
+ * **为什么做成"模式切换"而不是八个页面**：这些模式的差别本身就是这个项目要讲的东西 ——
  * 同样一次模型调用，一个走 SSE 逐字推、回答是自由文本；另一个同步等、回答必须先过结构校验；
  * 第三个干脆不是"回答"，而是把线程模型和 token 预算的运行时证据摆出来；
  * 第四个更不同 —— 它**不调用模型**，量的是"文档怎么切、检索找不找得到"；
@@ -32,12 +32,14 @@ type Mode = 'stream' | 'structured' | 'threads' | 'rag' | 'agent' | 'cost' | 'pr
  * "它为什么这么选、失败在哪一步、花的钱值不值"；
  * 第六个（成本看板）是**回头看**的一页：前五个都在回答"这一次怎么样"，
  * 只有它回答"这一批一共花了多少、谁花的、花得值不值"；
- * 第七个（Prompt 版本）是**唯一一个会改"前六个的行为"的页面** ——
+ * 第七个（Prompt 版本）是**唯一一个会改"前面这些页面的行为"的页面** ——
  * 它管的不是一次调用，而是"以后所有调用的指令"。
  * 这一点决定了它的交互必须比别的页更谨慎：存与生效分成两次，回滚永远可见。
+ * 第八个（告警与灰度）回答的是"**谁被通知**"：前面七个面板都在等人打开页面看，
+ * 只有它会在没人看的时候自己出现、自己消失。
  * 放在同一个界面里能直接对比"同一个系统里，不同的契约 / 线程模型 / 检索链路 / 自主程度各自长什么样"。
  *
- * 七个 hook 都挂在 App 上（而不是按模式条件挂载）：切换模式时对话记录和实验数据不会被清空，
+ * 八个 hook 都挂在 App 上（而不是按模式条件挂载）：切换模式时对话记录和实验数据不会被清空，
  * 来回切两次不会丢掉刚才的结果 —— 这也是把状态放在这一层的理由。
  * **Agent 那一页尤其需要这样**：一次任务会真的调模型花钱、要等十几秒，
  * 切走再切回来就重跑一遍（再花一次钱）的代价太大。
@@ -69,9 +71,12 @@ export default function App() {
   const listRef = useRef<HTMLElement>(null)
 
   // 当前模式对应的视图数据，只用于"滚动到底部"和空状态判断。
-  // 三个诊断模式没有这两件事（面板自己滚、没有空状态），所以这里不参与，免得白白触发一次 effect
+  // 五个诊断/只读面板没有这两件事（面板自己滚、没有空状态），所以这里不参与，免得白白触发一次 effect；
+  // 它们同时也都不显示头部那块 conversationId + 「新会话」—— 那两样属于对话状态。
+  // ⚠️ alerts 是本轮补上的：漏了它并不会让页面报错，只是告警页上会多出一个
+  //    点了没意义的「新会话」按钮（它调的是结构化那条链路的 newConversation）
   const isDiagnostic = mode === 'threads' || mode === 'rag' || mode === 'agent' || mode === 'cost'
-    || mode === 'prompt'
+    || mode === 'prompt' || mode === 'alerts'
   const activeCount = mode === 'stream' ? stream.messages.length : structured.turns.length
   const busy = mode === 'stream' ? stream.streaming : structured.loading
   const conversationId = mode === 'structured' ? structured.conversationId : stream.conversationId
