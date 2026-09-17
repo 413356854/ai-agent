@@ -159,7 +159,7 @@ export interface EvalSetResponse {
   location: string
   caseCount: number
   byTag: Record<string, number>
-  /** 达到"结论可用"门槛的用例数（路线文档要求 30–50 条） */
+  /** 达到"结论可用"门槛的用例数（要求 30–50 条） */
   minUsableCases: number
   sampleSufficient: boolean
   cases: EvalCaseItem[]
@@ -296,7 +296,7 @@ export interface PairComparison {
  * GET /api/diag/rag/align 的响应 —— **把 `/compare` 里那个混杂因素消掉之后的对照**。
  *
  * `/compare` 的结论只能说"结构分块省 token"，不能说"哪个策略更好"：
- * 两组平均块大小不同（234.8 vs 200.9），而判定标准是"块有没有覆盖答案所在章节"，
+ * 两组平均块大小不同（232.5 vs 200.6 token），而判定标准是"块有没有覆盖答案所在章节"，
  * **块越大越容易覆盖答案**。这个报告就是来消掉它的。
  *
  * `notes` 里装着**不能下的结论**（尤其是"向量那一路是离线哈希近似品"那条），

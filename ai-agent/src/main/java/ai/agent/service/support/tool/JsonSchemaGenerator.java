@@ -160,7 +160,7 @@ public final class JsonSchemaGenerator {
 	 * 而表现是"模型老是传错参数"，排查方向会跑到模型能力和提示词上去。
 	 * 我最初写这个类时的注释里正好预言了这个失败模式，然后自己原样踩了进去 ——
 	 * <b>发现它的不是"我想清楚了"，而是一条断言"schema 里必须有 required"</b>。
-	 * 这也是为什么下面 {@code requiredFields} 必须在测试里逐字段核对，而不是只看 schema 非空。
+	 * 这也是为什么下面 {@code requiredFields} 必须逐字段核对，而不是只看 schema 非空。
 	 */
 	private static Annotation[] constraintsOf(Class<?> parameterType, RecordComponent component, String toolName) {
 		Annotation[] onComponent = component.getAnnotations();

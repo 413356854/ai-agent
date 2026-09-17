@@ -15,21 +15,20 @@ import org.springframework.context.annotation.Configuration;
  * Agent 循环的装配（阶段三）。
  *
  * <h2>为什么 {@link ModelTurn} 要留一个"可被替换"的出口</h2>
- * 这是本项目里<b>最值得保留的一个测试接缝</b>。
+ * 这是本项目里<b>最值得保留的一个替换点</b>。
  * {@code AgentLoop} 的全部逻辑（三重上限、重复检测、回填顺序、自愈路径）都挂在
  * "模型下一轮会返回什么"上，而真模型<b>不会配合</b>：
  * 它可能一次就答对，于是"工具失败后改对"这条最重要的路径永远没被跑到。
  *
- * <p>{@code @ConditionalOnMissingBean} 让测试可以用
- * {@code @SpringBootTest} + 一个 {@code @TestConfiguration} 提供
- * {@code ScriptedModelTurn}，从而确定性地跑完整条循环 ——
+ * <p>{@code @ConditionalOnMissingBean} 让容器里这个 {@link ModelTurn} 在启动时可以被换掉，
+ * 从而确定性地跑完整条循环 ——
  * 而生产环境不受影响（没人为干预时就装配真实的 OpenAI 适配器）。
  *
  * <h2>为什么不把 {@link OpenAiModelTurn} 直接标 {@code @Component}</h2>
- * 标了之后容器里就<b>一定</b>有两个 {@code ModelTurn}（真实那个 + 测试那个），
- * 注入点会因歧义而启动失败。用条件装配把"谁赢"这件事交给容器的既有语义，
- * 而不是靠测试里写 {@code @Primary} 去压制 —— 后者在有人忘记加时
- * 会静默注入真实适配器（然后在测试里发真请求），那是最坏的一种测试失败。
+ * 标了之后容器里就<b>一定</b>有一个真实的 {@code ModelTurn}，
+ * 想在启动时换掉它就必须再写一个，注入点会因歧义而启动失败。用条件装配把"谁赢"这件事交给容器的既有语义，
+ * 而不是靠人为再声明一个 {@code @Primary} 去压制 —— 后者在有人忘记加时
+ * 会静默注入真实适配器（然后在真请求上花钱），那是最坏的一种失败方式。
  */
 @Configuration
 @EnableConfigurationProperties({ AgentLoopProperties.class, AgentStoreProperties.class,

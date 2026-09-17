@@ -8,7 +8,7 @@ import type { AlertEventInfo, AlertRulesResponse, AlertSeverity, AlertState, Ale
  * 「告警与灰度」面板（阶段四 · 工程化第 5 件）。
  *
  * <h2>这一页补的是哪半句话</h2>
- * 路线文档对阶段四的验收写的是「Agent 出问题**有人能查**、成本异常**有人能发现**、
+ * 阶段四的验收写的是「Agent 出问题**有人能查**、成本异常**有人能发现**、
  * Prompt 改坏**能回滚**」。在成本看板（第十轮）之后，第二句只做到了一半：
  * 看板能**看见**异常（`notes` 里那几条 ⚠️），但"看见"的前提是有人打开那一页 ——
  * 它的失败方式是最安静的一种：**没有人被通知**。
@@ -30,9 +30,12 @@ import type { AlertEventInfo, AlertRulesResponse, AlertSeverity, AlertState, Ale
  * （10% 的重量在 5 份样本里一份都没分到，概率高达六成 —— 那是噪声，不是结论）。
  *
  * <h2>第二条纪律：构建阶段的判据必须显示成「这里不评估」</h2>
- * 判据目录里有四条是构建阶段的门禁（在 CI 上跑）。这一页不会评估它们 ——
- * 如果界面上不加区分地列出来，读的人会以为"告警面板说构建也没问题"。
- * 所以 {@link RulesCard} 给它们单独一段，并把 {@code executedBy}（真正的执行者）显示出来。
+ * 判据目录分两段：运行阶段的告警（这一页会评估）与构建阶段的门禁（在 CI 上跑）。
+ * ⚠️ 目录里现在的构建阶段判据是 <b>0 条</b>：原来那三条离线评测门禁依赖后端测试与
+ * `rag-baseline.json`，已随后端测试代码一起删除。所以那一段**必须明说「当前没有判据」**，
+ * 而不是渲染一个空表头 —— 空表头读起来像"构建阶段没问题"，而真相是"这一页没有
+ * 构建阶段的结论可显示"。这一段仍然保留「这一页不评估构建阶段」这层意思：
+ * 以后再有门禁时，它们会被列在这里，并带上 {@code executedBy}（真正的执行者）。
  */
 export function AlertPanel({ alerts }: { alerts: UseAlertsResult }) {
   const { rules, alerts: list, sweep, canary, days } = alerts
@@ -571,18 +574,25 @@ function RulesCard({ rules }: { rules: AlertRulesResponse }) {
           title="运行阶段（这一页会评估它们）"
           note="上线后报：它响了说明已经在跑的这一版有问题。"
           rows={observed}
+          emptyTitle="运行阶段：目录里一条判据都没有"
+          emptyText="空目录意味着这一页没得评估 —— 这不该发生：判据定义在后端的 AlertRule 枚举里，空了说明那份定义或这次响应出了问题。"
         />
 
         {/*
-          ★ 门禁那一段必须存在，而且必须写明"这里不评估"。
-          它们是同一个判据的另一个时间点（构建阶段）—— 只列运行阶段的话，
-          读这个页面的人会以为"这个项目只检查这几件事"，
-          而实际上还有四道门禁在 CI 上挡着。
+          ★ 构建阶段这一段必须存在，**即使它现在是 0 条**。
+          它是同一个目录的另一个时间点（构建阶段），只列运行阶段的话，
+          读这个页面的人会以为"这个项目只检查这几件事"。
+          ⚠️ 而 0 条时**不能**渲染一个空表头：那读起来像"构建阶段没有问题"，
+          真相却是"这一页没有构建阶段的结论可显示"。所以 0 条时给一句明确的话，
+          并且把那句"这一页不评估构建阶段"留着 —— 少了它，读的人会以为
+          "告警面板说构建也没问题"。
         */}
         <RuleTable
           title="构建阶段（在 CI 上评估，这一页不评估）"
           note="上线前挡：它红了就说明这次改动不该合进去。"
           rows={gates}
+          emptyTitle="构建阶段：当前没有判据（0 条）"
+          emptyText="原来那几条离线评测门禁依赖后端测试与基线文件，已随后端测试代码一起删掉，所以这一段没有任何构建阶段的结论可显示。这不等于「构建阶段没问题」，也不等于这一页替它下了结论 —— 这一页从来不评估构建阶段，那要去 CI 上看。以后再有门禁，它们会列在这一段里，并标明「谁在执行」。"
         />
 
         {rules.notes.length > 0 && (
@@ -597,44 +607,67 @@ function RulesCard({ rules }: { rules: AlertRulesResponse }) {
   )
 }
 
-function RuleTable({ title, note, rows }: { title: string; note: string; rows: AlertRulesResponse['rules'] }) {
+function RuleTable({ title, note, rows, emptyTitle, emptyText }: {
+  title: string
+  note: string
+  rows: AlertRulesResponse['rules']
+  /** 0 条时那一句话（空表头读起来像"没问题"，所以 0 条**必须**有话说） */
+  emptyTitle: string
+  /** 0 条时为什么是空的、以及该去哪里看 */
+  emptyText: string
+}) {
   return (
     <Flex vertical gap={6} className="alert-rule-section">
       <Flex gap={8} align="center" wrap>
         <Typography.Text strong>{title}</Typography.Text>
+        {/*
+          条数取"下面到底渲染了几行"，而不是再从后端 `phases[].count` 取一份 ——
+          同一个界面上的同一个数字有两份来源时，不一致的那天读的人不知道该信哪个。
+          ⚠️ 下面那句 "（0 条）" 写在 `rows.length === 0` 分支里，所以它不可能与这个牌子矛盾。
+        */}
+        <Tag>{rows.length} 条</Tag>
         <Typography.Text type="secondary">{note}</Typography.Text>
       </Flex>
-      <Table
-        size="small"
-        rowKey="code"
-        dataSource={rows}
-        pagination={false}
-        columns={[
-          {
-            title: '严重度',
-            dataIndex: 'severity',
-            width: 90,
-            render: (severity: AlertSeverity, row) => (
-              <Tag color={severityColor(severity)}>{row.severityLabel}</Tag>
-            ),
-          },
-          { title: '代号', dataIndex: 'code', width: 240, render: (code: string) => <code>{code}</code> },
-          { title: '这条判据是什么', dataIndex: 'title' },
-          {
-            title: '谁在执行',
-            dataIndex: 'executedBy',
-            width: 320,
-            render: (executedBy: string, row) => (
-              <Flex vertical gap={2}>
-                <span>{executedBy}</span>
-                {!row.evaluatedHere && (
-                  <Typography.Text type="secondary">这一页不评估它 —— 结论要去 CI 上看</Typography.Text>
-                )}
-              </Flex>
-            ),
-          },
-        ]}
-      />
+      {rows.length === 0 ? (
+        <Alert type="info" showIcon className="alert-rule-empty" title={emptyTitle} description={emptyText} />
+      ) : (
+        <Table
+          size="small"
+          rowKey="code"
+          dataSource={rows}
+          pagination={false}
+          columns={[
+            {
+              title: '严重度',
+              dataIndex: 'severity',
+              width: 90,
+              render: (severity: AlertSeverity, row) => (
+                <Tag color={severityColor(severity)}>{row.severityLabel}</Tag>
+              ),
+            },
+            { title: '代号', dataIndex: 'code', width: 240, render: (code: string) => <code>{code}</code> },
+            { title: '这条判据是什么', dataIndex: 'title' },
+            {
+              title: '谁在执行',
+              dataIndex: 'executedBy',
+              width: 320,
+              render: (executedBy: string, row) => (
+                <Flex vertical gap={2}>
+                  <span>{executedBy}</span>
+                  {/*
+                    ⚠️ 这一支现在走不到（目录里已没有 `evaluatedHere === false` 的判据）——
+                    但它是**契约的另一半**：只要后端还会下发构建阶段判据，这一段就必须在。
+                    删掉它的后果是"门禁被列进运行阶段那一张表"（读的人会以为本页评估了它）。
+                  */}
+                  {!row.evaluatedHere && (
+                    <Typography.Text type="secondary">这一页不评估它 —— 结论要去 CI 上看</Typography.Text>
+                  )}
+                </Flex>
+              ),
+            },
+          ]}
+        />
+      )}
     </Flex>
   )
 }

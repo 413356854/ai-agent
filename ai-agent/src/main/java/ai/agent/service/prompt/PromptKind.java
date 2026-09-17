@@ -33,7 +33,7 @@ public enum PromptKind {
 	 * Agent 循环的系统提示词（阶段三）。
 	 *
 	 * <p>{@code AgentLoop} 每次运行都会读它，所以它天然支持热更新 ——
-	 * 这一份是"热更新真的生效"最容易验证的地方（见 {@code PromptHotReloadTest}）。
+	 * 这一份是"热更新真的生效"最容易验证的地方。
 	 */
 	AGENT_LOOP("system-agent-tools", "prompts/system-agent-tools.st",
 			"Agent 循环（ReAct）的系统提示词：工作方式、错误反馈的读法、回答要求"),

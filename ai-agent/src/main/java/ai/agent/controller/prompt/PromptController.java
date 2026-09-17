@@ -31,7 +31,7 @@ import java.util.Map;
  * Prompt 版本管理的界面入口（阶段四第 3 件）。
  *
  * <h2>这一页要回答的问题（也是端点的划分依据）</h2>
- * 路线文档阶段四的验收口径是「Prompt 改坏<b>能回滚</b>」。拆开看是三件事：
+ * 阶段四的验收口径是「Prompt 改坏<b>能回滚</b>」。拆开看是三件事：
  * <ol>
  *   <li>「现在生效的是哪一版、它长什么样」→ {@code GET /api/prompts}、{@code /{kind}}；</li>
  *   <li>「上一版是什么、这次改了什么」→ {@code GET /{kind}/versions}、{@code /diff}；</li>

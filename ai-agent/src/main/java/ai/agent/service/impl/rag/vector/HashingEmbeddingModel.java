@@ -50,7 +50,7 @@ import java.util.Map;
  *
  * <p><b>但有一条不能忘</b>：换模型必须<b>全量重建索引</b>。
  * 不同模型的向量空间不可比，混着存会让相似度退化成随机数，
- * 而且不会报错 —— 这就是路线文档里的"Embedding 漂移"。
+ * 而且不会报错 —— 这就是"Embedding 漂移"。
  * 所以索引里必须记下"这批向量是哪个模型、哪个维度算的"，
  * 并在检索时校验（见 {@code SimpleVectorIndex} 的 {@code modelName}）。
  *

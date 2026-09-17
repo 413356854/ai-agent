@@ -5,7 +5,7 @@ package ai.agent.service.review;
  *
  * <h2>为什么是枚举，而不是"用 {@code String} + {@code @Pattern} 校验"</h2>
  * 第一版写的是 {@code @Pattern(regexp = "LOW|MEDIUM|HIGH")} 的 {@code String}，
- * 而它有<b>两个</b>问题，第一个是当场被测试抓出来的：
+ * 而它有<b>两个</b>问题，第一个是当场就撞上的：
  * <ol>
  *   <li><b>缺字段时校验压根不执行。</b> JSR-380 里 {@code @Pattern} 对 {@code null} 是通过的
  *       （那是规范定的：{@code null} 视为"没提供"，要禁止得再加 {@code @NotNull}）。

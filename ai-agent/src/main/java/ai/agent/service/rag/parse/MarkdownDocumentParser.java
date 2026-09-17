@@ -65,7 +65,7 @@ public class MarkdownDocumentParser implements DocumentParser {
 	public MarkdownDocumentParser() {
 		// 【扩展必须显式开启】标准 Markdown 没有表格和删除线，
 		// 它们是 GFM 扩展。不开表格扩展，语料里的表格会退化成普通段落 ——
-		// 而本项目的语料（路线文档等）里表格密度极高，
+		// 而本项目的语料里表格密度极高，
 		// 退化之后"整表成块"的策略就形同虚设
 		MutableDataSet options = new MutableDataSet()
 				.set(TablesExtension.COLUMN_SPANS, false)

@@ -3,7 +3,7 @@ package ai.agent.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * Agent 循环的三重上限（路线文档：最大步数 / 最大 Token / 最大时长）。
+ * Agent 循环的三重上限（最大步数 / 最大 Token / 最大时长）。
  *
  * <h2>为什么"三个上限"必须同时存在，一个都不能省</h2>
  * 它们是三种<b>完全不同的死法</b>，各自能拦住另外两个拦不住的情况：

@@ -283,19 +283,16 @@ public class ChatController {
 							//   时才执行，而我们要防的正是"源什么都不发"（模型挂起）—— 那种情况下
 							//   超时永远不触发，页面永远停在「正在思考…」。
 							//   实测：配了 100ms 超时，流却一直挂到测试框架的 5 秒上限。
-							//   回归测试：#timeoutMustWrapSourceNotSwitchOnFirst
 							//
 							// 坑 2：分支里不能把首字再拼回去。switchOnFirst 传给转换函数的第二个参数
 							//   <b>已经包含首元素</b>，写成 Flux.concat(Flux.just(signal.get()), flux)
 							//   会把第一个增量发两遍（实测输出"第一段第一段"）。
-							//   回归测试：#switchOnFirstSecondArgumentAlreadyIncludesFirstElement
 							//
 							// 坑 3：两个阈值各管一段，别合并成一个。曾经把"两者较小值"传给单个
 							//   timeout，结果是 idle 配小时连带把首字等待也掐短（idle=1ms 时
 							//   10s 的首字超时形同虚设）。现在的写法：源上 firstToken 只管
 							//   "等第一个信号"，进分支后 idle 只管"等下一个信号"。
-							//   回归测试：#workingTimeoutComposition（覆盖"首字慢于 idle 也不误杀"与
-							//   "首字后永久静默必须被抓"两个场景）；真实模型侧用 idle=400ms 实测过
+							//   真实模型侧用 idle=400ms 实测过
 							//   一次 5.5 秒的完整回答（首字约 1.6s）不再被误判
 							.timeout(properties.getTimeout().getFirstToken())
 							.switchOnFirst((signal, flux) -> signal.hasValue()

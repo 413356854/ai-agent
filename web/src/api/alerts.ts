@@ -7,7 +7,7 @@
  * 看板能**看见**异常，而这里把异常变成**能查询、能确认、会自己出现和消失的事件**。
  *
  * 端点清单：
- *   GET  /api/alerts/rules               判据目录（含构建阶段的门禁，一处定义、两处使用）
+ *   GET  /api/alerts/rules               判据目录（一处定义、两处使用；⚠️ 现在只剩运行阶段判据）
  *   GET  /api/alerts                     当前状态（在响的 + 已恢复的）
  *   GET  /api/alerts/sweep?days=7        跑一轮评估（`dryRun=true` 则只算不写）
  *   POST /api/alerts/{fingerprint}/ack   确认一条（"我看过了"）
@@ -57,7 +57,14 @@ export interface AlertRuleInfo {
   phase: AlertPhase
   phaseLabel: string
   action: string
-  /** 谁在执行它 —— 构建阶段那几条是别的类（例如 RagRegressionTest） */
+  /**
+   * 谁在执行它。
+   *
+   * ⚠️ 这个字段**当前对每一条判据都是同一个值**（`AlertEvaluator（运行阶段，每次评估跑一遍）`）：
+   * 目录里已经没有构建阶段判据了 —— 原来那三条门禁的判定依赖后端测试与 `rag-baseline.json`，
+   * 已随后端测试代码一起删掉，所以"这条判据其实是别的类在跑"这种情况现在不存在。
+   * 字段本身留着：它是"真正的执行者"的落点，将来再加门禁时靠它区分（构建阶段那几条不在本页评估）。
+   */
   executedBy: string
   /** **本页会不会评估它**。构建阶段的判据是 false —— 这一格必须显示出来 */
   evaluatedHere: boolean

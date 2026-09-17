@@ -125,8 +125,8 @@ public class OpenAiModelTurn implements ModelTurn {
 		// 最值得记的是它的**症状**：这个异常被 AgentLoop 兜住、变成了 MODEL_ERROR 的 run 报告
 		// （那是刻意的设计：模型失败不该炸掉会话，已花的成本要带回来）。
 		// 于是表面上"只是模型调用失败"，而真正的原因是我传错了 options 类型。
-		// 抓出它的是协议层测试（AgentModelProtocolTest）—— 在 ModelTurn 接口打桩的 39 个测试
-		// 一个都碰不到这一行，因为它们根本不经过这个适配器。
+		// 它也说明这条路径必须**真的经过这个适配器**才会暴露：在 ModelTurn 接口上打桩的替身
+		// 一个都碰不到这一行，因为它们根本不经过这里。
 		OpenAiChatOptions options = OpenAiChatOptions.builder()
 				.toolCallbacks(new ArrayList<>(registry.all()))
 				.build();

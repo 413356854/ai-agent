@@ -11,12 +11,15 @@
   所以语料是**快照**：日期固定在文件名里的这份副本，改了原文也不动它。
 
   【2026-09-18：源文件全部删除了 —— 本脚本现在不再复制任何东西】
-  仓库根目录那批源文档已清理掉（每一份语料的来源见下面的 `$frozen` 表），
-  功能点与结论合并进了 `docs/项目功能点与代码索引.md`（附录 A）。
+  仓库根目录那批源文档已清理掉，语料即唯一下来的副本（4 份都列在下面的 `$frozen` 里），
+  功能点与结论见 `docs/项目功能点与代码索引.md`。
   于是 `ai-agent/src/main/resources/rag/corpus/` 里的 4 份就是**唯一的副本**，
   而且**必须继续冻着**：`rag/eval-set.tsv` 的 relevantSection 标注钉在它们的章节路径上
   （其中 12/43 条钉在 `ledger-progress.md` 的「四、踩坑知识库」上），
-  一改就会让评测集与 `rag-baseline.json` 一起失效、回归门禁变红。
+  一改标注就可能静默失效、评测数字随之变化 —— 而**现在既没有逐位基线，也没有门禁会红**
+  （`rag-baseline.json` 与那批后端测试已在 2026-09-18 一起删除）。
+  要确认改动的后果，只能起服务打 `GET /api/diag/rag/compare` 重新量一遍，
+  再与文档里记的数字对照（见 `ai-agent/docs/RAG-阶段二说明.md` 的「快速上手」）。
 
   ⚠️ 所以本脚本现在的职责只剩一件：**只读地报告这 4 份语料的状态**（存在、大小、字数）。
   它**不会**复制、不会覆盖、更不会删除任何语料文件。
@@ -41,12 +44,12 @@ $outDir = Join-Path $RepoRoot $Target
 $map = [ordered]@{}
 
 # 已冻结、**没有源文件**的语料。列在这里是为了让"为什么什么都不复制"一眼可见。
-$frozen = [ordered]@{
-    'ledger-progress.md'         = '学习进度台账.md'
-    'roadmap-java-to-agent.md'   = 'Java开发者-AI-Agent转型路线.md'
-    'materials-checklist.md'     = 'Java转型-AI-Agent学习资料清单.md'
-    'knowledge-points-ranked.md' = 'AI-Agent应用岗知识要点-重要度排序.md'
-}
+$frozen = @(
+    'ledger-progress.md'
+    'roadmap-java-to-agent.md'
+    'materials-checklist.md'
+    'knowledge-points-ranked.md'
+)
 
 if (-not (Test-Path $outDir)) {
     Write-Warning "语料目录不存在：$outDir"
@@ -83,22 +86,23 @@ if ($copied -eq 0) {
 Write-Host ""
 Write-Host "冻结语料状态（唯一副本，请勿改动）："
 $missing = 0
-foreach ($name in $frozen.Keys) {
+foreach ($name in $frozen) {
     $p = Join-Path $outDir $name
     if (Test-Path $p) {
         $item = Get-Item $p
-        Write-Host ("  {0,-28} <- {1,-38} {2,7} bytes   {3:yyyy-MM-dd HH:mm}" -f $name, $frozen[$name], $item.Length, $item.LastWriteTime)
+        Write-Host ("  {0,-28} {1,7} bytes   {2:yyyy-MM-dd HH:mm}" -f $name, $item.Length, $item.LastWriteTime)
     } else {
-        Write-Host ("  {0,-28} <- {1,-38} ** 缺失 **" -f $name, $frozen[$name]) -ForegroundColor Red
+        Write-Host ("  {0,-28} ** 缺失 **" -f $name) -ForegroundColor Red
         $missing++
     }
 }
 if ($missing -gt 0) {
     Write-Host ""
-    Write-Warning "有 $missing 份语料缺失 —— rag/eval-set.tsv 里钉在它们章节路径上的用例会失效，回归门禁会红。"
-    Write-Host "取回方式：git show HEAD:`"<原文件名>`" > <语料文件名>"
+    Write-Warning "有 $missing 份语料缺失 —— rag/eval-set.tsv 里钉在它们章节路径上的用例会失效，评测数字会变，而且**没有任何东西会自动报出来**（逐位基线与那批后端测试已在 2026-09-18 删除）。"
+    Write-Host "取回方式：从 git 历史里取回对应的语料文件。"
 }
 
 Write-Host ""
 Write-Host "注意：语料是快照，且现在**没有源文件**。要改语料，必须同时重新核对"
-Write-Host "      rag/eval-set.tsv 里的 relevantSection 标注，并重采 rag-baseline.json —— 这是一次显式动作。"
+Write-Host "      rag/eval-set.tsv 里的 relevantSection 标注，并用 GET /api/diag/rag/compare 重新量一遍评测数字"
+Write-Host "      （已无逐位基线可比）—— 这是一次显式动作。"

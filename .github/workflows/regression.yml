@@ -2,15 +2,22 @@
 #  回归门禁（阶段四第 4 件：评测接入 CI）
 #
 #  这个文件只做一件事：把 `node scripts/ci.mjs` 放到 CI 上跑。
-#  它**刻意不重新编排**那几道门禁 —— 编排逻辑只有一份（在 scripts/ci.mjs 里），
+#  它**刻意不重新编排**门禁 —— 编排逻辑只有一份（在 scripts/ci.mjs 里），
 #  否则本地跑的与 CI 跑的就会慢慢变成两条不同的链路，
 #  而"本地全绿、CI 红了"会变成一件需要专门排查的事（那正是门禁失效的开始）。
 #
+#  ⚠️ 这一轮它跟着 ci.mjs 一起变了：**后端测试已整体删除**（含 `RagRegressionTest`
+#  与 `rag-baseline.json`），所以原来那个"核心门禁"job（JDK 21 + Maven 预热 +
+#  `node scripts/ci.mjs`）已经没有东西可跑，整块删掉了 —— 后端现在**不在 CI 里构建或测试**。
+#  剩下的一道门禁是**界面自检（假后端，连跑两遍）**：它不需要 JDK、不需要 Maven
+#  （假后端是一个纯 node 的 sse-server），但需要 **Playwright + 一个浏览器内核**（见下）。
+#
 #  ⚠️ 诚实声明：**这个 workflow 从未在 GitHub 的 runner 上跑过。**
 #  本仓库当前没有配置 git remote（`git remote -v` 为空），所以它无从验证。
-#  能保证的是：它调用的每条命令都在本机真跑过（`node scripts/ci.mjs --with-ui` 全绿），
-#  且 YAML 语法有效。不能保证的是 runner 环境特有的那些事（见 docs/CI回归门禁.md
-#  「首次接入要盯什么」那一节）。
+#  能保证的是：它调用的每条命令都在本机真跑过（`node scripts/ci.mjs` 全绿），
+#  且 YAML 语法有效。不能保证的是 runner 环境特有的那些事 ——
+#  这个 job 不需要 JDK / Maven，要盯的是 Playwright 的依赖安装与浏览器内核
+#  （见下面 steps 里的注释，以及 `web/README.md`「界面自检」一节）。
 # ============================================================================
 
 name: regression
@@ -36,84 +43,21 @@ name: regression
 
 jobs:
   # --------------------------------------------------------------------------
-  #  Job 1：核心门禁（必跑）
+  #  唯一的一道门禁：界面自检（假后端，连跑两遍验确定性）
   #
-  #  与平台无关的那一条路：JDK 21 + Maven + Node，**不需要浏览器、不需要网络**
-  #  （Maven 用 -o）。所以它跑得快、失败只指向代码。
-  # --------------------------------------------------------------------------
-  gates:
-    name: 后端测试 + 离线评测回归基线
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 装 JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-          # 缓存 ~/.m2：下面用 -o 跑，本地仓库必须已经有依赖。
-          # 缓存键跟着 pom.xml 走，pom 一变就重新预热
-          cache: maven
-
-      - name: 装 Node 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      # 【预热本地仓库 —— 这一步的存在理由要说清】
-      # scripts/ci.mjs 里 Maven 一律带 `-o`（离线）。那是刻意的：
-      # 联网解析会引入一个**与代码无关的失败源**（镜像抽风、网络抖动），
-      # 而门禁的失败必须只指向代码。
-      # 但"离线"的前提是本地仓库里已经有依赖 —— 第一次跑（或缓存失效）时必须先拉一次。
-      # 所以这里联网预热，然后真正的门禁用离线跑。
-      - name: 预热 Maven 本地仓库（离线门禁的前提）
-        working-directory: ai-agent
-        # `dependency:go-offline` 只保证"解析得到"，不保证"测试期要用的插件都下全了"，
-        # 所以额外跑一次 compile 把编译期插件也带下来。允许失败：
-        # 预热不成功时下面的门禁会以它自己的方式报错（信息更准确），
-        # 而这里失败会让"到底是预热挂了还是代码挂了"变得分不清
-        continue-on-error: true
-        run: |
-          mvn -B -q dependency:go-offline
-          mvn -B -q compile -DskipTests
-
-      - name: 核心门禁
-        # 只用 Node 起编排，不经过 pnpm/mvn 的包装脚本 —— 少一层就少一个环境差异
-        run: node scripts/ci.mjs
-
-      - name: 收产物（失败时尤其要看）
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-logs-core
-          # 报告与实测值**必须收**：失败原因（中文）在于此，
-          # 而终端日志的编码会跟随 runner 的 locale —— 落成文件才是可靠的那一份
-          path: |
-            ci-logs/
-            ai-agent/target/rag-regression-report.txt
-            ai-agent/target/rag-actual.json
-          if-no-files-found: warn
-
-  # --------------------------------------------------------------------------
-  #  Job 2：界面门禁（假后端）
+  #  为什么单独成 job 而不是塞进别的流程：它需要浏览器内核，
+  #  而浏览器是这一层**唯一的外部依赖**。分清楚之后，
+  #  "内核装不上"与"代码坏了"不会混成一句话。
   #
-  #  单独一个 job，因为它需要浏览器 —— 而浏览器是这一层唯一的外部依赖。
-  #  分开之后：浏览器装不上只会让这个 job 红，核心门禁的结论不受影响
-  #  （粘在一起的话，一个 Playwright 的下载失败会让你看不出代码到底有没有问题）。
+  #  真后端那一条路径（`--with-real-ui`）**刻意不在 CI 里跑**：
+  #  它要求 8080 上已经跑着一个 Spring 后端（要 key、要等启动），
+  #  那是另一件事。ci.mjs 会把"这一条没跑"打印出来。
   # --------------------------------------------------------------------------
   ui:
     name: 界面自检（假后端，跑两遍）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: 装 JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-          cache: maven
 
       - name: 装 Node 22
         uses: actions/setup-node@v4
@@ -126,32 +70,37 @@ jobs:
           version: 9
 
       # 界面自检只用到 web/ 的依赖（vite + playwright）。它不起 Spring 后端
-      # （假后端是一个纯 node 的 sse-server），所以这里不需要 Maven。
+      # （假后端是一个纯 node 的 sse-server），所以这里不需要 JDK，也不需要 Maven。
       - name: 装前端依赖
         working-directory: web
         run: pnpm install --frozen-lockfile
 
       # 【为什么必须装 chromium 内核，以及为什么下面要传 CHECK_BROWSER_CHANNEL】
       # verify-ui.mjs 默认用**系统 Chrome**（channel: 'chrome'）——
-      # 那是为本机开发写的：开发者机器上有 Chrome，而 Playwright 自带内核的版本
-      # 可能对不上（本机就踩过，见踩坑库 #25）。
-      # runner 上没有 Chrome，所以这里装 playwright 的内核，并把频道切成 chromium。
+      # 那是为本机开发写的：开发者机器上有 Chrome，而 Playwright 自带内核不一定装过。
+      # runner 上没有 Chrome，所以这里装 Playwright 的内核，并把频道切成 chromium
+      # （见 web/README.md「用哪个浏览器内核」那一节）。
       # ⚠️ 不设那个环境变量的话，它会去找系统 Chrome，报
       # `Executable doesn't exist` —— 一个看起来像"界面坏了"的环境问题。
       - name: 装 Playwright 内核（含系统依赖）
         working-directory: web
         run: npx playwright install --with-deps chromium
 
+      # ⚠️ 这一行**不带参数**：ci.mjs 的默认行为这一轮改成了"界面自检（假后端，跑两遍）"
+      # （旧版默认只跑后端测试、界面要显式 `--with-ui`）。写成 `--with-ui` 也完全一样，
+      # 但用默认写法能让"CI 跑的就是本地不加参数跑的那一条"一眼可见。
       - name: 界面门禁（假后端，连跑两遍验确定性）
         env:
           CHECK_BROWSER_CHANNEL: chromium
-        run: node scripts/ci.mjs --with-ui
+        run: node scripts/ci.mjs
 
-      - name: 收产物
+      - name: 收产物（失败时尤其要看）
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-logs-ui
+          name: ci-logs
+          # 门禁的完整输出（stdout+stderr 合一份，中文失败原因在里面）与界面自检的
+          # 截图/页面转储都要收：失败之后人往往只拿得到产物包，输出不落文件就没有证据
           path: |
             ci-logs/
             web/ui-check-out/

@@ -22,7 +22,7 @@ import java.util.Optional;
  * <ol>
  *   <li><b>花了多少</b> —— 按天的走势与窗口合计；</li>
  *   <li><b>谁花的</b> —— 按<b>租户</b>（谁的钱）、按<b>业务归因键</b>（花在哪个功能上）、
- *       按模型的拆分（路线文档的「成本归因：按业务/租户/功能拆分」）；</li>
+ *       按模型的拆分（成本归因：按业务/租户/功能拆分）；</li>
  *   <li><b>花得值不值</b> —— 失败但同样花钱的那部分、缓存命中率、工具调用与延迟。</li>
  * </ol>
  * 第三问是这个看板与"账单截图"的区别：账单只知道花了多少，
@@ -376,7 +376,7 @@ public class CostDashboardView {
 				//
 				// ⚠️ 边界（必须与数字一起交付）：分摊的前提是"这一栏覆盖了窗口里全部的 token"。
 				// 它成立，因为同一个窗口、同一批运行按不同维度分组时总量相同 ——
-				// 这正是 CostQueryJdbcTest 里那条"两个维度加起来必须相等"的断言在钉的东西。
+				// 这正是"两个维度加起来必须相等"那条不变式在钉的东西。
 				// 加起来不等于合计时，页面上那句对账说明会把它显出来（不是靠这里相信它）。
 				Long micros = allocated.get(key(row.key()));
 				body.put("amount", micros == null ? null : CostPricing.format(pricing.defaultCurrency(), micros));

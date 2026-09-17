@@ -168,7 +168,7 @@ function detailFromScript(runId, question, overrides = {}) {
       finalAnswer:
         '块大小对齐之后的结论是：固定字数硬切全面占优（Recall@5 0.7907 vs 0.7442、MRR 0.6347 vs 0.5244），' +
         '而且三路检索下方向一致。上一轮那句"结构分块省 token"是"它的块更小"的副作用。\n\n' +
-        '依据：路线文档「阶段二（2–4 周）RAG」一节。',
+        '依据：「阶段二（2–4 周）RAG」一节。',
       totalTokens: 7234,
       toolCalls: toolCalls.length,
       elapsedMs: 7402,
@@ -1008,7 +1008,7 @@ export function handleAgentRoutes(req, res, url, json) {
       json(res, { ok: false, error: `没有这个运行：${runId}` })
       return true
     }
-    const source = known ?? { id: runId, question: '把路线文档里那个自相矛盾的地方提交成一条审查工单' }
+    const source = known ?? { id: runId, question: '把文档里那个自相矛盾的地方提交成一条审查工单' }
     json(res, traceFromScript(source.id, known))
     return true
   }
@@ -1034,7 +1034,7 @@ export function handleAgentRoutes(req, res, url, json) {
       return true
     }
 
-    const source = known ?? { id: runId, question: '把路线文档里那个自相矛盾的地方提交成一条审查工单' }
+    const source = known ?? { id: runId, question: '把文档里那个自相矛盾的地方提交成一条审查工单' }
     const rows = runApprovals(runId)
     const detail = detailFromScript(source.id, source.question, {
       status: known ? known.status : 'WAITING_APPROVAL',
@@ -1167,7 +1167,7 @@ function pendingRow(waitedMs = 12800) {
 function pendingRunRow() {
   return {
     id: approvalState.runId,
-    question: '把路线文档里那个自相矛盾的地方提交成一条审查工单',
+    question: '把文档里那个自相矛盾的地方提交成一条审查工单',
     status: 'WAITING_APPROVAL',
     stopReason: 'WAITING_FOR_APPROVAL',
     failureCause: null,

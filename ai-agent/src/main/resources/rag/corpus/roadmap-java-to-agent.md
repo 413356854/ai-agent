@@ -364,5 +364,3 @@ Agent 编排层 →  LangChain4j（灵活）或 Spring AI Alibaba（国内/国�
 
 > 原始抓取结果：`java-search-results.json`、`java-page-contents.json`
 > **注意**：Java 方向岗位数量明显少于 Python 方向（Python 岗位语言频次 93.4%，Java 未进前列）。**Java 路线的优势是「单位时间转化率高」，不是「岗位池更大」** —— 岗位池更小但你的匹配度更高，两者相乘后通常更优。
-
-*相关文件：`AI-Agent应用岗知识要点-重要度排序.md`（通用知识要点）、`AI-Agent应用岗学习路线.md`（通用时间表）*

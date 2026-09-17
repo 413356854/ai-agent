@@ -124,8 +124,8 @@ public class JdbcCanaryStore implements CanaryStore {
 	 *   <li>{@code 23000} —— 完整性约束冲突的父类（真 MySQL 在这个码下面）；</li>
 	 *   <li>{@code 1062} —— MySQL 的 "Duplicate entry" 错误码（留作兜底）。</li>
 	 * </ul>
-	 * ⚠️ ⚠️ 前两条与第三条**都已经在 H2 上实测过**（{@code CanaryTest} 里那条
-	 * "同时开两次只有一次成功"的断言走的就是这条路）；
+	 * ⚠️ ⚠️ 前两条与第三条**都已经在 H2 上实测过**
+	 * （"同时开两次只有一次成功"走的就是这条路）；
 	 * 但**真 MySQL 那一档没有实测过**（本项目没接真 MySQL）——
 	 * 所以这里只声称"两种码都认"，不声称"在 MySQL 上也验过"。
 	 */

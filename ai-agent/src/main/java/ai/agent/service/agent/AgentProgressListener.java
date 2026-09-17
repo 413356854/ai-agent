@@ -78,7 +78,7 @@ public interface AgentProgressListener {
 	 * 旧形态的一步结束回调（不带灰度分组）。
 	 *
 	 * <p>保留它是因为有一部分实现与灰度无关：诊断用的监听器、以及
-	 * {@code AgentApprovalTest} 里只关心"闸门停在第几步"的那个手写监听器。
+	 * 只关心"闸门停在第几步"的那种手写监听器。
 	 * 让它们被迫实现一个用不上的参数，只会多出改错的机会。
 	 *
 	 * <p>{@link AgentLoop} <b>只调用新形态</b>（带 {@code canaryVariant} 那个），

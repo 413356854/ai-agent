@@ -31,7 +31,7 @@ import org.springframework.stereotype.Component;
  *   <li>更要紧的是它<b>默认只给字符串算</b>，不含消息包装开销，
  *       单条短消息的估算会系统性偏低。</li>
  * </ul>
- * 本项目在测试里同时跑了两种算法做对照（见 {@code TokenEstimatorTest}），
+ * 本项目同时跑过两种算法做对照，
  * 结论是：字符类别法配合真实 usage 校准，误差更可控也更容易解释。
  * 这里不是"重复造轮子"，是<b>轮子的齿距对不上这台机器</b>。
  *

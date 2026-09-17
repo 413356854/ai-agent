@@ -8,7 +8,7 @@ import java.util.List;
  * "问模型一轮"这件事的<b>唯一</b>抽象 —— 手写 ReAct 循环的可测性就建立在这一个接口上。
  *
  * <h2>为什么必须有这个接口（而不是直接注入 ChatModel）</h2>
- * 路线文档要求「手写 ReAct 循环（think → act → observe），<b>不用框架先写一遍</b>」。
+ * 要求手写 ReAct 循环（think → act → observe），<b>不用框架先写一遍</b>。
  * 一旦循环里直接调 {@code ChatModel}，循环的<b>全部逻辑</b>
  * （轮数上限、token 上限、时长上限、重复检测、回填顺序、停止条件）
  * 就都只能靠"起一个真后端 + 真 key + 让模型配合地犯错"来验证 ——

@@ -9,7 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 向量检索实现：<b>路线文档要求的那一半检索侧</b>（向量兜语义）。
+ * 向量检索实现：<b>检索侧的其中一半</b>（向量兜语义）。
  *
  * <h2>它与 {@link LexicalRetriever} 的关系：同一个契约，两种世界观</h2>
  * <ul>

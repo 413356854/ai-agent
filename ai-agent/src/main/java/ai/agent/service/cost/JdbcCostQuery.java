@@ -152,8 +152,8 @@ public class JdbcCostQuery implements CostQuery {
 	public List<GroupTotals> byTenant(LocalDate from, LocalDate to) {
 		// 【与 byIntent 逐字相同，只换了分组列】这不是复制粘贴偷懒，而是刻意的：
 		// 两个维度**必须**用同一套口径（同样的 JOIN、同样的 CASE WHEN、同样的窗口边界），
-		// 否则"两个视图加起来应该相等"这条断言就不再成立 —— 而它正是
-		// dayAndIntentViewsAgree 那条测试在钉的东西。
+		// 否则"两个视图加起来应该相等"这条不变式就不再成立 ——
+		// 而页面上那两栏正是照它对账的。
 		// 把它们合成一个"接受列名参数"的方法会让列名变成字符串拼接（SQL 注入面 +
 		// 打错列名在编译期查不出来），代价大于省下的那几行。
 		//

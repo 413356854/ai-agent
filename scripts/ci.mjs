@@ -2,15 +2,30 @@
 /**
  * <b>回归门禁的唯一入口</b>（阶段四第 4 件：评测接入 CI）。
  *
- * <h2>为什么需要"一个入口"，而不是四份 CI 配置</h2>
- * 这个项目已经有四道各自独立的验证：后端测试、离线评测回归基线、
- * 界面自检（假后端 / 真后端各一条路径）。在它之前，跑全套要人工记住四条命令、
- * 四个工作目录、两个必须先起起来的服务、以及一组环境变量。
+ * <h2>⚠️ 这一轮它变了什么（读旧文档 / 旧输出之前先看这一段）</h2>
+ * 后端测试代码已**整体删除**（44 个文件，含 `RagRegressionTest` 与 `rag-baseline.json`），
+ * 连同只服务它的主代码类 `RagRegressionBaseline` —— **以后不再跑 `mvn test`**。
+ * 于是这里原来的「门禁 1：后端测试」整块（`mvn -o test`、`ci-logs/01-backend-tests.log`、
+ * 「四道门禁」的说法、`target/rag-regression-report.txt` 这类产物说明）一并删掉了。
+ *
+ * <p><b>默认行为随之改变</b>（这是使用者最容易踩到的一处）：
+ * <pre>
+ *   node scripts/ci.mjs                            # 默认：界面自检（假后端，连跑两遍验确定性）
+ *   node scripts/ci.mjs --with-ui                  # 兼容别名，与"不加参数"同义
+ *   node scripts/ci.mjs --with-real-ui             # 再加真后端路径（需要后端已在 8080 上跑）
+ * </pre>
+ * 也就是说：**"不加参数"跑的东西比过去多了** —— 过去界面那一道必须显式 `--with-ui`
+ * 才会跑，现在它是默认。`--with-ui` 留着只为不弄坏既有的肌肉记忆与文档写法。
+ *
+ * <h2>为什么仍然要"一个入口"</h2>
+ * 界面自检本身有两条路径（假后端 / 真后端）：假后端那两个服务（mock + vite）由本脚本起，
+ * 真后端那一条则要求 8080 上**已经跑着**一个后端 —— 跑全套要人工记住两条命令、
+ * 一个工作目录、一个"先把后端起起来"的前置动作、以及一组环境变量。
  *
  * <p>那种状态下的真实后果不是"麻烦"，而是**门禁会被跳过**：
- * 一个人改了分块参数，他会记得跑后端测试（因为 IDE 里顺手就跑了），
- * 而"评测基线有没有动"需要一条他记不住的命令 —— 于是那道门禁事实上不存在。
- * 所以这一步的产出是一件很小但很关键的东西：<b>把四道门禁变成一条命令</b>。
+ * 一个人改了界面代码，他会跑自己顺手的那一条（假后端），
+ * 而"真后端那条路径还能不能过"需要一条他记不住的命令 —— 于是那道门禁事实上不存在。
+ * 所以这件东西的产出很小但很关键：<b>把这两条路径收成一条命令</b>。
  *
  * <h2>为什么用 Node 而不是 PowerShell</h2>
  * 这个仓库里已有 `scripts/verify-mcp.ps1`，而它只能在 Windows 上跑。
@@ -20,10 +35,12 @@
  *
  * <h2>三条设计纪律（都是这一轮踩出来的）</h2>
  * <ol>
- *   <li><b>每道门禁的输出都落成文件</b>（`ci-logs/`）。理由很具体：
- *       这个项目的报告与失败原因**全是中文**，而 Maven / Playwright 的输出编码
- *       跟随平台 —— 在 Windows 上是 GBK，写进 CI 日志就是乱码。
- *       落文件之后 CI 与本地看到的是同一串字节（见 `RagRegressionBaseline.REPORT_FILE` 的注释）；</li>
+ *   <li><b>每道门禁的输出都落成文件</b>（`ci-logs/<门禁名>.log`，stdout 与 stderr 合进同一个）。
+ *       理由很具体：这个项目的报告与失败原因**全是中文**，而**终端能不能读它不由脚本决定**
+ *       （本机 Windows 控制台是 GBK 代码页，CI 上是 UTF-8）。本脚本起的子进程都是 node，
+ *       交出来的字节确定是 UTF-8 —— 所以别把"屏幕上看着是对的"当判据：
+ *       `ci-logs/` 里那一份才是两端读到同一串字符的原件。何况失败之后人往往只拿到 CI 的产物包，
+ *       输出不落文件就等于没有证据；</li>
  *   <li><b>失败要 fail-fast，但要先把已完成的结果打出来</b>。
  *       继续跑后面的门禁只会掩盖第一个失败（那是根因所在），
  *       而"什么都不说直接退出"会让人不知道跑到哪一步了；</li>
@@ -36,18 +53,15 @@
  *
  * <h2>用法</h2>
  * <pre>
- *   node scripts/ci.mjs                            # 默认：后端测试（含离线评测回归基线）
- *   node scripts/ci.mjs --with-ui                  # 再加界面自检（假后端，跑两遍验确定性）
- *   node scripts/ci.mjs --with-ui --with-real-ui   # 再加真后端路径（需要后端已在跑）
+ *   node scripts/ci.mjs                  # 界面自检（假后端，连跑两遍验确定性）—— 默认
+ *   node scripts/ci.mjs --with-ui        # 同上（兼容别名，不改变行为）
+ *   node scripts/ci.mjs --with-real-ui   # 再加真后端那一条路径（需要后端已在 8080 上跑）
  * </pre>
  *
- * <p>Maven 一律用 `-o`（离线）：依赖都在本地仓库，而联网解析会引入一个与代码无关的失败源。
- * 真需要拉新依赖时手工跑一次 `mvn`，那是一次性的环境准备，不该混进"验证代码"这条路。
- *
- * <h2>为什么界面那一道**默认不跑**</h2>
- * 它需要 Playwright 与一个 Chrome（`channel: 'chrome'`），在干净 CI 容器里通常都没有。
- * 一道"默认会红、而且红的原因与代码无关"的门禁，几次之后就会被加进忽略列表 ——
- * 那时它保护的东西就悄悄没了。所以它是显式的 `--with-ui`，
+ * <h2>为什么真后端那一道**默认不跑**</h2>
+ * 它要求 8080 上**已经跑着一个后端**，而本脚本刻意不替它起（理由见 `gateUiReal` 的注释）——
+ * 一道"默认会红、而且红的原因与代码无关"的门禁，几次之后就会被加进忽略列表，
+ * 那时它保护的东西就悄悄没了。所以它是显式的 `--with-real-ui`，
  * 而"没跑"这件事会**被打印出来**（见末尾的"未执行的门禁"一节）。
  */
 import { spawn, spawnSync } from 'node:child_process'
@@ -65,7 +79,15 @@ const LOG_DIR = path.join(ROOT, 'ci-logs')
 // ---------------------------------------------------------------------------
 
 const argv = new Set(process.argv.slice(2))
-const WITH_UI = argv.has('--with-ui')
+
+// 【界面自检（假后端）恒跑】它现在是唯一必跑的门禁，没有开关可关 —— 那两个服务
+// （mock + vite）由 gateUiMock 自己起、自己收。
+//
+// `--with-ui` 是**历史写法**（那时"不加参数"只跑后端测试，界面那一道必须显式打开），
+// 现在保留为兼容别名：**不改变任何行为**，只为让旧命令与旧文档写法继续成立。
+const LEGACY_WITH_UI = argv.has('--with-ui')
+
+/** 真后端那一条路径必须显式打开（理由见文件头的"为什么真后端那一道默认不跑"）。 */
 const WITH_REAL_UI = argv.has('--with-real-ui')
 
 /** 假后端与 vite 的端口。与 `web/README.md` 里那两条命令保持一致。 */
@@ -247,7 +269,7 @@ function run(name, command, options = {}) {
     const child = spawn(command, {
       cwd: options.cwd ?? ROOT,
       env: { ...process.env, ...(options.env ?? {}) },
-      // shell: 让 `mvn` / `pnpm` 这两个"在 Windows 上其实是 .cmd / .ps1"的命令能直接跑。
+      // shell: 让 `pnpm` 这个"在 Windows 上其实是 .cmd / .ps1"的命令能直接跑。
       // 不用 shell 的话 Windows 会报 ENOENT，而错误信息看起来像"命令没装"
       shell: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -278,10 +300,11 @@ function run(name, command, options = {}) {
 /**
  * 追写日志。
  *
- * <p>⚠️ 这里刻意**不**做编码转换：子进程交出来的就是字节，而各家的编码不同
- * （Maven 在本机是 GBK、Node 是 UTF-8）。原样落盘至少是"与终端一致"的；
- * 强行猜一个编码去转，只会在某一半上把好好的字节转坏。
- * 真正治根的动作在 pom 里（钉 `stdout.encoding=UTF-8`），见那里的注释。
+ * <p>⚠️ 这里刻意**不**做编码转换：子进程交出来的就是字节，原样落盘。
+ * 现在本脚本起的子进程全是 node（`pnpm mock` / `pnpm dev:mock` / `pnpm check:ui`），
+ * 它们写进管道的是 UTF-8 —— 也就是说**文件里那一份的编码是确定的**，
+ * 而"终端显示成什么样"取决于控制台代码页（本机是 GBK），不由脚本决定。
+ * 强行猜一个编码去转，只会在某一端把好好的字节转坏。
  */
 function appendLog(file, chunk) {
   try {
@@ -346,22 +369,11 @@ function startService(name, command, options = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * 门禁 1：后端测试（内含离线评测回归基线 `RagRegressionTest`）。
+ * 门禁 1：界面自检（假后端），**跑两遍**。
  *
- * <h2>为什么一律加 `-o`（离线）</h2>
- * 这个项目的依赖早已全部在本地仓库里，而联网解析会在 CI 上引入一个
- * **与代码无关的失败源**（镜像抽风、网络抖动）。门禁的失败必须只指向代码 ——
- * 否则第一次"红了但不是我改的东西"之后，人就开始习惯性重跑，
- * 而那正是门禁失效的第一步（不是被删掉，而是被无视）。
- *
- * <p>真需要联网解析新依赖时，用 `mvn` 手工跑一次把它拉进本地仓库即可 ——
- * 那是一次性的环境准备，不该混在"验证代码"这条路径里。
+ * <p>它是唯一必跑的那一道 —— 前端与假后端都由本脚本自己起、自己收
+ * （生命周期纪律见 {@link killAll}）。
  */
-async function gateBackend() {
-  return run('01-backend-tests', 'mvn -o test', { cwd: path.join(ROOT, 'ai-agent') })
-}
-
-/** 门禁 2：界面自检（假后端），**跑两遍**。 */
 async function gateUiMock() {
   const webDir = path.join(ROOT, 'web')
 
@@ -372,18 +384,18 @@ async function gateUiMock() {
   await waitForHttp(`http://127.0.0.1:${UI_PORT}`, { label: 'vite（mock 模式）' })
 
   const env = { UI_URL: `http://127.0.0.1:${UI_PORT}` }
-  const first = await run('02-ui-check-mock-run1', 'pnpm check:ui', { cwd: webDir, env })
+  const first = await run('01-ui-check-mock-run1', 'pnpm check:ui', { cwd: webDir, env })
   if (first !== 0) return first
 
   // 【为什么要跑第二遍】假后端里有一批状态机（HITL 的批准/拒绝、Prompt 面板的版本号），
   // 靠 `__reset` / `__set-approval` 复位端点做到顺序无关。这两条端点本身也可能写错 ——
   // 而它写错的表现是"**单独跑没问题、连着跑第二遍才红**"，只在 CI 里能稳定暴露。
   // 第十二轮就是这么发现"两条路径都全过"是有前提的。
-  return run('02-ui-check-mock-run2', 'pnpm check:ui', { cwd: webDir, env })
+  return run('01-ui-check-mock-run2', 'pnpm check:ui', { cwd: webDir, env })
 }
 
 /**
- * 门禁 3：界面自检（真后端）。
+ * 门禁 2：界面自检（真后端）—— 显式 `--with-real-ui` 才跑。
  *
  * <p>要求后端**已经在跑** —— 本脚本刻意不替它起：起一个 Spring 后端意味着
  * 要管 JDK、要等几十秒、还要处理"它起来了但上游 key 是假的"这种状态，
@@ -416,7 +428,7 @@ async function gateUiReal() {
 				+ ' 拒绝继续：跑一次"假后端"却记为"真后端通过"，比不跑更糟。见 web/README.md')
   }
 
-  return run('03-ui-check-real', 'pnpm check:ui', {
+  return run('02-ui-check-real', 'pnpm check:ui', {
     cwd: webDir,
     env: {
       UI_URL: `http://127.0.0.1:${realUiPort}`,
@@ -455,20 +467,28 @@ async function main() {
   mkdirSync(LOG_DIR, { recursive: true })
   console.log('[ci] 回归门禁开始')
   console.log(`[ci] 仓库根目录：${ROOT}`)
-  console.log(`[ci] 门禁：后端测试（含离线评测回归基线）${WITH_UI ? ' + 界面自检（假）' : ''}${WITH_REAL_UI ? ' + 界面自检（真）' : ''}`)
+  console.log(`[ci] 门禁：界面自检（假后端，跑两遍）${WITH_REAL_UI ? ' + 界面自检（真后端）' : ''}`)
+  // 【默认行为这一轮变了，所以要说出来】旧脚本里"不加参数"只跑后端测试、界面那一道要显式
+  // `--with-ui`；后端测试删掉之后默认就是界面自检。念一句是为了让"不加参数跑的东西变多了"
+  // 被看见，而不是要人去读脚本才发现（见文件头"这一轮它变了什么"）
+  if (LEGACY_WITH_UI) console.log('[ci] 说明：--with-ui 现在与"不加参数"同义（默认即跑界面自检，假后端）')
 
   let failed = null
   let blockedBy = null
+  // 前置条件失败要说清是**哪一道**没跑成 —— 假后端起不来同样是前置条件失败，不只是真后端那一条
+  let currentGate = '界面自检（假后端）'
   try {
-    if ((await gateBackend()) !== 0) failed = '后端测试'
-    else if (WITH_UI && (await gateUiMock()) !== 0) failed = '界面自检（假后端）'
-    else if (WITH_REAL_UI && (await gateUiReal()) !== 0) failed = '界面自检（真后端）'
+    if ((await gateUiMock()) !== 0) failed = '界面自检（假后端）'
+    else if (WITH_REAL_UI) {
+      currentGate = '界面自检（真后端）'
+      if ((await gateUiReal()) !== 0) failed = '界面自检（真后端）'
+    }
   }
   catch (err) {
     // 前置条件不满足 ≠ 断言失败。分开处理的理由见 PreconditionError 的注释：
     // 门禁压根没跑，所以结论是"没验"，而不是"验了、没过"。
     // 把这两种说成同一句话，下次真出现编排出错时人已经学会忽略这条信息了
-    if (err instanceof PreconditionError) blockedBy = err.message
+    if (err instanceof PreconditionError) blockedBy = `${currentGate} —— 前置条件不满足：${err.message}`
     else throw err
   }
 
@@ -483,22 +503,20 @@ async function main() {
   }
 
   // 【未执行的门禁必须显式说出来】
-  // 不说的话，"这次全绿"会被读成"四道门禁都过了"，
-  // 而真相是其中两道压根没跑 —— 一个被跳过的门禁比没有门禁更危险
+  // 不说的话，"这次全绿"会被读成"两条路径都过了"，
+  // 而真相是真后端那一条压根没跑 —— 一个被跳过的门禁比没有门禁更危险
   const skipped = []
-  if (!WITH_UI) skipped.push('界面自检（假后端）—— 加 --with-ui 打开（需要 Playwright + 一个浏览器内核）')
-  if (!WITH_REAL_UI) skipped.push('界面自检（真后端）—— 加 --with-real-ui 打开（需要 8080 上已跑着后端）')
+  if (!WITH_REAL_UI) skipped.push('界面自检（真后端）—— 加 --with-real-ui 打开（需要 8080 上已跑着后端；本脚本刻意不替它起）')
   // 已经跑了、但被前置条件挡住的那一道，也要算进"没验"
-  if (blockedBy) skipped.push(`界面自检（真后端）—— 前置条件不满足：${blockedBy}`)
+  if (blockedBy) skipped.push(`${blockedBy}（这道没跑成）`)
   if (skipped.length > 0) {
     console.log('\n[ci] ⚠️ 本次**未执行**的门禁（"全绿"不代表它们过了）：')
     for (const s of skipped) console.log(`  - ${s}`)
   }
 
   console.log('\n[ci] 产物：')
-  console.log('  - ai-agent/target/rag-regression-report.txt  离线评测回归门禁的人读报告（UTF-8）')
-  console.log('  - ai-agent/target/rag-actual.json            本次实测的全部指标')
-  console.log('  - ci-logs/                                   各道门禁的完整输出')
+  console.log('  - ci-logs/                                   各道门禁的完整输出（stdout+stderr 合一份，UTF-8）')
+  console.log('  - web/ui-check-out/                          界面自检的截图与页面转储（该道门禁真跑过时才更新）')
 
   if (failed) {
     console.log(`\n[ci] ❌ 门禁失败：${failed}。日志见 ci-logs/。`)
@@ -507,9 +525,9 @@ async function main() {
   if (blockedBy) {
     // 【退出码同样是 1，但话不一样】
     // 门禁没跑成不能算通过 —— 那会让"后端起没起"变成"门禁过不过"的隐藏变量。
-    // 但也不说"失败在界面自检"，因为那会把人指向界面代码，而问题在端口上
+    // 但也不说"失败在界面自检"，因为那会把人指向界面代码，而问题在端口/服务上
     console.log(`\n[ci] ⛔ 有门禁**没能执行**（不是失败，是没跑成）：${blockedBy}`)
-    console.log('[ci]    退出码按失败处理（CI 上必须红）—— 见 docs/CI回归门禁.md「首次接入要盯什么」。')
+    console.log('[ci]    退出码按失败处理（CI 上必须红）—— 见 web/README.md「界面自检」一节。')
     process.exit(1)
   }
   console.log('\n[ci] ✅ 已执行的门禁全部通过。')

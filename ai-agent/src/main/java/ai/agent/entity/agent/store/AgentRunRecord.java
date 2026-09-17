@@ -161,7 +161,7 @@ public record AgentRunRecord(String id, String question, RunStatus status, Agent
 	 *            提示词可以在两次运行之间换版本而**报告里看不出来**，只能靠回忆。
 	 *            <p>为什么落指纹而不是只落版本号：版本号是<b>指针</b>、指纹是<b>内容</b>。
 	 *            "激活了第 5 版"与"发出去的确实是第 5 版的内容"是两件事，
-	 *            而后者才是阶段四第 3 件（PromptHotReloadTest）证明热更新时用的判据 ——
+	 *            而后者才是这一件的验收口径 ——
 	 *            这里把那次的判据<b>落成数据</b>，让它在事后也能回答。
 	 *            <p>空串 = 库里读不到那一版（老数据 / 提示词服务不可用）。
 	 *            刻意不用 null：列有 NOT NULL DEFAULT ''，而且"空指纹"与"某个叫空串的版本"

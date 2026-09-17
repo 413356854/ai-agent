@@ -10,7 +10,7 @@ import ai.agent.entity.rag.parse.ParsedDocument;
  * <ul>
  *   <li>Tika 走的是"快速本地解析"，PDF 只按文本流取字，<b>不理解版式</b> ——
  *       双栏 PDF、复杂表格会读成错乱的文字流；</li>
- *   <li>路线文档里明确写了备选方案：PDF 用 Layout-Aware 解析器
+ *   <li>备选方案是现成的：PDF 用 Layout-Aware 解析器
  *       （Docling / Unstructured），或者干脆<b>用多模态模型把页图转成 Markdown</b>；</li>
  *   <li>这两条路将来一定会试（因为"PDF 解析质量"直接决定 RAG 上限），
  *       而它们都返回同一种东西：文本 + 结构。</li>

@@ -32,7 +32,7 @@ import org.springframework.stereotype.Component;
  * <h2>它的风险声明为什么是"非幂等、可能破坏性"</h2>
  * 调用它会<b>创建一条不可逆的记录</b>（工单一旦建出来，别人就会按它去干活）。
  * 而且它<b>不幂等</b>：模型重提一次、人又批一次，就可能多出一条内容几乎相同的工单 ——
- * 这恰好是路线文档面试追问里那一条「工具调用重试会不会产生重复副作用」的现实形态。
+ * 这恰好是面试追问里那一条「工具调用重试会不会产生重复副作用」的现实形态。
  *
  * <p>于是它触发 HITL 审批（见 {@link ToolHints#requiresApproval()}），
  * 而存储层还额外加了一道幂等窗口（见 {@link TicketStore#create}）——
@@ -178,7 +178,7 @@ public class ProposeReviewTool implements AgentTool<ProposeReviewTool.Params> {
 	 *
 	 * <h2>{@code severity} 为什么从 {@code String + @Pattern} 改成了枚举</h2>
 	 * 第一版是 {@code @Pattern(regexp = "LOW|MEDIUM|HIGH") String severity}，
-	 * 而它有两个问题，第一个是<b>当场被测试抓出来的</b>：
+	 * 而它有两个问题，第一个是<b>当场就撞上的</b>：
 	 * <ol>
 	 *   <li><b>缺字段时校验压根不执行</b>：JSR-380 里 {@code @Pattern} 对 {@code null} 是通过的
 	 *       （规范如此，要禁止得再加 {@code @NotNull}）。于是模型不传 {@code severity} 时

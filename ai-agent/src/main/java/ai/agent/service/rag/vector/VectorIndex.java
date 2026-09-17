@@ -17,7 +17,7 @@ import java.util.Map;
  * 向量索引：<b>用第一性原理实现"向量检索到底在做什么"</b>。
  *
  * <h2>为什么不是直接接一个真向量库</h2>
- * 路线文档的要求是"通过 Spring AI 的 {@code VectorStore} 接口编程，不绑死具体向量库"
+ * 要求是"通过 Spring AI 的 {@code VectorStore} 接口编程，不绑死具体向量库"
  * （本地 PG+pgvector，生产 Milvus / ES）。这个要求分两半，
  * <b>本机只满足了后一半的条件</b>（2026-09-15 实测）：
  * <ul>

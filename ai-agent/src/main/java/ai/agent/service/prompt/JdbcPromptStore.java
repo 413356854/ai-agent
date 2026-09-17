@@ -131,7 +131,7 @@ public class JdbcPromptStore implements PromptStore {
 	public Optional<PromptVersion> active(PromptKind kind) {
 		// ⚠️ 拼接处那个空格是必须的：`COLUMNS` 末尾没有空格，
 		// 少了它 SQL 会变成 `... created_atFROM prompt_active` —— 而报错信息指向的是
-		// "FROM 附近的语法错误"，看起来像 JOIN 写错了（这一条是 PromptStoreTest 抓出来的）
+		// "FROM 附近的语法错误"，看起来像 JOIN 写错了。
 		String sql = "SELECT v." + COLUMNS.replace(", ", ", v.") + " "
 				+ """
 						FROM prompt_active a JOIN prompt_version v ON v.kind = a.kind AND v.version = a.version

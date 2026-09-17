@@ -31,7 +31,7 @@ import org.springframework.ai.tool.definition.ToolDefinition;
  *                     AgentTool.invoke(参数)  →  AgentToolResult（成功 / 失败，都带结构）
  * </pre>
  * 一句话：<b>{@code invoke} 只关心业务，不关心"输入是不是模型给的乱码"。</b>
- * 后者是执行器的职责，而它必须被单独测试（见 {@code ToolCallExecutorTest}）。
+ * 后者是执行器的职责，而它是**必须被单独验证**的一层。
  *
  * @param <P> 参数类型。用 record 承载，schema 由 {@link JsonSchemaGenerator} 从它生成
  */

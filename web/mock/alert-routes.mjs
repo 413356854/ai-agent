@@ -25,8 +25,10 @@
  *      否则"还有几条没人看过"这个数字就是假的；
  *   3. **一条已经恢复的**（RESOLVED）→ 它必须留在列表里（带恢复时间），
  *      而不是消失 —— "它到底响过没有"是复盘的第一句话；
- *   4. **一条构建阶段的门禁**（GATE + BLOCKER）→ 它必须显示成"在构建阶段执行、
- *      这里不评估"，否则读的人会以为"告警面板说构建也没问题"；
+ *   4. **判据目录里构建阶段那一段现在是空的**（GATE 下一个成员都没有）→
+ *      界面必须**明说"当前没有判据"**，而不是渲染一个空表头，
+ *      并且仍然要留着"这一页不评估构建阶段"这层意思 ——
+ *      一个空表头读起来像"构建阶段没问题"，而真相是"这里没有构建阶段的结论可显示"；
  *   5. **灰度：已参与 14 份、其中 3 份走候选版**（配置 20%）→
  *      刻意让"实际分到几份"与"配置写了几成"**不相等且能对上**，
  *      这样界面上那两栏并排显示才有东西可看；
@@ -193,13 +195,19 @@ function initialEvents() {
 /**
  * 判据目录。
  *
- * ⚠️ 它必须**与后端的 AlertRule 一致**（8 条运行阶段 + 3 条构建阶段门禁）。
- * ⚠️ 这里曾经抄过后端的第 4 条门禁 `gate-entry-not-committable`；那条判据于 2026-09-18 删除
- * （它守的 `.gitignore` 规则被取消后就没有可执行的判定了），所以这里也一起删掉 ——
- * **假后端多一条判据不会有任何症状**（页面上只是多一行），而这正是"假数据与真代码漂移"最常见的形态。
- * 自检里有一条断言盯着"门禁那几条必须显示『本页不评估』"—— 所以这里不能只写运行阶段那几条；
+ * ⚠️ 它必须**与后端的 AlertRule 一致**：剩下的这 8 条**全部是运行阶段（OBSERVE）判据** ——
+ * 构建阶段（GATE）下**一个成员都没有**，因为原来那三条离线评测门禁
+ * （基线漂移 / 采集条件不一致 / 指标方向未登记）的判定依赖后端测试与 `rag-baseline.json`，
+ * 已随后端测试代码一起删除（2026-09-18）。所以 `phases` 里构建阶段那一条的 `count`
+ * 由下面那个 filter 算出来，会自然变成 0 —— **结构不动，只少内容**。
+ *
+ * ⚠️ 这里曾经抄过后端的 `gate-entry-not-committable`，后来又删过三条门禁：
+ * **假后端多一条判据不会有任何症状**（页面上只是多一行），而这正是"假数据与真代码漂移"
+ * 最常见的形态 —— 所以删真后端那三条时，这里也必须跟着删。
  * 反过来，**漏掉一条运行阶段的判据也不会有任何症状**（页面上只是少一行），
- * 所以自检里还有一条"运行阶段那几条必须都在页面上"的断言。
+ * 所以自检里有一条专门盯着运行阶段条数（8 条）的断言 —— 少一条在那里现形。
+ * 而"构建阶段 0 条"是一件**有症状**的事：界面上那一段必须写明"当前没有判据"，
+ * 自检里也有一条断言盯着它（否则一个空表头读起来像"构建阶段没问题"）。
  */
 export const MOCK_RULES = [
   rule('unconfigured-prices', '价格未配置（成本只能算到 token，算不出金额）', 'INFO', 'OBSERVE', true),
@@ -218,32 +226,16 @@ export const MOCK_RULES = [
   rule('empty-retrieval', '连续多次检索一条都没命中（模型白跑一轮，那一轮照样花钱）', 'WARNING', 'OBSERVE', true),
   rule('canary-no-traffic', '灰度开着，但一份流量都没分到（这次实验等于没做）', 'WARNING', 'OBSERVE', true),
   rule('canary-split-biased', '灰度的实际分流与配置比例偏离过大（分流函数可疑）', 'WARNING', 'OBSERVE', true),
-  rule(
-    'gate-eval-baseline-drift',
-    '离线评测相对基线退化（构建阶段门禁）',
-    'BLOCKER',
-    'GATE',
-    false,
-    'RagRegressionTest#evaluationMatchesBaseline（逐位比较，容差 1e-9）',
-  ),
-  rule(
-    'gate-eval-context-mismatch',
-    '评测的采集条件与基线不一致（指标变化无从归因）',
-    'BLOCKER',
-    'GATE',
-    false,
-    'RagRegressionTest#evaluationMatchesBaseline（sameContext 前置断言）',
-  ),
-  rule(
-    'gate-metric-direction-unregistered',
-    '有指标没有登记方向（会被按默认方向静默判断）',
-    'BLOCKER',
-    'GATE',
-    false,
-    'RagRegressionTest#unregisteredMetricDirectionThrows',
-  ),
 ]
 
+/**
+ * 造一条判据。
+ *
+ * ⚠️ 最后一个参数 `executedBy` 现在**没有任何调用方传它**：目录里已经没有构建阶段判据，
+ * 剩下这几条全都由 AlertEvaluator 在运行阶段跑（也就是下面那个默认值）。
+ * 参数仍然留着，是因为真后端的 `AlertRule.executedBy` 依旧是**逐条**给的字段 ——
+ * 将来再加门禁（由别的类跑）时，这里补一句"谁在执行"就能与真后端对上。
+ */
 function rule(code, title, severity, phase, evaluatedHere, executedBy) {
   return {
     code,

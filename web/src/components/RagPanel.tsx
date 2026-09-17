@@ -921,7 +921,7 @@ function EvalSetBody({ data }: { data: EvalSetResponse }) {
           type="warning"
           showIcon
           title="样本量不足：这份结果可以用来调参，但不能作为结论引用"
-          description="路线文档的原话是「别只问两三个问题觉得还行」—— 样本太少时指标会剧烈波动。"
+          description="「别只问两三个问题觉得还行」—— 样本太少时指标会剧烈波动。"
         />
       )}
 

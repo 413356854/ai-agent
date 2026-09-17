@@ -24,7 +24,7 @@ package ai.agent.entity.model.tool;
  * 如果再加一个布尔 {@code requireApproval}，就出现了<b>两个都在表达"这把工具危险吗"</b>的字段：
  * 它们可以互相矛盾（声明只读、却要求审批），而矛盾时怎么判是一个没人会去读的规则。
  * 所以这里让"只读"与"免审批"是同一件事的两面 ——
- * 路线文档的原话就是「高危<b>写</b>操作必须审批」，只读工具不在其列。
+ * 判据就是「高危<b>写</b>操作必须审批」，只读工具不在其列。
  *
  * <p><b>要写又不想每次审批怎么办：{@code idempotentHint = true}</b>。
  * 这条规则不是特例，它是有理由的：同一个<b>幂等</b>的写操作
@@ -91,7 +91,7 @@ public record ToolHints(boolean readOnlyHint, boolean destructiveHint, boolean i
 	 *
 	 * <p>判据只有一条，而且它的<b>顺序</b>是有讲究的：
 	 * <ol>
-	 *   <li>只读 → 不用审批。这是路线文档「高危<b>写</b>操作必须审批」的直接落地；</li>
+	 *   <li>只读 → 不用审批。这是「高危<b>写</b>操作必须审批」的直接落地；</li>
 	 *   <li>幂等的写 → 不用审批（理由见 {@link #idempotentWrite()}）；</li>
 	 *   <li>其余（非幂等的写）→ 必须审批。</li>
 	 * </ol>

@@ -124,13 +124,12 @@ public class JdbcAlertStore implements AlertStore {
 		//  ④ ★ **已确认的必须保持已确认**：`state` 只在"上一状态是 RESOLVED"或本来就 OPEN 时
 		//     才回到 OPEN。写成直接 `state = 'OPEN'` 的话，系统每评估一遍就把人的确认抹掉一次 ——
 		//     而值班的人只会觉得「这个按钮时灵时不灵」。
-		//     ⚠️ 这一条是**上线前的测试抓出来的**（AlertStoreTest）：第一版就是直接写 OPEN，
-		//     而内存替身里那一条是对的 —— 于是"内存里测得好好的、真库上一按就没了"。
-		//     那次分叉正是"两份实现"的代价，也正是为什么真库与内存两条都要测同一套语义。
+		//     ⚠️ 第一版就是直接写 OPEN，而内存替身里那一条是对的 ——
+		//     于是"内存里跑得好好的、真库上一按就没了"。
+		//     那次分叉正是"两份实现"的代价，也正是为什么真库与内存两条都要能说出同一套语义。
 		//
 		// ⚠️ 这里用 `CASE WHEN` 而不是 `IF(...)`：后者在 H2 与真 MySQL 上的
 		// 函数名不完全一致，而本项目的存储层刻意只依赖两者的**交集**
-		// （同一条纪律见 H2MySqlModeCompatibilityTest）
 		String sql = """
 				INSERT INTO alert_event
 				  (fingerprint, rule_code, subject, severity, phase, state, first_seen_at, last_seen_at,

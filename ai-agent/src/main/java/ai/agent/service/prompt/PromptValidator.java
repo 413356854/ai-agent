@@ -171,7 +171,6 @@ public final class PromptValidator {
 		// **只报出第 ① 条**（因为它先命中），而"相对变化"这条完全没被说出来 ——
 		// 读者看到的是"只有 130 字符"，却看不到"上一版有 900 字符"。
 		// 而"它掉了多少"恰恰是判断"这是删减还是粘贴残缺"的唯一依据。
-		// （这一条是被 PromptValidatorTest.warnsButAllowsOnBigShrink 抓出来的）
 		if (!content.isBlank()) {
 			if (content.length() < MIN_CHARS && !input.force()) {
 				checks.add(new Check("篇幅没有低于下限", Level.WARN,

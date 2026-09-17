@@ -28,7 +28,7 @@ import java.util.Optional;
  *   <li><b>已经算出去的 token 预算</b>：预算随正文长度变，
  *       所以本服务把 token 估算一起返回，让预算那一侧每次重新问 ——
  *       如果哪一天这里又变成"启动时算一次"，页面上「预算」那一格会与实际不符，
- *       而它不报错（见 {@code PromptBudgetReconcileTest} 钉的就是这个）。</li>
+ *       而它不报错（"预算"那一格会与实际不符，却没有任何症状）。</li>
  * </ol>
  */
 public interface PromptService {

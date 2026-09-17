@@ -39,7 +39,7 @@ import java.util.function.ToDoubleFunction;
  * 只看召回率容易得出"块切得越小越好"的结论，而加上 token 成本就未必了。
  *
  * <h2>已知的混杂因素（本轮起由 {@link RagAlignmentService} 处理）</h2>
- * 这个"原始对照"里两组的块大小并不相同（实测 234.8 vs 200.9 token），
+ * 这个"原始对照"里两组的块大小并不相同（实测 232.5 vs 200.6 token），
  * 而判定标准是"块有没有覆盖答案章节"——<b>块越大越容易碰到答案</b>。
  * 所以原始对照<b>只能</b>得出"结构分块省 token"这一半结论；
  * 想说"策略本身更好或更差"，必须看对齐实验。
@@ -205,7 +205,7 @@ public class RagEvaluationService {
 					.formatted(locator.unresolved().size(), String.join("；", locator.unresolved())));
 		}
 		if (cases.size() < properties.getEvaluation().getMinUsableCases()) {
-			notes.add("⚠ 样本量不足：只有 %d 条用例（门槛 %d 条）。路线文档明确要求「别只问两三个问题觉得还行」——"
+			notes.add("⚠ 样本量不足：只有 %d 条用例（门槛 %d 条）。明确要求「别只问两三个问题觉得还行」——"
 					.formatted(cases.size(), properties.getEvaluation().getMinUsableCases())
 					+ "这份结果可以用来调参，但「不能作为结论引用」");
 		}
