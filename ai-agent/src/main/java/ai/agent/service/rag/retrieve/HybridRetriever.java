@@ -18,7 +18,7 @@ import java.util.Map;
  * 直接 {@code 0.5 * bm25 + 0.5 * cosine} 的结果是：向量那一路的贡献被 BM25 的数量级
  * 完全淹没，融合出来的排序和"纯 BM25"几乎一样 ——
  * 而报告上会写着"我们做了混合检索"。这类错误不报错、也不崩，
- * 只是<b>你做的那个改进从未生效</b>（台账踩坑库 #35 同族）。
+ * 只是<b>你做的那个改进从未生效</b>（同族：默认的条数窗口会抢先挡住新加的长度限制）。
  *
  * <p>RRF（Reciprocal Rank Fusion）绕开了量纲问题：它只看<b>名次</b>。
  * 第 {@code r} 名的贡献是 {@code 1/(k + r)}，多路得分相加。
@@ -72,7 +72,7 @@ public class HybridRetriever implements Retriever {
 		for (Retriever delegate : delegates) {
 			// 每一路都按 topK 取：不要"各路取 2×topK 再截断"这种拍脑袋的放大 ——
 			// 融合后的名次由 RRF 决定，多取只影响候选池大小，而候选池大小本身
-			// 应当是一个显式参数（台账踩坑库 #46：兜底/放大顺手改掉了主逻辑的活）
+			// 应当是一个显式参数（兜底逻辑顺手把主逻辑的活干了）
 			for (RetrievalHit hit : delegate.retrieve(query, topK)) {
 				chunkById.put(hit.chunk().id(), hit.chunk());
 				fusedScore.merge(hit.chunk().id(), 1.0 / (RRF_K + hit.rank()), Double::sum);

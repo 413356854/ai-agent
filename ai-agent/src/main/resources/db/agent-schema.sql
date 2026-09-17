@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS agent_step (
 --
 -- 【为什么要存 **被拒绝** 的那些】
 -- 报告里要能回答"模型一共想调几次、其中几次没让它调"。
--- 只记成功的会让这个数字永远偏小，而这正是踩坑库 #56 记的那个坑。
+-- 只记成功的会让这个数字永远偏小。
 CREATE TABLE IF NOT EXISTS agent_tool_invocation (
   run_id       VARCHAR(64) NOT NULL,
   step_index   INT         NOT NULL,
@@ -182,7 +182,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_run_created ON agent_run (created_at);
 --    ① 路线文档的验收要能回答「**什么时候让人确认**」—— 没有记录时这句话只能靠回忆；
 --    ② 写操作出事之后的第一个问题是"**这是谁批的**"，而那时内存里那个 future 早就不在了；
 --    ③ 审批记录是**唯一能证明"闸门真的拦下过东西"**的证据。一张空表既可能表示
---       "从没有过危险操作"，也可能表示"闸门没装" —— 这正好是踩坑 #67 的形状。
+--       "从没有过危险操作"，也可能表示"闸门没装" —— 这正好是「装上了」与「真在生效」是两件事。
 --
 --  【状态取值】PENDING / APPROVED / DENIED / TIMED_OUT / EXPIRED
 --  后两个刻意与 DENIED 分开：它们对执行是同一个结果（不执行），

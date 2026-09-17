@@ -33,7 +33,7 @@ import java.util.List;
  *       <td>这些口径在成本看板那一轮已经定过并测过。重新写一条 SQL 意味着
  *           "同一件事有两份实现"，而两份迟早会对不上 —— 那时告警与看板会互相矛盾</td></tr>
  *   <tr><td>{@code retrieval_call}（第十三轮）</td><td>连续空命中次数 / 索引规模</td>
- *       <td>那两张表就是为这件事建的（台账点名要监测 {@code hit_count = 0}）</td></tr>
+ *       <td>那两张表就是为这件事建的（本项目的监测口径就是 {@code hit_count = 0}）</td></tr>
  *   <tr><td>{@link CanaryService}</td><td>灰度分流分布</td>
  *       <td>"配置了多少"与"实际分到多少"必须一起读，否则判据会拿两个不同时刻的事实比</td></tr>
  * </table>

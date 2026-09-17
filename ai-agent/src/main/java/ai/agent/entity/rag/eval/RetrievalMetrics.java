@@ -263,7 +263,7 @@ public record RetrievalMetrics(String strategy, int caseCount, int chunkCount, d
 	 *
 	 * <p>指标值保留 4 位是刻意的：两位小数会把"0.62 到 0.65"这种真实提升抹平，
 	 * 而 6 位又长得没人会读。同时<b>绝不为了好看而取整</b> ——
-	 * 台账记数的一贯要求是"数字要么是真测出来的，要么不写"。
+	 * 本项目记数的一贯要求是"数字要么是真测出来的，要么不写"。
 	 */
 	private static double round(double value) {
 		return Math.round(value * 10000.0) / 10000.0;

@@ -48,8 +48,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <h2>本类要证明的最重要的一件事</h2>
  * 不是"审批代码能跑"，而是：<b>人拒绝之后，那个副作用真的没有发生。</b>
  * 这一条必须用"数一数工单表里有几条"来断言，而不是断言"回填文本里有'拒绝'两个字"——
- * 台账在 HITL 那一条里写得很清楚：
- * 「要做出可信的样子，必须先有至少一个『写』工具」，原因就在这里。
+ * 这就是为什么**必须先有至少一个『写』工具**：做出可信的样子，靠的不是审批代码本身。
  * 一个只读工具走审批，无论断言写得多么漂亮，都回答不了这个问题。
  *
  * <h2>⚠️ 本类的测试写法有一个前提，值得单独说明</h2>
@@ -269,7 +268,7 @@ class AgentApprovalTest {
 	@DisplayName("人工**拒绝**之后：写操作没有执行、工单一条都没建、模型收到不可重试的拒绝说明")
 	void deniedWriteToolLeavesNoSideEffect() throws Exception {
 		int before = ticketStore.count();
-		String title = "台账自相矛盾-" + System.nanoTime();
+		String title = "自相矛盾-" + System.nanoTime();
 
 		// 1) 模型提出一次写调用，它在闸门处停下来等人（阻塞在另一个线程上）
 		AsyncCall first = submit("run-deny", 1, "{\"title\":\"%s\",\"severity\":\"HIGH\"}".formatted(title));
@@ -474,7 +473,7 @@ class AgentApprovalTest {
 	 *
 	 * <p>这段代码的存在理由是"给另一种闸门实现留出口"（例如将来某条链路希望
 	 * 不阻塞、直接把待办返回给调用方），所以它必须被一个不阻塞的桩覆盖 ——
-	 * 这正是台账那条结论的又一次应用：
+	 * 这是本项目的一条结论的又一次应用：
 	 * <b>一个分支如果没有任何测试能走到，它就等于没被实现过。</b>
 	 */
 	private static class NonBlockingGate implements ToolApprovalGate {
@@ -621,7 +620,7 @@ class AgentApprovalTest {
 
 	@Test
 	@DisplayName("总开关关掉时闸门直接放行，并且 describe() 必须**明确说出来**"
-			+ "（否则'没拦住'看起来像'没危险'—— 这正是踩坑 #67 的形状）")
+			+ "（否则'没拦住'看起来像'没危险'—— 那正是「装上了」与「真在生效」是两件事）」")
 	void disabledApprovalAllowsEverythingButSaysSo() {
 		assertThat(approvalProperties.enabled()).as("默认必须是打开 —— 它保护的是不可逆的副作用").isTrue();
 		assertThat(approvals.describe()).contains("已启用").contains("待批");

@@ -43,7 +43,7 @@ public record AgentStoreProperties(String url, String username, String password,
 	 *       默认偷偷往磁盘写文件，是那种"本地跑着跑着多出一堆文件"的意外；</li>
 	 *   <li>更重要的是：**默认值不能假装自己实现了断点恢复**。
 	 *       内存库 + 默认配置下，恢复能力的验证要靠测试（真实模拟"库里留着 RUNNING 行"），
-	 *       而生产要开就把 url 指到文件库或真 MySQL。这一条写在台账的风险里。</li>
+	 *       而生产要开就把 url 指到文件库或真 MySQL。这一条是本项目明确列出的风险。</li>
 	 * </ul>
 	 */
 	public static AgentStoreProperties defaults() {

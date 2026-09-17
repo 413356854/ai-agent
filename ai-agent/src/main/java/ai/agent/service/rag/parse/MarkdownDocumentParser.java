@@ -43,7 +43,7 @@ import java.util.Set;
  * <h2>为什么用 flexmark 而不是自己写正则</h2>
  * Markdown 的表格、嵌套列表、围栏代码块、行内标记都有边界情况。
  * 自己写的正则会稳定地在"表格分隔行"和"代码块里的 # 号"上出错 ——
- * 而这两处恰好是本项目语料里密度很高的结构（台账里全是表格）。
+ * 而这两处恰好是本项目语料里密度很高的结构（语料里全是表格）。
  * flexmark 是 Java 生态里维护活跃、且支持 GFM 扩展的实现。
  *
  * <h2>表格扩展是必须开的</h2>
@@ -65,7 +65,7 @@ public class MarkdownDocumentParser implements DocumentParser {
 	public MarkdownDocumentParser() {
 		// 【扩展必须显式开启】标准 Markdown 没有表格和删除线，
 		// 它们是 GFM 扩展。不开表格扩展，语料里的表格会退化成普通段落 ——
-		// 而本项目的语料（台账、路线文档）里表格密度极高，
+		// 而本项目的语料（路线文档等）里表格密度极高，
 		// 退化之后"整表成块"的策略就形同虚设
 		MutableDataSet options = new MutableDataSet()
 				.set(TablesExtension.COLUMN_SPANS, false)

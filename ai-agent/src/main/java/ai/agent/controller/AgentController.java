@@ -53,7 +53,7 @@ import java.util.Map;
  * </table>
  *
  * <h2>为什么 {@code /ask} 是 POST 而不是 GET</h2>
- * 与阶段一那个校准端点的 POST 版本同一条理由（踩坑库 #32）：GET 把参数放在 query string 里，
+ * 与阶段一那个校准端点的 POST 版本同一条理由（静默失败的样本会被当成数据）：GET 把参数放在 query string 里，
  * 参数一多就会被 URL 长度和转义规则坑到，而且**失败常常是静默的**。
  * 更直接的是：这个端点会**真的调模型花钱**，它不该是一个"能在浏览器地址栏里误触"的路径。
  */
@@ -314,7 +314,7 @@ public class AgentController {
 			row.put("decidedBy", approval.decidedBy() == null ? "" : approval.decidedBy());
 			row.put("decisionNote", approval.decisionNote() == null ? "" : approval.decisionNote());
 			// 等了多久：审批对任务耗时的影响，唯一可量化的口径。
-			// 台账里那条"熔断每次省约 203ms"就是这种口径 —— 审批同样要给一个数字，
+			// 本项目实测的"熔断每次省约 203ms"就是这种口径 —— 审批同样要给一个数字，
 			// 否则"它有没有拖慢任务"只能靠感觉
 			row.put("waitedMs", approval.waitedMs(java.time.Instant.now()));
 			approvals.add(row);

@@ -27,7 +27,7 @@ import java.util.Map;
  * （不是本项目自定义的接口）—— 这一点是刻意的，见下面"换真模型时改哪里"。
  *
  * <h2>为什么本机必须有一个"自己能算"的 Embedding（环境约束，不是设计偏好）</h2>
- * 2026-09-15 实测两道封锁，都已记进台账：
+ * 2026-09-15 实测两道封锁：
  * <ol>
  *   <li><b>DeepSeek 没有 Embedding 模型</b>。{@code GET /v1/models} 只返回
  *       {@code deepseek-flash} 与 {@code deepseek-v4-pro}；
@@ -69,7 +69,7 @@ import java.util.Map;
  * 分块策略的结论变了吗"</b>（因为比的是同一度量下的两种分块）。
  * 绝不能写成"本项目验证了向量检索的效果 / 混合检索比 BM25 强多少"——
  * 那是拿一个词法近似品冒充语义检索。
- * 台账踩坑库 #44 是同一族的教训：结论朝有利于自己的方向偏，且不报错。
+ * 同族的教训是：结论朝有利于自己的方向偏，且不报错。
  */
 @Component
 public class HashingEmbeddingModel implements EmbeddingModel {
@@ -108,7 +108,7 @@ public class HashingEmbeddingModel implements EmbeddingModel {
 	 * <h2>为什么 IDF 必须单独拟合、而且只用语料拟合一次</h2>
 	 * 它是<b>语料级统计量</b>。若拿每个块自己的统计去算权重，同一个词在不同块里
 	 * 权重就不可比，相似度随之失去意义。词法检索那边有完全相同的性质 ——
-	 * 台账里"换一批块必须重开 reader，否则打分用的还是上一批语料的统计量"
+	 * "换一批块必须重开 reader，否则打分用的还是上一批语料的统计量"
 	 * 讲的就是这件事。两个检索器在这点上必须同样处理，否则差异归因不到"度量方式"。
 	 *
 	 * <p>中文用字符二元组，因此"文档频率"统计的单位也是二元组 ——

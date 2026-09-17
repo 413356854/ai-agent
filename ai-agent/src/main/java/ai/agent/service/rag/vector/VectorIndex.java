@@ -19,7 +19,7 @@ import java.util.Map;
  * <h2>为什么不是直接接一个真向量库</h2>
  * 路线文档的要求是"通过 Spring AI 的 {@code VectorStore} 接口编程，不绑死具体向量库"
  * （本地 PG+pgvector，生产 Milvus / ES）。这个要求分两半，
- * <b>本机只满足了后一半的条件</b>（2026-09-15 实测，已记台账）：
+ * <b>本机只满足了后一半的条件</b>（2026-09-15 实测）：
  * <ul>
  *   <li>Docker 引擎在本机报 <b>{@code OsNotSupported}</b>（Docker Desktop 起不来）；</li>
  *   <li>本机没有 PostgreSQL（{@code psql} 不存在、5432 未监听、无 pg 安装目录）；</li>
@@ -70,7 +70,7 @@ public class VectorIndex {
 	 *
 	 * <p>所以指纹存在索引里、检索时校验：一旦对不上就<b>直接抛</b>，
 	 * 而不是"给个警告继续跑"。理由：这种错误没有"降级可用"的中间状态，
-	 * 继续跑只会产出看起来正常的错数据（台账踩坑库 #44 同族）。
+	 * 继续跑只会产出看起来正常的错数据（同族：结论朝有利于自己的方向偏，而且不报错）。
 	 */
 	private volatile String indexedModelName = "";
 

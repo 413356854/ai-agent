@@ -276,7 +276,7 @@ class AlertRuleCatalogTest {
 	@Test
 	@DisplayName("★ 主体粒度是一处显式的 switch：成本那一族的粒度必须逐条被钉住")
 	void costRulesDeclareTheirSubjectGranularity() {
-		// 【为什么值得一条专门的测试】台账点名写过：「换粒度就去 AlertEvaluator.judge 里改」——
+		// 【为什么值得一条专门的测试】本项目点名写过：「换粒度就去 AlertEvaluator.judge 里改」——
 		// 而"改了粒度"这件事本身没有症状：一条被判成"全局"的判据只是**少报几条**，
 		// 页面上看不出任何异常。所以这里把当前的粒度写成断言：
 		//   · 配置/取数类 → 全局（价格表是一个部署一份的配置，与有几个租户无关）

@@ -506,7 +506,7 @@ public class AgentTraceView {
 	/**
 	 * 这一页的边界与"哪些数是估算的"。
 	 *
-	 * <p>⚠️ 这些字符串里不许出现 markdown 星号（踩坑 #24：界面是纯文本渲染，
+	 * <p>⚠️ 这些字符串里不许出现 markdown 星号（「纯文本里写 markdown 星号会原样显示」：界面是纯文本渲染，
 	 * 星号会原样印出来）。强调一律用中文书名号。
 	 */
 	private List<String> notes(AgentRunRecord run, List<AgentRunRecord.StepCheckpoint> steps,

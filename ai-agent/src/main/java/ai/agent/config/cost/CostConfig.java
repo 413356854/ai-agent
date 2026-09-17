@@ -19,8 +19,8 @@ import org.springframework.context.annotation.Configuration;
  * 单元测试可以直接 {@code new CostPricing(假的价格表)}，一个容器都不用起。
  *
  * <p>⚠️ 这个类里的 {@code @Bean} 方法**不是**那个"一个类两处注册"的坑
- * （见踩坑 #67）：{@link CostPricing} 自己没有 {@code @Component}，
- * 所以容器里只会有这一个定义。踩坑 #67 的形状是"同一个类既有 {@code @Component}
+ * （见「一个类只能由一个地方注册」）：{@link CostPricing} 自己没有 {@code @Component}，
+ * 所以容器里只会有这一个定义。「一个类只能由一个地方注册」的反例是"同一个类既有 {@code @Component}
  * 又有 {@code @Bean}"，两者并存时条件装配会安静地跳过其中一个。
  */
 @Configuration

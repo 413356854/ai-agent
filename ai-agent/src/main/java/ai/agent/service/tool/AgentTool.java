@@ -10,7 +10,7 @@ import org.springframework.ai.tool.definition.ToolDefinition;
  * 一把工具：<b>自我描述 + 一个纯函数式的实现</b>。
  *
  * <h2>为什么直接实现 Spring AI 的 {@link ToolCallback}，而不是自定义接口</h2>
- * 与台账里 {@code EmbeddingModel} 那件事同一个理由，而且更值：
+ * 与本项目 {@code EmbeddingModel} 那件事同一个理由，而且更值：
  * {@code ToolCallback} 就是 <b>Spring AI 工具调用的真实 SPI</b>
  * （2.0.1 实测契约：{@code getToolDefinition()} / {@code call(String)} / {@code call(String, ToolContext)}），
  * 直接实现它意味着 {@code ChatClient.toolCallbacks(...)} 可以原样吃下这些工具 ——

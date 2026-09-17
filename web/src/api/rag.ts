@@ -36,7 +36,7 @@ export const RAG_COMPARE_TIMEOUT_MS = 120_000
 /**
  * 对齐实验的超时。
  *
- * **为什么要比 `/compare` 还宽（180 秒，是它的 1.5 倍）**：这一件事台账里写得很直白 ——
+ * **为什么要比 `/compare` 还宽（180 秒，是它的 1.5 倍）**：本项目的一条判断说得很直白 ——
  * 「它比 `/compare` 重约 4 倍」。实际跑的东西是：两次尺寸扫描 + 两次二分收敛（各 11 个探针）
  * + **5 个变体 × 3 路检索 = 15 次全量评测**，而 `/compare` 只是 2 个策略 × 1 路检索。
  *
@@ -252,7 +252,7 @@ export interface BudgetAlignment {
   budget: number
   recall: number
   mrr: number
-  /** 这次检索真正塞进 prompt 的 token（= 台账里"检索预算入账"要用的口径） */
+  /** 这次检索真正塞进 prompt 的 token（= 本项目"检索预算入账"要用的口径） */
   avgTokensUsed: number
   avgHitCount: number
 }

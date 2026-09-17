@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 属于"校准"，由 {@code TokenEstimatorLiveCalibrationTest} 负责
  * （它打真实接口、拿到真实 token 数，再把误差算出来）。
  * <b>把这两件事分开</b>很有必要：前者是每次提交都要跑的快速检查，
- * 后者是偶尔跑一次、结果写进台账的验证 —— 混在一起会让整个测试套件依赖外网和配额。
+ * 后者是偶尔跑一次、结果已经实测记录的验证 —— 混在一起会让整个测试套件依赖外网和配额。
  */
 class TokenEstimatorTest {
 

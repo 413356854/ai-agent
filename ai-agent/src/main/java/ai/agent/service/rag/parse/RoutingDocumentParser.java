@@ -25,7 +25,7 @@ import java.util.List;
  *
  * <p>不用 {@code @Qualifier} 是因为那样每个注入点都得知道"有哪些实现"，
  * 加一个新解析器就要改所有注入点；用 {@code @Primary} 则只在这一处决定。
- * （顺带避开台账踩坑库 #27 那一族问题：Spring 面对多个候选 bean
+ * （顺带避开「Spring 看到两个构造器就去找无参构造器（而容器不会自己 new 一个 Resource）」那一族问题：Spring 面对多个候选 bean
  * 只会报"期望一个但找到两个"，而这只能靠 {@code @Primary}/{@code @Qualifier}
  * 解决，改构造器数量是没用的。）
  */

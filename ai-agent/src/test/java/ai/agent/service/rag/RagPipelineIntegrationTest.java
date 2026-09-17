@@ -63,7 +63,7 @@ class RagPipelineIntegrationTest {
 		// 会静默退化成"按段落堆叠" —— 分数下降但没有任何报错。
 		// 钉住这个数字，退化会立刻暴露
 		assertThat(headings).as("识别出的标题块数（为 0 说明结构分块已失效）").isGreaterThan(20);
-		assertThat(tables).as("识别出的表格块数（台账里大量结论是表格形态）").isGreaterThan(10);
+		assertThat(tables).as("识别出的表格块数（本项目大量结论是表格形态）").isGreaterThan(10);
 	}
 
 	@Test
@@ -88,7 +88,7 @@ class RagPipelineIntegrationTest {
 		LexicalRetriever retriever = new LexicalRetriever();
 		retriever.index(chunks);
 
-		// 一个真实的问题：答案是台账里"虚拟线程异步改造"那一节的实测数字
+		// 一个真实的问题：答案是"虚拟线程异步改造"那一节的实测数字
 		List<RetrievalHit> hits = retriever.retrieve("虚拟线程在高并发下的吞吐量提升了多少", 5);
 
 		assertThat(hits).isNotEmpty();

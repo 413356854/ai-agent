@@ -145,7 +145,7 @@ public interface ToolApprovalGate {
 	 * 所以这个实现刻意不叫 {@code NoopApprovalGate} 而是强调语义，
 	 * 并且 {@link #describe()} 会明确说出"全部放行"，
 	 * 让它在诊断端点和启动日志里能被一眼看到 ——
-	 * 这与踩坑 #67 那条同族：<b>"我配了保护"与"保护真的装着"是两件事。</b>
+	 * 这与「装上了」与「真在生效」是两件事同族：<b>"我配了保护"与"保护真的装着"是两件事。</b>
 	 */
 	final class Allow implements ToolApprovalGate {
 

@@ -15,7 +15,7 @@ import type { Remote } from '../types'
  * <h2>它承载的结论与上一张表相反，这是刻意的</h2>
  * 把对照组尺寸二分收敛到与实验组同大小（**202.7 vs 203.1，差 0.39 token**）之后：
  * **固定字数硬切全面占优**，而且**三路检索下方向一致**。
- * 界面必须把这个方向如实呈现 —— 台账的原话是「不让『我做的那个语义分块』自动赢」。
+ * 界面必须把这个方向如实呈现 —— 本项目的一条判断是「不让『我做的那个语义分块』自动赢」。
  *
  * <h2>三个容易读错的地方，都在界面上直接写了</h2>
  * <ol>
@@ -395,7 +395,7 @@ function DeltaCell({ value, higherIsBetter = false }: { value: number | undefine
  * 尺寸扫描表。
  *
  * 它回答的是**"对齐是怎么收敛的"**，而这正是这份报告最容易被质疑的地方 ——
- * 台账记着这条实验的第一版把扫描区间写成了 `target × [0.6, 1.4]`
+ * 这条实验的第一版把扫描区间写成了 `target × [0.6, 1.4]`
  * （把 token 数当成了字符数），于是整个区间都在目标以下，
  * 最后选了个 304 字 / 144.6 token 的点，**与目标差 50 token（25%）**，
  * 而报告里照样写着"已对齐"。
@@ -559,7 +559,7 @@ function BudgetTable({ data }: { data: AlignmentResponse }) {
 
       <Typography.Text type="secondary" className="diag-note">
         「实际用掉 token」明显低于预算档位就是<strong>块太大装不下</strong>的直接证据 ——
-        这也是台账里「把检索预算纳入 Token 账目」那一件要用的口径：
+        这也是「把检索预算纳入 Token 账目」那一件要用的口径：
         这里量到的 <code>avgTokensUsed</code> 就是"这次检索真正塞进 prompt 的 token"。
       </Typography.Text>
     </div>

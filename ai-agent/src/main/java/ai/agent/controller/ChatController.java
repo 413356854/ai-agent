@@ -57,7 +57,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 包成 JSON 后 data 以 <code>{</code> 开头，空格在 JSON 字符串里被引号保护，
  * 无论对端是「带分隔空格」还是「不带分隔空格」的写法都不会再被吃掉；
  * 顺带把换行也交给 JSON 转义，不必依赖服务端的多行 data 拆分行为。
- * 实测依据见根目录「学习进度台账.md」的踩坑知识库。
+ * 实测依据是本项目的实测数据。
  *
  * <p><b>两条通路怎么选</b>：
  * <ul>

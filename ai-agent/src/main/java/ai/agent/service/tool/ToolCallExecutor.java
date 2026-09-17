@@ -38,7 +38,7 @@ import java.util.TreeSet;
  *   <li>模型少给一个必填参数 → 参数是 null → 工具内部 NPE，
  *       报错指向工具的第 40 行，而真正的原因在模型的输出里；</li>
  *   <li>模型给一个参数多塞一个没用的字段 → Jackson 默认静默忽略 →
- *       <b>调用"成功"了，但行为不是模型以为的那个</b>（踩坑库 #20 同族）；</li>
+ *       <b>调用"成功"了，但行为不是模型以为的那个</b>；</li>
  *   <li>模型把数字写成字符串 {@code "3"} → Jackson 顺手强转 → 看起来没问题，
  *       但如果哪天模型给的是 {@code "三"}，报错位置又会跑到很深的地方。</li>
  * </ul>
@@ -94,7 +94,7 @@ public class ToolCallExecutor {
 	private static final ObjectMapper STRICT = new ObjectMapper()
 			// 多余的字段：拒绝（见类注释里的取舍）
 			.enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-			// null 传给基本类型：拒绝。默认会被当成 0 —— 而 0 是一个看起来完全合法的值（踩坑库 #20）
+			// null 传给基本类型：拒绝。默认会被当成 0 —— 而 0 是一个看起来完全合法的值
 			.enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
 			// 类型强转：整体关闭（模型把 5 写成 "5"、把 true 写成 "true" 都会被拒）
 			.disable(MapperFeature.ALLOW_COERCION_OF_SCALARS);
@@ -452,7 +452,7 @@ public class ToolCallExecutor {
 
 			// 注意：工具自己返回 Failure 时 stage 仍是 OK ——
 			// 工具**正常完成了它的工作**，只是工作上给出了一个否定结论。
-			// 把它记成 EXECUTION_ERROR 会让"没查到"看起来像"服务故障"，那是错误分类（踩坑库 #26/#37 同族）
+			// 把它记成 EXECUTION_ERROR 会让"没查到"看起来像"服务故障" —— 错误分类错了，代价是真正的故障被淹掉
 			log.info("工具「{}」执行完成 elapsed={}ms result={} approval={}", tool.name(), elapsedMs(startedAt),
 					result instanceof AgentToolResult.Success ? "success" : "failure",
 					approval.present() ? approval.approvalId() : "-");

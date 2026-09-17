@@ -245,7 +245,7 @@ public class RagDiagnosticsController {
 	/**
 	 * POST 版本：策略列表走 body。
 	 *
-	 * <p>存在的理由与阶段一校准端点的 POST 版本完全相同（台账踩坑库 #32）：
+	 * <p>存在的理由与阶段一校准端点的 POST 版本完全相同（静默失败的样本会被当成数据）：
 	 * GET 把参数放在 query string 里，参数一多就会被 URL 长度和转义规则坑到，
 	 * 而且<b>失败常常是静默的</b>（脚本吞掉 4xx，把上一轮结果当成本轮数据）。
 	 */
@@ -267,7 +267,7 @@ public class RagDiagnosticsController {
 	 * 尺寸扫描 + 二分收敛 + 4 组对照 + 6 档预算归纳，
 	 * 是 {@code /compare} 的 4 倍工作量。混在一个端点里，
 	 * 前端就没法为"轻量对照"和"重量实验"分别设超时，
-	 * 而超时给错正是台账踩坑库 #38 那个坑（实验正常、等待时间配错）。
+	 * 而超时给错正是「前端超时比后端固有耗时还短，正常的实验必然报超时」那个坑（实验正常、等待时间配错）。
 	 */
 	@GetMapping(value = "/align", produces = MediaType.APPLICATION_JSON_VALUE)
 	public AlignmentExperiment align(@RequestParam(required = false) List<Integer> budgets,

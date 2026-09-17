@@ -442,7 +442,7 @@ public class AgentApprovalService implements ToolApprovalGate {
 	 * 而回填文本的价值全在"它准不准"上：一句自相矛盾的话会让模型（和人）
 	 * 对刚才发生了什么产生错误印象。
 	 *
-	 * <p>这与台账二·八节那个"正文比总数还大"的备注是同一类问题：
+	 * <p>这与"正文比总数还大"的备注是同一类问题：
 	 * <b>数字算对了、单位选错了，输出就变成假话。</b>
 	 */
 	static String human(Duration duration) {

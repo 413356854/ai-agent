@@ -116,7 +116,7 @@ public final class JsonSchemaGenerator {
 			root.remove("required");
 		}
 		// 参数对象不接受额外字段：模型很爱"顺手多给一个字段"（例如把说明塞进 notes），
-		// 而 Jackson 默认会忽略它们 —— 忽略等于"用户以为生效了其实没有"（踩坑库 #20 同族）。
+		// 而 Jackson 默认会忽略它们 —— 忽略等于"用户以为生效了其实没有"。
 		// 显式禁掉，让它变成一条能被回填的错误
 		root.put("additionalProperties", false);
 		return root.toPrettyString();

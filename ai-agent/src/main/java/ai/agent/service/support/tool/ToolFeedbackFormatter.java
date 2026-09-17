@@ -39,7 +39,7 @@ import java.util.List;
  * 它直接对应"每次工具调用烧多少 token"：检索类工具最容易踩 ——
  * 一次返回 10 个块、每块 200 token，就是 2000 token 进上下文，而其中往往只有一两条有用。
  * 做成 {@code ai.tool.feedback.max-chars} 是为了能实测它在不同取值下的代价
- * （见台账里"检索预算纳入 Token 账目"那一条：这个上限就是那个口径在工具层的入口）。
+ * （本项目里"检索预算纳入 Token 账目"那一条：这个上限就是那个口径在工具层的入口）。
  */
 @Component
 public class ToolFeedbackFormatter {

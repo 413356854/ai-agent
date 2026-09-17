@@ -437,7 +437,7 @@ public class RagAlignmentService {
 	 * <p>做成常量而不是到处写 0：这个约定在 {@link StrategyEvaluator#evaluate} 里落实
 	 * （它会把 0 换成配置值），而<b>写死在调用点上会让"0 是什么意思"无处可查</b>。
 	 * 这里踩过一次：早期版本直接把 0 透传给检索器，而 `retrieve(query, 0)`
-	 * 的契约是"返回空列表"，于是整张等预算表全是 0（见台账「二·六」节的 bug #4）。
+	 * 的契约是"返回空列表"，于是整张等预算表全是 0。
 	 */
 	private static final int TOP_K_FROM_CONFIG = 0;
 

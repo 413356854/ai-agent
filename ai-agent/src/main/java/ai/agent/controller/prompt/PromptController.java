@@ -182,7 +182,7 @@ public class PromptController {
 		body.put("prompt", describe(resolved));
 		body.put("version", full(change.saved(), isActive(resolved, change.saved().version())));
 		body.put("validation", validationOf(change.result()));
-		// ⚠️ 这段文本会渲染在页面的纯文本区域里，**不能写字面量星号**（踩坑 #24 / #74 同族）：
+		// ⚠️ 这段文本会渲染在页面的纯文本区域里，**不能写字面量星号**（那是「纯文本写 markdown 星号会原样显示」那一族）：
 		// 成本看板那一轮就是这么在真后端上印出了 ** 的字面量的
 		body.put("note", "已存为第 " + change.saved().version() + " 版，但尚未生效 —— "
 				+ "存与生效是两次决定：先看一眼篇幅变化，再决定要不要让它生效");

@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * "改了提示词，下一次运行就用新的"这句话有一个非常容易自欺的验证方式：
  * 断言 {@code promptService.currentContent()} 返回了新内容。
  * 而那只证明<b>服务读到了新内容</b>，完全没有证明<b>发出去的请求里有它</b>。
- * 本项目在这一点上已经吃过两次亏（踩坑库 #67：bean 装着但实现是裸的；
+ * 本项目在这一点上已经吃过两次亏（「装上了」与「真在生效」是两件事：bean 装着但实现是裸的；
  * 第九轮：MCP 工具注册了但路由没注册）—— 两次的失败都发生在
  * <b>"两段之间那条没人检查的缝里"</b>。
  *

@@ -28,7 +28,7 @@ import java.util.List;
  * @param stopReason 走到哪个出口；未结束时为 {@code null}
  * @param finalAnswer 最终答案；未结束或被上限截断时为 {@code null}
  * @param totalTokens 累计 token
- * @param toolCallCount 一共提出过几次工具调用（**含被拒绝的**，理由见踩坑库 #56）
+ * @param toolCallCount 一共提出过几次工具调用（**含被拒绝的** —— 只记成功的会让这个数字永远偏小）
  * @param elapsedMs 累计耗时
  * @param node 哪个实例在跑。多实例部署时，靠它回答"这是谁挂的"
  * @param error 失败原因；{@code status=FAILED} 时非空
