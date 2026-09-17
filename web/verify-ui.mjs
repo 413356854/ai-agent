@@ -1148,7 +1148,7 @@ if ((await approvalCard.count()) > 0) {
     expect('显示了有写操作在等我', /在等我/.test(apprText))
     expect('显示了是哪个工具', /propose_review/.test(apprText))
     // 参数原样可见 —— 人批的就是这一份，界面上不许折叠成摘要
-    expect('显示了将被执行的参数（原样）', /台账二·六节：正文 token 数大于总数/.test(apprText))
+    expect('显示了将被执行的参数（原样）', /阶段二 · RAG：分块建议与实测结论相反/.test(apprText))
     // 风险声明来自工具的 ToolHints（与"要不要审批"的判据同源，不是前端另写一份）
     expect('显示了风险声明', /非幂等|需人工确认/.test(apprText))
     // 已等 / 还剩：这一块唯一的量化口径

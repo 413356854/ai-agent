@@ -54,7 +54,7 @@ const approvalState = {
   runId: 'run-demo-pending',
   stepIndex: 1,
   toolName: 'propose_review',
-  arguments: '{"title":"台账二·六节：正文 token 数大于总数","severity":"MEDIUM"}',
+  arguments: '{"title":"阶段二 · RAG：分块建议与实测结论相反","severity":"MEDIUM"}',
   hints: '写（非幂等，需人工确认），可能破坏性',
   summary: '向人工审查队列提交一条待处理工单（写操作：会在系统里创建一条记录，需要人工确认）。',
   /** null = 还没人处理；'APPROVED' / 'DENIED' = 已决定。初始为 null，也就是"有待批在等人" */
@@ -122,7 +122,7 @@ const SCRIPTED_STEPS = [
         fixableByModel: true,
         countsAsToolFailure: false,
         feedback:
-          '【工具「search_docs」的返回结果｜call_id=call_3】\n在 193 个文档片段里找到 3 条相关内容（按相关度排序）：\n\n[1] 章节：学习进度台账 > 二·六、阶段二 · 块大小对齐实验\n    来源：ledger-progress.md  估算 203 token\n    内容：块大小对齐之后，结论反了：结构分块并没有"更省 token"的优势……',
+          '【工具「search_docs」的返回结果｜call_id=call_3】\n在 193 个文档片段里找到 3 条相关内容（按相关度排序）：\n\n[1] 章节：Java 开发者 → AI Agent 岗位 · 专属路线 > 七、周计划（10 周，每周 10–15 小时） > 阶段二（2–4 周）RAG —— 重点在「定位问题」而非「跑通 Demo」\n    来源：roadmap-java-to-agent.md  估算 203 token\n    内容：分块：语义段落 / 标题层级切分 + Overlap，别按固定字数硬切……',
       },
     ],
   },
@@ -168,7 +168,7 @@ function detailFromScript(runId, question, overrides = {}) {
       finalAnswer:
         '块大小对齐之后的结论是：固定字数硬切全面占优（Recall@5 0.7907 vs 0.7442、MRR 0.6347 vs 0.5244），' +
         '而且三路检索下方向一致。上一轮那句"结构分块省 token"是"它的块更小"的副作用。\n\n' +
-        '依据：学习进度台账「二·六 块大小对齐实验」。',
+        '依据：路线文档「阶段二（2–4 周）RAG」一节。',
       totalTokens: 7234,
       toolCalls: toolCalls.length,
       elapsedMs: 7402,
@@ -239,30 +239,30 @@ function traceFromScript(runId, known) {
     hits: [
       {
         rank: 1,
-        chunkId: 'ledger-progress.md#41',
-        documentId: 'ledger-progress.md',
-        breadcrumb: '学习进度台账 > 二·六、阶段二 · 块大小对齐实验',
+        chunkId: 'roadmap-java-to-agent.md#31',
+        documentId: 'roadmap-java-to-agent.md',
+        breadcrumb: 'Java 开发者 → AI Agent 岗位 · 专属路线 > 七、周计划（10 周，每周 10–15 小时） > 阶段二（2–4 周）RAG —— 重点在「定位问题」而非「跑通 Demo」',
         tokenCount: 203,
         score: 14.8271,
-        excerpt: '块大小对齐之后，结论反了：结构分块并没有"更省 token"的优势，那个优势来自"它的块更小"……',
+        excerpt: '分块：语义段落 / 标题层级切分 + Overlap，别按固定字数硬切……',
       },
       {
         rank: 2,
-        chunkId: 'ledger-progress.md#44',
-        documentId: 'ledger-progress.md',
-        breadcrumb: '学习进度台账 > 二·六、阶段二 · 实测主表',
+        chunkId: 'roadmap-java-to-agent.md#34',
+        documentId: 'roadmap-java-to-agent.md',
+        breadcrumb: 'Java 开发者 → AI Agent 岗位 · 专属路线 > 七、周计划（10 周，每周 10–15 小时） > 阶段二（2–4 周）RAG —— 重点在「定位问题」而非「跑通 Demo」',
         tokenCount: 218,
         score: 11.2309,
-        excerpt: '两组平均块都到 ~203 token（差 0.39）后：Recall@5 0.7907 vs 0.7442、MRR 0.6347 vs 0.5244……',
+        excerpt: '验收：能用数字说明「换分块策略 / 加 Rerank 提升了多少」，而不是「好像变好了」……',
       },
       {
         rank: 3,
-        chunkId: 'route-java.md#12',
-        documentId: 'route-java.md',
-        breadcrumb: 'Java 开发者转型路线 > 阶段二 · RAG',
+        chunkId: 'ledger-progress.md#55',
+        documentId: 'ledger-progress.md',
+        breadcrumb: '学习进度台账 > 五、下一步计划（下次从这里开始）',
         tokenCount: 191,
         score: 8.6644,
-        excerpt: '重点在「定位问题」而非「跑通 Demo」—— 没有对照组的"语义分块更好"只是一句信仰……',
+        excerpt: '建 30–50 条评测集 —— 阶段二的硬性产出……',
       },
     ],
   }
@@ -338,11 +338,11 @@ function traceFromScript(runId, known) {
           callIndex: 0,
           callId: 'call_2_0',
           toolName: 'read_section',
-          arguments: '{"documentId":"ledger-progress.md","section":"二·六"}',
+          arguments: '{"documentId":"roadmap-java-to-agent.md","section":"阶段二（2–4 周）RAG"}',
           stage: 'OK',
           countsAsToolFailure: false,
           elapsedMs: 3,
-          feedback: '【工具「read_section」的返回结果】已读取 ledger-progress.md 的「二·六、阶段二 · 块大小对齐实验」一节。',
+          feedback: '【工具「read_section」的返回结果】已读取 roadmap-java-to-agent.md 的「七、周计划 > 阶段二（2–4 周）RAG」一节。',
           retrievals: [],
         },
       ],
@@ -370,7 +370,7 @@ function traceFromScript(runId, known) {
           stage: 'OK',
           countsAsToolFailure: false,
           elapsedMs: 47,
-          feedback: '在 516 个文档片段里找到 3 条相关内容（按相关度排序）：\n\n[1] 章节：学习进度台账 > 二·六、阶段二 · 块大小对齐实验',
+          feedback: '在 516 个文档片段里找到 3 条相关内容（按相关度排序）：\n\n[1] 章节：Java 开发者 → AI Agent 岗位 · 专属路线 > 七、周计划（10 周，每周 10–15 小时） > 阶段二（2–4 周）RAG —— 重点在「定位问题」而非「跑通 Demo」',
           retrievals: [retrievalCallStep3],
         },
       ],
@@ -743,7 +743,7 @@ function askResponse(question) {
       ...base,
       answered: true,
       finalAnswer:
-        '工单已经建好了（id: RV-0001，标题「台账二·六节：正文 token 数大于总数」，级别 MEDIUM）。\n\n' +
+        '工单已经建好了（id: RV-0001，标题「阶段二 · RAG：分块建议与实测结论相反」，级别 MEDIUM）。\n\n' +
         '这是一次写操作，按规矩它先停在了人工确认闸门上；有人在界面上点了批准之后它才真正执行 —— ' +
         '执行结论里带着那条审批的 id，所以事后可以从工单倒查到"是哪一次审批放行了它"。',
       stopReason: 'ANSWERED',
@@ -799,7 +799,7 @@ const WRITE_APPROVED_STEP = {
       countsAsToolFailure: false,
       feedback:
         '【工具「propose_review」的返回结果｜call_id=call_1】\n工单已提交成功（记录已写入）。\n' +
-        '- 工单 id：RV-0001\n- 标题：台账二·六节：正文 token 数大于总数\n- 级别：MEDIUM\n' +
+        '- 工单 id：RV-0001\n- 标题：阶段二 · RAG：分块建议与实测结论相反\n- 级别：MEDIUM\n' +
         '请在最终回答里告诉用户这个 id —— 那是他后续跟进这件事的凭据。',
     },
   ],
@@ -1008,7 +1008,7 @@ export function handleAgentRoutes(req, res, url, json) {
       json(res, { ok: false, error: `没有这个运行：${runId}` })
       return true
     }
-    const source = known ?? { id: runId, question: '把台账里那个自相矛盾的地方提交成一条审查工单' }
+    const source = known ?? { id: runId, question: '把路线文档里那个自相矛盾的地方提交成一条审查工单' }
     json(res, traceFromScript(source.id, known))
     return true
   }
@@ -1034,7 +1034,7 @@ export function handleAgentRoutes(req, res, url, json) {
       return true
     }
 
-    const source = known ?? { id: runId, question: '把台账里那个自相矛盾的地方提交成一条审查工单' }
+    const source = known ?? { id: runId, question: '把路线文档里那个自相矛盾的地方提交成一条审查工单' }
     const rows = runApprovals(runId)
     const detail = detailFromScript(source.id, source.question, {
       status: known ? known.status : 'WAITING_APPROVAL',
@@ -1167,7 +1167,7 @@ function pendingRow(waitedMs = 12800) {
 function pendingRunRow() {
   return {
     id: approvalState.runId,
-    question: '把台账里那个自相矛盾的地方提交成一条审查工单',
+    question: '把路线文档里那个自相矛盾的地方提交成一条审查工单',
     status: 'WAITING_APPROVAL',
     stopReason: 'WAITING_FOR_APPROVAL',
     failureCause: null,
