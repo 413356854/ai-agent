@@ -1,12 +1,13 @@
 package ai.agent.service.agent;
 
-import ai.agent.service.prompt.PromptChange;
+import ai.agent.entity.agent.AgentRun;
+import ai.agent.entity.prompt.PromptChange;
 import ai.agent.service.prompt.PromptConflictException;
 import ai.agent.service.prompt.PromptKind;
 import ai.agent.service.prompt.PromptService;
 import ai.agent.service.prompt.PromptStore;
 import ai.agent.service.prompt.PromptValidator;
-import ai.agent.service.prompt.PromptVersion;
+import ai.agent.entity.prompt.PromptVersion;
 import ai.agent.service.token.TokenBudgetGuard;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.DisplayName;

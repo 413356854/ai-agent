@@ -1,5 +1,6 @@
 package ai.agent.service.alert;
 
+import ai.agent.entity.alert.AlertEvent;
 import java.util.List;
 import java.util.Optional;
 

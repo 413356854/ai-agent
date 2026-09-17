@@ -1,5 +1,6 @@
 package ai.agent.service.alert;
 
+import ai.agent.entity.alert.AlertEvent;
 import ai.agent.service.impl.agent.store.JdbcAgentRunStore;
 import org.h2.jdbcx.JdbcConnectionPool;
 import org.slf4j.Logger;

@@ -3,7 +3,7 @@ package ai.agent.service.rag.pipeline;
 import ai.agent.config.rag.RagProperties;
 import ai.agent.service.rag.parse.DocumentParseException;
 import ai.agent.service.rag.parse.DocumentParser;
-import ai.agent.service.rag.parse.ParsedDocument;
+import ai.agent.entity.rag.parse.ParsedDocument;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.Resource;

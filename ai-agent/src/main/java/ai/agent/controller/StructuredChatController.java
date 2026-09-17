@@ -1,8 +1,8 @@
 package ai.agent.controller;
 
 import ai.agent.service.chat.StructuredChatService;
-import ai.agent.service.chat.structured.StructuredResult;
-import ai.agent.service.dto.chat.structured.StructuredChatRequest;
+import ai.agent.entity.chat.structured.StructuredResult;
+import ai.agent.entity.dto.chat.structured.StructuredChatRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;

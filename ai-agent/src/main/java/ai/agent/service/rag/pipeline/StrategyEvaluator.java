@@ -1,19 +1,19 @@
 package ai.agent.service.rag.pipeline;
 
-import ai.agent.service.rag.chunk.Chunk;
+import ai.agent.entity.rag.chunk.Chunk;
 import ai.agent.service.rag.chunk.DocumentChunker;
 import ai.agent.service.impl.rag.chunk.FixedSizeChunker;
 import ai.agent.service.impl.rag.chunk.StructuralChunker;
 import ai.agent.config.rag.RagProperties;
-import ai.agent.service.rag.eval.BudgetAlignment;
-import ai.agent.service.rag.eval.ChunkingComparison;
-import ai.agent.service.rag.eval.EvalCase;
-import ai.agent.service.rag.eval.RetrievalMetrics;
+import ai.agent.entity.rag.eval.BudgetAlignment;
+import ai.agent.entity.rag.eval.ChunkingComparison;
+import ai.agent.entity.rag.eval.EvalCase;
+import ai.agent.entity.rag.eval.RetrievalMetrics;
 import ai.agent.service.rag.eval.SectionLocator;
-import ai.agent.service.rag.parse.ParsedDocument;
+import ai.agent.entity.rag.parse.ParsedDocument;
 import ai.agent.service.rag.retrieve.HybridRetriever;
 import ai.agent.service.rag.retrieve.LexicalRetriever;
-import ai.agent.service.rag.retrieve.RetrievalHit;
+import ai.agent.entity.rag.retrieve.RetrievalHit;
 import ai.agent.service.rag.retrieve.Retriever;
 import ai.agent.service.rag.retrieve.VectorRetriever;
 import ai.agent.service.rag.vector.VectorIndex;

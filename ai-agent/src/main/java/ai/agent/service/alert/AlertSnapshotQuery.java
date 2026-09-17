@@ -1,5 +1,6 @@
 package ai.agent.service.alert;
 
+import ai.agent.entity.alert.RuntimeSnapshot;
 import java.util.List;
 
 /**

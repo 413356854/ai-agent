@@ -1,5 +1,7 @@
 package ai.agent.service.alert;
 
+import ai.agent.entity.alert.AlertEvent;
+import ai.agent.entity.alert.RuntimeSnapshot;
 import ai.agent.service.alert.AlertRule.CanarySplit;
 import ai.agent.service.alert.AlertRule.Verdict;
 import org.junit.jupiter.api.DisplayName;

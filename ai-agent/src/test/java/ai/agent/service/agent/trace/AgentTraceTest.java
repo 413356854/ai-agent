@@ -1,14 +1,14 @@
 package ai.agent.service.agent.trace;
 
-import ai.agent.service.agent.AgentRun;
+import ai.agent.entity.agent.AgentRun;
 import ai.agent.service.agent.ModelTurn;
 import ai.agent.service.agent.ResumableAgentService;
 import ai.agent.service.agent.ScriptedModelTurn;
-import ai.agent.service.agent.store.AgentRunRecord;
+import ai.agent.entity.agent.store.AgentRunRecord;
 import ai.agent.service.agent.store.AgentRunStore;
 import ai.agent.service.prompt.PromptKind;
 import ai.agent.service.prompt.PromptService;
-import ai.agent.service.tool.RetrievalTrace;
+import ai.agent.entity.tool.RetrievalTrace;
 import ai.agent.service.tool.ToolCallStage;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

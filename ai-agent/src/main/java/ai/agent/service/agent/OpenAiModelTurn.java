@@ -1,6 +1,6 @@
 package ai.agent.service.agent;
 
-import ai.agent.service.tool.ToolInvocation;
+import ai.agent.entity.tool.ToolInvocation;
 import ai.agent.service.tool.ToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

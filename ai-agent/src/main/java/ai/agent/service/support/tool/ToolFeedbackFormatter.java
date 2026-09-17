@@ -4,7 +4,7 @@ import ai.agent.service.tool.AgentTool;
 import ai.agent.service.tool.AgentToolResult;
 import ai.agent.service.tool.ToolApprovalGate;
 import ai.agent.service.tool.ToolCallStage;
-import ai.agent.service.tool.ToolInvocation;
+import ai.agent.entity.tool.ToolInvocation;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 

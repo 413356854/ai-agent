@@ -2,13 +2,14 @@ package ai.agent.service.agent;
 
 import ai.agent.config.AgentLoopProperties;
 import ai.agent.config.ChatCallProperties;
+import ai.agent.entity.agent.AgentRun;
 import ai.agent.service.prompt.ClasspathPromptService;
 import ai.agent.service.prompt.PromptService;
 import ai.agent.service.impl.token.CharacterClassTokenEstimator;
 import ai.agent.service.tool.ToolCallExecutor;
-import ai.agent.service.tool.ToolCallOutcome;
+import ai.agent.entity.tool.ToolCallOutcome;
 import ai.agent.service.tool.ToolCallStage;
-import ai.agent.service.tool.ToolInvocation;
+import ai.agent.entity.tool.ToolInvocation;
 import ai.agent.service.tool.ToolRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

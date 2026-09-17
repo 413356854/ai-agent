@@ -1,15 +1,16 @@
 package ai.agent.service.agent;
 
-import ai.agent.service.canary.CanaryDecision;
+import ai.agent.entity.agent.AgentRun;
+import ai.agent.entity.canary.CanaryDecision;
 import ai.agent.service.canary.CanaryService;
 import ai.agent.config.AgentLoopProperties;
 import ai.agent.service.prompt.PromptKind;
 import ai.agent.service.prompt.PromptService;
-import ai.agent.service.tool.ApprovalGrant;
-import ai.agent.service.tool.ToolCallContext;
+import ai.agent.entity.tool.ApprovalGrant;
+import ai.agent.entity.tool.ToolCallContext;
 import ai.agent.service.tool.ToolCallExecutor;
-import ai.agent.service.tool.ToolCallOutcome;
-import ai.agent.service.tool.ToolInvocation;
+import ai.agent.entity.tool.ToolCallOutcome;
+import ai.agent.entity.tool.ToolInvocation;
 import ai.agent.service.tool.ToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

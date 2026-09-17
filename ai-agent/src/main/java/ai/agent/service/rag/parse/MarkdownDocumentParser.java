@@ -1,5 +1,7 @@
 package ai.agent.service.rag.parse;
 
+import ai.agent.entity.rag.parse.ParsedBlock;
+import ai.agent.entity.rag.parse.ParsedDocument;
 import com.vladsch.flexmark.ext.gfm.strikethrough.StrikethroughExtension;
 import com.vladsch.flexmark.ext.tables.TablesExtension;
 import com.vladsch.flexmark.html.HtmlRenderer;

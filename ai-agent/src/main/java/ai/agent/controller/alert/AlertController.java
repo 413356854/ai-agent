@@ -1,13 +1,13 @@
 package ai.agent.controller.alert;
 
 import ai.agent.service.alert.AlertEvaluator;
-import ai.agent.service.alert.AlertEvent;
+import ai.agent.entity.alert.AlertEvent;
 import ai.agent.service.alert.AlertRecorder;
 import ai.agent.service.alert.AlertRule;
 import ai.agent.service.alert.AlertSnapshotQuery;
 import ai.agent.service.alert.AlertStore;
 import ai.agent.service.alert.JdbcAlertStore;
-import ai.agent.service.alert.RuntimeSnapshot;
+import ai.agent.entity.alert.RuntimeSnapshot;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;

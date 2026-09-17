@@ -1,6 +1,7 @@
 package ai.agent.service.agent;
 
-import ai.agent.service.tool.ToolCallOutcome;
+import ai.agent.entity.agent.AgentRun;
+import ai.agent.entity.tool.ToolCallOutcome;
 import ai.agent.service.tool.ToolCallStage;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.DisplayName;

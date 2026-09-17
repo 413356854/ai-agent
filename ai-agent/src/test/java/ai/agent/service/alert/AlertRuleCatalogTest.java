@@ -1,5 +1,6 @@
 package ai.agent.service.alert;
 
+import ai.agent.entity.alert.RuntimeSnapshot;
 import ai.agent.service.alert.AlertEvaluator.Outcome;
 import ai.agent.service.alert.AlertRule.CanarySplit;
 import ai.agent.service.alert.AlertRule.Severity;

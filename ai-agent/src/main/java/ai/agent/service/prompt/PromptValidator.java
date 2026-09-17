@@ -1,5 +1,6 @@
 package ai.agent.service.prompt;
 
+import ai.agent.entity.prompt.PromptVersion;
 import java.util.ArrayList;
 import java.util.List;
 

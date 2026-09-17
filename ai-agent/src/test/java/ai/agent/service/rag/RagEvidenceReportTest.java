@@ -1,9 +1,9 @@
 package ai.agent.service.rag;
 
-import ai.agent.service.rag.eval.AlignmentExperiment;
-import ai.agent.service.rag.eval.BudgetAlignment;
-import ai.agent.service.rag.eval.ChunkingComparison;
-import ai.agent.service.rag.eval.RetrievalMetrics;
+import ai.agent.entity.rag.eval.AlignmentExperiment;
+import ai.agent.entity.rag.eval.BudgetAlignment;
+import ai.agent.entity.rag.eval.ChunkingComparison;
+import ai.agent.entity.rag.eval.RetrievalMetrics;
 import ai.agent.service.rag.pipeline.RagAlignmentService;
 import ai.agent.service.rag.pipeline.RagEvaluationService;
 import org.junit.jupiter.api.DisplayName;

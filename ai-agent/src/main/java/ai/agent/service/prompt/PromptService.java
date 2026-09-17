@@ -1,5 +1,8 @@
 package ai.agent.service.prompt;
 
+import ai.agent.entity.prompt.PromptChange;
+import ai.agent.entity.prompt.PromptDiff;
+import ai.agent.entity.prompt.PromptVersion;
 import java.util.List;
 import java.util.Optional;
 

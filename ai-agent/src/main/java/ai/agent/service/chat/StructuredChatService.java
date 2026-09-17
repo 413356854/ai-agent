@@ -1,7 +1,7 @@
 package ai.agent.service.chat;
 
-import ai.agent.service.chat.structured.StructuredAnswer;
-import ai.agent.service.chat.structured.StructuredResult;
+import ai.agent.entity.chat.structured.StructuredAnswer;
+import ai.agent.entity.chat.structured.StructuredResult;
 
 /**
  * 结构化输出的<b>契约</b>。

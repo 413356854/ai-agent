@@ -1,5 +1,6 @@
 package ai.agent.service.prompt;
 
+import ai.agent.entity.prompt.PromptVersion;
 import ai.agent.service.impl.agent.store.JdbcAgentRunStore;
 import org.h2.jdbcx.JdbcConnectionPool;
 import org.slf4j.Logger;

@@ -1,5 +1,6 @@
 package ai.agent.service.tool;
 
+import ai.agent.entity.tool.RetrievalTrace;
 import java.util.List;
 
 /**

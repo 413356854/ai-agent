@@ -1,14 +1,14 @@
 package ai.agent.service.impl.tool;
 
-import ai.agent.service.rag.chunk.Chunk;
+import ai.agent.entity.rag.chunk.Chunk;
 import ai.agent.service.rag.pipeline.RagEvaluationService;
 import ai.agent.service.rag.retrieve.LexicalRetriever;
-import ai.agent.service.rag.retrieve.RetrievalHit;
+import ai.agent.entity.rag.retrieve.RetrievalHit;
 import ai.agent.service.tool.AgentTool;
 import ai.agent.service.tool.AgentToolResult;
-import ai.agent.service.tool.RetrievalTrace;
-import ai.agent.service.model.tool.AgentToolDefinition;
-import ai.agent.service.model.tool.ToolHints;
+import ai.agent.entity.tool.RetrievalTrace;
+import ai.agent.entity.model.tool.AgentToolDefinition;
+import ai.agent.entity.model.tool.ToolHints;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;

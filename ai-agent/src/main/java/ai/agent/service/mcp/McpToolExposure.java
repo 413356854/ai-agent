@@ -1,12 +1,12 @@
 package ai.agent.service.mcp;
 
 import ai.agent.service.tool.AgentTool;
-import ai.agent.service.tool.ToolCallContext;
+import ai.agent.entity.tool.ToolCallContext;
 import ai.agent.service.tool.ToolCallExecutor;
 import ai.agent.service.tool.ToolCallOrigin;
-import ai.agent.service.tool.ToolCallOutcome;
+import ai.agent.entity.tool.ToolCallOutcome;
 import ai.agent.service.tool.ToolRegistry;
-import ai.agent.service.model.tool.ToolHints;
+import ai.agent.entity.model.tool.ToolHints;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 
@@ -183,7 +183,7 @@ public class McpToolExposure {
 				// 而执行器需要一个 id 来拼回填文本。用工具名比编一个随机值更好读，
 				// 而且它同时也是"这条记录来自 MCP"的第一眼线索
 				ToolCallOutcome outcome = executor.execute(
-						ai.agent.service.tool.ToolInvocation.from("mcp:" + tool.name(), tool.name(), arguments),
+						ai.agent.entity.tool.ToolInvocation.from("mcp:" + tool.name(), tool.name(), arguments),
 						ToolCallContext.mcpClient());
 				return outcome.feedback();
 			}

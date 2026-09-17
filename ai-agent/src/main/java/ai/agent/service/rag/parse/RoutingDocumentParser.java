@@ -1,5 +1,6 @@
 package ai.agent.service.rag.parse;
 
+import ai.agent.entity.rag.parse.ParsedDocument;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Primary;

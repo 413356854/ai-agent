@@ -1,7 +1,9 @@
 package ai.agent.service.rag.eval;
 
+import ai.agent.entity.rag.eval.ChunkingComparison;
+import ai.agent.entity.rag.eval.RagRegressionBaseline;
 import ai.agent.service.rag.pipeline.RagEvaluationService;
-import ai.agent.service.rag.eval.RagRegressionBaseline.Drift;
+import ai.agent.entity.rag.eval.RagRegressionBaseline.Drift;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

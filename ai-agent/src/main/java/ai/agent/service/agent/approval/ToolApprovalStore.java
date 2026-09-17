@@ -1,5 +1,6 @@
 package ai.agent.service.agent.approval;
 
+import ai.agent.entity.agent.approval.ToolApprovalRecord;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;

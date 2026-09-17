@@ -1,10 +1,10 @@
 package ai.agent.controller.prompt;
 
-import ai.agent.service.prompt.PromptChange;
+import ai.agent.entity.prompt.PromptChange;
 import ai.agent.service.prompt.PromptKind;
 import ai.agent.service.prompt.PromptService;
 import ai.agent.service.prompt.PromptValidator;
-import ai.agent.service.prompt.PromptVersion;
+import ai.agent.entity.prompt.PromptVersion;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;

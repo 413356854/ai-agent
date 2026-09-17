@@ -1,5 +1,9 @@
 package ai.agent.service.tool;
 
+import ai.agent.entity.tool.ToolApprovalRef;
+import ai.agent.entity.tool.ToolCallContext;
+import ai.agent.entity.tool.ToolCallOutcome;
+import ai.agent.entity.tool.ToolInvocation;
 import ai.agent.service.agent.limit.NoopPerToolGate;
 import ai.agent.service.agent.limit.PerToolGate;
 import ai.agent.service.support.tool.ToolFeedbackFormatter;

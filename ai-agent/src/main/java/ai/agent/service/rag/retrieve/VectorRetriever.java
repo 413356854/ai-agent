@@ -1,7 +1,8 @@
 package ai.agent.service.rag.retrieve;
 
-import ai.agent.service.rag.chunk.Chunk;
+import ai.agent.entity.rag.chunk.Chunk;
 import ai.agent.config.rag.EmbeddingProperties;
+import ai.agent.entity.rag.retrieve.RetrievalHit;
 import ai.agent.service.rag.vector.VectorIndex;
 
 import java.util.ArrayList;

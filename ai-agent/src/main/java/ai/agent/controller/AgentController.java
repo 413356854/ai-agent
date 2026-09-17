@@ -1,16 +1,16 @@
 package ai.agent.controller;
 
-import ai.agent.service.agent.AgentRun;
+import ai.agent.entity.agent.AgentRun;
 import ai.agent.service.agent.AgentStopReason;
 import ai.agent.service.agent.ResumableAgentService;
 import ai.agent.service.agent.approval.AgentApprovalService;
 import ai.agent.service.agent.limit.AgentConcurrencyLimitsView;
-import ai.agent.service.agent.store.AgentRunRecord;
+import ai.agent.entity.agent.store.AgentRunRecord;
 import ai.agent.service.agent.store.AgentRunStore;
 import ai.agent.service.agent.store.RunStatus;
 import ai.agent.service.agent.trace.AgentTraceView;
 import ai.agent.config.AgentApprovalProperties;
-import ai.agent.service.tool.ToolCallOutcome;
+import ai.agent.entity.tool.ToolCallOutcome;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;

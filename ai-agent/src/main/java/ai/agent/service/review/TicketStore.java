@@ -1,5 +1,6 @@
 package ai.agent.service.review;
 
+import ai.agent.entity.review.ReviewTicket;
 import java.time.Duration;
 import java.util.List;
 

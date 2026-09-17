@@ -1,7 +1,8 @@
 package ai.agent.service.rag.eval;
 
-import ai.agent.service.rag.parse.ParsedBlock;
-import ai.agent.service.rag.parse.ParsedDocument;
+import ai.agent.entity.rag.eval.EvalCase;
+import ai.agent.entity.rag.parse.ParsedBlock;
+import ai.agent.entity.rag.parse.ParsedDocument;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;

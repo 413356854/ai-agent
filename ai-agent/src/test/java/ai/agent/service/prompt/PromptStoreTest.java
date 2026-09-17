@@ -1,5 +1,7 @@
 package ai.agent.service.prompt;
 
+import ai.agent.entity.prompt.PromptChange;
+import ai.agent.entity.prompt.PromptVersion;
 import ai.agent.service.impl.agent.store.JdbcAgentRunStore;
 import ai.agent.config.AgentStoreProperties;
 import ai.agent.config.ChatCallProperties;

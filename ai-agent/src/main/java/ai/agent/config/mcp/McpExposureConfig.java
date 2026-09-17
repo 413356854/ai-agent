@@ -1,5 +1,6 @@
 package ai.agent.config.mcp;
 
+import ai.agent.entity.model.tool.ToolHints;
 import ai.agent.service.mcp.McpToolExposure;
 import ai.agent.service.tool.ToolCallExecutor;
 import ai.agent.service.tool.ToolRegistry;

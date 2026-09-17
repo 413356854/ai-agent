@@ -1,6 +1,6 @@
 package ai.agent.service.support.agent.store;
 
-import ai.agent.service.tool.ToolInvocation;
+import ai.agent.entity.tool.ToolInvocation;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;

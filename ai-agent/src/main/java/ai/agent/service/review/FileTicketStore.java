@@ -1,6 +1,7 @@
 package ai.agent.service.review;
 
 import ai.agent.config.ReviewProperties;
+import ai.agent.entity.review.ReviewTicket;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;

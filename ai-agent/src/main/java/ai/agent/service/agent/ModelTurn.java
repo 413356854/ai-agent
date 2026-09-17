@@ -85,7 +85,7 @@ public interface ModelTurn {
 	 *            <p>缺省值 0 的语义是明确的：**"没有命中的"**，也就是按最贵那一档算（偏保守）。
 	 *            上游没这个能力时它恒为 0，看板上会显示命中率 0% 而不是一个编出来的数
 	 */
-	record ModelReply(String text, List<ai.agent.service.tool.ToolInvocation> toolCalls, int promptTokens,
+	record ModelReply(String text, List<ai.agent.entity.tool.ToolInvocation> toolCalls, int promptTokens,
 			int completionTokens, boolean truncatedByLength, int cachedPromptTokens) {
 
 		public ModelReply {
@@ -104,7 +104,7 @@ public interface ModelTurn {
 		}
 
 		/** 不带缓存信息的构造器（脚本化模型与旧调用点用）。 */
-		public ModelReply(String text, List<ai.agent.service.tool.ToolInvocation> toolCalls, int promptTokens,
+		public ModelReply(String text, List<ai.agent.entity.tool.ToolInvocation> toolCalls, int promptTokens,
 				int completionTokens, boolean truncatedByLength) {
 			this(text, toolCalls, promptTokens, completionTokens, truncatedByLength, 0);
 		}

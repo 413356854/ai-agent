@@ -1,6 +1,7 @@
 package ai.agent.service.tool;
 
-import ai.agent.service.model.tool.AgentToolDefinition;
+import ai.agent.entity.model.tool.AgentToolDefinition;
+import ai.agent.entity.tool.ToolCallContext;
 import ai.agent.service.support.tool.JsonSchemaGenerator;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;

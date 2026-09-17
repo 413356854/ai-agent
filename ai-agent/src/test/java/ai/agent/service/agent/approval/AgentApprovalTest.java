@@ -1,7 +1,10 @@
 package ai.agent.service.agent.approval;
 
+import ai.agent.entity.agent.approval.ToolApprovalRecord;
+import ai.agent.entity.agent.store.AgentRunRecord;
+import ai.agent.entity.model.tool.ToolHints;
 import ai.agent.service.agent.AgentLoop;
-import ai.agent.service.agent.AgentRun;
+import ai.agent.entity.agent.AgentRun;
 import ai.agent.service.agent.AgentProgressListener;
 import ai.agent.service.agent.AgentStopReason;
 import ai.agent.service.agent.ModelTurn;
@@ -9,16 +12,16 @@ import ai.agent.service.agent.ScriptedModelTurn;
 import ai.agent.service.agent.store.AgentRunStore;
 import ai.agent.service.agent.store.RunStatus;
 import ai.agent.config.AgentApprovalProperties;
-import ai.agent.service.review.ReviewTicket;
+import ai.agent.entity.review.ReviewTicket;
 import ai.agent.service.review.TicketStore;
 import ai.agent.service.tool.AgentTool;
-import ai.agent.service.tool.ApprovalGrant;
+import ai.agent.entity.tool.ApprovalGrant;
 import ai.agent.service.tool.ToolApprovalGate;
-import ai.agent.service.tool.ToolCallContext;
+import ai.agent.entity.tool.ToolCallContext;
 import ai.agent.service.tool.ToolCallExecutor;
-import ai.agent.service.tool.ToolCallOutcome;
+import ai.agent.entity.tool.ToolCallOutcome;
 import ai.agent.service.tool.ToolCallStage;
-import ai.agent.service.tool.ToolInvocation;
+import ai.agent.entity.tool.ToolInvocation;
 import ai.agent.service.tool.ToolRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -589,7 +592,7 @@ class AgentApprovalTest {
 
 		assertThat(status).isEqualTo(RunStatus.WAITING_APPROVAL);
 		// 这三条规则写在 AgentRunRecord 上（它才是页面与恢复逻辑实际读的东西）
-		var record = new ai.agent.service.agent.store.AgentRunRecord("r", "q", status,
+		var record = new ai.agent.entity.agent.store.AgentRunRecord("r", "q", status,
 				AgentStopReason.WAITING_FOR_APPROVAL, null, 0, 0, 0, "test", null, java.time.Instant.now(),
 				java.time.Instant.now());
 		assertThat(record.finished())
@@ -655,12 +658,12 @@ class AgentApprovalTest {
 		}
 
 		// 自相矛盾的声明必须在**构造期**就抛（不留到注册期自检）
-		assertThat(new ai.agent.service.model.tool.ToolHints(true, true, false, false).selfContradictory())
+		assertThat(new ai.agent.entity.model.tool.ToolHints(true, true, false, false).selfContradictory())
 				.as("只读 + 破坏性 是自相矛盾的").isTrue();
-		assertThatThrownBy(() -> new ai.agent.service.model.tool.AgentToolDefinition("t", "摘要", "何时用", "", "", "",
-				new ai.agent.service.model.tool.ToolHints(true, true, false, false)))
+		assertThatThrownBy(() -> new ai.agent.entity.model.tool.AgentToolDefinition("t", "摘要", "何时用", "", "", "",
+				new ai.agent.entity.model.tool.ToolHints(true, true, false, false)))
 				.isInstanceOf(IllegalArgumentException.class).hasMessageContaining("自相矛盾");
-		assertThat(new ai.agent.service.model.tool.ToolHints(false, false, true, true).requiresApproval())
+		assertThat(new ai.agent.entity.model.tool.ToolHints(false, false, true, true).requiresApproval())
 				.as("幂等的写**免审批** —— 这条规则不是特例，它由'重复执行有没有额外副作用'推出")
 				.isFalse();
 	}

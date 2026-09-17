@@ -1,8 +1,9 @@
 package ai.agent.service.rag.retrieve;
 
-import ai.agent.service.rag.chunk.Chunk;
+import ai.agent.entity.rag.chunk.Chunk;
 import ai.agent.config.rag.RagProperties;
 import ai.agent.config.rag.EmbeddingProperties;
+import ai.agent.entity.rag.retrieve.RetrievalHit;
 import ai.agent.service.impl.rag.vector.HashingEmbeddingModel;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

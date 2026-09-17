@@ -1,5 +1,7 @@
 package ai.agent.service.rag.parse;
 
+import ai.agent.entity.rag.parse.ParsedBlock;
+
 /**
  * 解析后文本块的类型。
  *

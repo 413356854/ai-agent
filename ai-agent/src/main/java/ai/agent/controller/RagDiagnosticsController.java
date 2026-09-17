@@ -1,19 +1,19 @@
 package ai.agent.controller;
 
-import ai.agent.service.rag.chunk.Chunk;
+import ai.agent.entity.rag.chunk.Chunk;
 import ai.agent.config.rag.RagProperties;
-import ai.agent.service.rag.eval.AlignmentExperiment;
-import ai.agent.service.rag.eval.ChunkingComparison;
-import ai.agent.service.rag.eval.EvalCase;
+import ai.agent.entity.rag.eval.AlignmentExperiment;
+import ai.agent.entity.rag.eval.ChunkingComparison;
+import ai.agent.entity.rag.eval.EvalCase;
 import ai.agent.service.rag.eval.EvalSetLoader;
 import ai.agent.service.rag.parse.BlockType;
-import ai.agent.service.rag.parse.ParsedBlock;
-import ai.agent.service.rag.parse.ParsedDocument;
+import ai.agent.entity.rag.parse.ParsedBlock;
+import ai.agent.entity.rag.parse.ParsedDocument;
 import ai.agent.service.rag.pipeline.CorpusLoader;
 import ai.agent.service.rag.pipeline.RagAlignmentService;
 import ai.agent.service.rag.pipeline.RagEvaluationService;
 import ai.agent.service.rag.retrieve.LexicalRetriever;
-import ai.agent.service.rag.retrieve.RetrievalHit;
+import ai.agent.entity.rag.retrieve.RetrievalHit;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;

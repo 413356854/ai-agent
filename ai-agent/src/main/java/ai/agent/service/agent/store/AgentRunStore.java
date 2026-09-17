@@ -1,6 +1,7 @@
 package ai.agent.service.agent.store;
 
-import ai.agent.service.agent.AgentRun;
+import ai.agent.entity.agent.AgentRun;
+import ai.agent.entity.agent.store.AgentRunRecord;
 import ai.agent.service.agent.AgentStopReason;
 import ai.agent.service.agent.ModelFailureClassifier;
 

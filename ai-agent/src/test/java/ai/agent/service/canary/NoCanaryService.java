@@ -1,8 +1,9 @@
 package ai.agent.service.canary;
 
+import ai.agent.entity.canary.CanaryDecision;
 import ai.agent.service.prompt.PromptKind;
 import ai.agent.service.prompt.PromptService;
-import ai.agent.service.prompt.PromptVersion;
+import ai.agent.entity.prompt.PromptVersion;
 
 import java.util.List;
 import java.util.Optional;

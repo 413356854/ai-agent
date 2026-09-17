@@ -1,6 +1,7 @@
 package ai.agent.service.rag.retrieve;
 
-import ai.agent.service.rag.chunk.Chunk;
+import ai.agent.entity.rag.chunk.Chunk;
+import ai.agent.entity.rag.retrieve.RetrievalHit;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;

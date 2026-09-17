@@ -1,6 +1,7 @@
 package ai.agent.service.rag.chunk;
 
-import ai.agent.service.rag.parse.ParsedDocument;
+import ai.agent.entity.rag.chunk.Chunk;
+import ai.agent.entity.rag.parse.ParsedDocument;
 
 import java.util.List;
 

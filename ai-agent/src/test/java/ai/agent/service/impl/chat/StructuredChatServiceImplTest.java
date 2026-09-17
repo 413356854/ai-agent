@@ -1,6 +1,6 @@
 package ai.agent.service.impl.chat;
 
-import ai.agent.service.chat.structured.StructuredResult;
+import ai.agent.entity.chat.structured.StructuredResult;
 import ai.agent.service.support.chat.structured.MinConfidenceValidator;
 import ai.agent.config.ChatCallProperties;
 import ai.agent.service.token.TokenBudgetGuard;

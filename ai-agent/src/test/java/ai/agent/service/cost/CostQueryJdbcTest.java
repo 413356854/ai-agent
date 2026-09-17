@@ -1,7 +1,7 @@
 package ai.agent.service.cost;
 
 import ai.agent.service.agent.AgentStopReason;
-import ai.agent.service.agent.store.AgentRunRecord;
+import ai.agent.entity.agent.store.AgentRunRecord;
 import ai.agent.service.agent.store.AgentRunStore;
 import ai.agent.service.agent.store.RunStatus;
 import ai.agent.config.AgentStoreProperties;

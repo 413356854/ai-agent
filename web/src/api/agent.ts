@@ -171,7 +171,7 @@ export interface AgentAskResponse {
 /**
  * 一条待批的人工确认（`GET /api/agent/approvals` 里的一行）。
  *
- * 对应后端 `ai.agent.service.agent.approval.ToolApprovalRecord`。
+ * 对应后端 `ai.agent.entity.agent.approval.ToolApprovalRecord`。
  */
 export interface AgentApprovalRow {
   id: string

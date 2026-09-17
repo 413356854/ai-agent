@@ -1,5 +1,7 @@
 package ai.agent.service.rag.parse;
 
+import ai.agent.entity.rag.parse.ParsedDocument;
+
 /**
  * 文档解析契约：把任意格式的字节流变成"带结构的块序列"。
  *

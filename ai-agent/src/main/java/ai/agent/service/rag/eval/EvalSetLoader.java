@@ -1,6 +1,7 @@
 package ai.agent.service.rag.eval;
 
 import ai.agent.config.rag.RagProperties;
+import ai.agent.entity.rag.eval.EvalCase;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.FileSystemResource;

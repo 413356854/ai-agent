@@ -1,5 +1,7 @@
 package ai.agent.service.prompt;
 
+import ai.agent.entity.prompt.PromptDiff;
+import ai.agent.entity.prompt.PromptVersion;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

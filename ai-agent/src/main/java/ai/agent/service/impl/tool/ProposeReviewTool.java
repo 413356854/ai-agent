@@ -2,13 +2,13 @@ package ai.agent.service.impl.tool;
 
 import ai.agent.config.ReviewProperties;
 import ai.agent.service.review.ReviewSeverity;
-import ai.agent.service.review.ReviewTicket;
+import ai.agent.entity.review.ReviewTicket;
 import ai.agent.service.review.TicketStore;
 import ai.agent.service.tool.AgentTool;
 import ai.agent.service.tool.AgentToolResult;
-import ai.agent.service.tool.ToolCallContext;
-import ai.agent.service.model.tool.AgentToolDefinition;
-import ai.agent.service.model.tool.ToolHints;
+import ai.agent.entity.tool.ToolCallContext;
+import ai.agent.entity.model.tool.AgentToolDefinition;
+import ai.agent.entity.model.tool.ToolHints;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;

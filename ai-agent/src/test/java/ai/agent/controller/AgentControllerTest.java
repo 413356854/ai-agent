@@ -2,7 +2,7 @@ package ai.agent.controller;
 
 import ai.agent.service.agent.AgentFailureCause;
 import ai.agent.service.agent.AgentLoop;
-import ai.agent.service.agent.AgentRun;
+import ai.agent.entity.agent.AgentRun;
 import ai.agent.service.agent.AgentStopReason;
 import ai.agent.service.agent.ModelFailureClassifier;
 import ai.agent.service.agent.ModelTurn;

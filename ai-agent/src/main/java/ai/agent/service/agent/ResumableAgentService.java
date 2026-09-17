@@ -1,14 +1,15 @@
 package ai.agent.service.agent;
 
+import ai.agent.entity.agent.AgentRun;
 import ai.agent.service.agent.approval.AgentApprovalService;
 import ai.agent.service.agent.approval.ApprovalStatus;
-import ai.agent.service.agent.approval.ToolApprovalRecord;
-import ai.agent.service.agent.store.AgentRunRecord;
+import ai.agent.entity.agent.approval.ToolApprovalRecord;
+import ai.agent.entity.agent.store.AgentRunRecord;
 import ai.agent.service.agent.store.AgentRunStore;
 import ai.agent.service.agent.store.RunStatus;import ai.agent.service.support.agent.store.TranscriptCodec;
 import ai.agent.config.AgentStoreProperties;
-import ai.agent.service.tool.ApprovalGrant;
-import ai.agent.service.tool.ToolInvocation;
+import ai.agent.entity.tool.ApprovalGrant;
+import ai.agent.entity.tool.ToolInvocation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -555,7 +556,7 @@ public class ResumableAgentService {
 			// 是为了让"万一将来多出一个没有对应意图的结论"退化成丢一个 callId，
 			// 而不是抛 IndexOutOfBounds 把整次运行打断
 			int callIndex = 0;
-			List<ai.agent.service.tool.ToolInvocation> invocations = step.invocations();
+			List<ai.agent.entity.tool.ToolInvocation> invocations = step.invocations();
 			for (var outcome : step.outcomes()) {
 				String callId = callIndex < invocations.size() ? invocations.get(callIndex).id() : null;
 				store.recordToolCall(new AgentRunRecord.ToolCallRecord(runId, stepIndex, callIndex, callId,

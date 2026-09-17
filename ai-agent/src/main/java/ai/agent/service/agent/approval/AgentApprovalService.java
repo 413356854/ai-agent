@@ -1,13 +1,14 @@
 package ai.agent.service.agent.approval;
 
 import ai.agent.config.AgentApprovalProperties;
+import ai.agent.entity.agent.approval.ToolApprovalRecord;
 import ai.agent.service.tool.AgentTool;
-import ai.agent.service.tool.ApprovalGrant;
+import ai.agent.entity.tool.ApprovalGrant;
 import ai.agent.service.tool.ToolApprovalGate;
-import ai.agent.service.tool.ToolCallContext;
+import ai.agent.entity.tool.ToolCallContext;
 import ai.agent.service.tool.ToolCallStage;
-import ai.agent.service.tool.ToolInvocation;
-import ai.agent.service.model.tool.ToolHints;
+import ai.agent.entity.tool.ToolInvocation;
+import ai.agent.entity.model.tool.ToolHints;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;

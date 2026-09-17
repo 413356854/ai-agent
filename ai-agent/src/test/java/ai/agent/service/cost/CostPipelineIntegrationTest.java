@@ -1,12 +1,12 @@
 package ai.agent.service.cost;
 
-import ai.agent.service.agent.AgentRun;
+import ai.agent.entity.agent.AgentRun;
 import ai.agent.service.agent.AgentStopReason;
 import ai.agent.service.agent.ModelTurn;
 import ai.agent.service.agent.ResumableAgentService;
-import ai.agent.service.agent.store.AgentRunRecord;
+import ai.agent.entity.agent.store.AgentRunRecord;
 import ai.agent.service.agent.store.AgentRunStore;
-import ai.agent.service.tool.ToolInvocation;
+import ai.agent.entity.tool.ToolInvocation;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.Message;

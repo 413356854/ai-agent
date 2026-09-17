@@ -1,12 +1,12 @@
 package ai.agent.service.impl.tool;
 
-import ai.agent.service.rag.parse.ParsedBlock;
-import ai.agent.service.rag.parse.ParsedDocument;
+import ai.agent.entity.rag.parse.ParsedBlock;
+import ai.agent.entity.rag.parse.ParsedDocument;
 import ai.agent.service.rag.pipeline.CorpusLoader;
 import ai.agent.service.tool.AgentTool;
 import ai.agent.service.tool.AgentToolResult;
-import ai.agent.service.model.tool.AgentToolDefinition;
-import ai.agent.service.model.tool.ToolHints;
+import ai.agent.entity.model.tool.AgentToolDefinition;
+import ai.agent.entity.model.tool.ToolHints;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import org.slf4j.Logger;

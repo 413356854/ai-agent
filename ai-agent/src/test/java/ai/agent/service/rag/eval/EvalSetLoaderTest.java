@@ -1,6 +1,7 @@
 package ai.agent.service.rag.eval;
 
 import ai.agent.config.rag.RagProperties;
+import ai.agent.entity.rag.eval.EvalCase;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

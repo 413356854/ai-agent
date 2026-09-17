@@ -1,12 +1,12 @@
 package ai.agent.controller.canary;
 
-import ai.agent.service.canary.CanaryDecision;
+import ai.agent.entity.canary.CanaryDecision;
 import ai.agent.service.canary.CanaryService;
 import ai.agent.service.canary.CanaryStore;
 import ai.agent.service.canary.DefaultCanaryService;
 import ai.agent.service.prompt.PromptKind;
 import ai.agent.service.prompt.PromptService;
-import ai.agent.service.prompt.PromptVersion;
+import ai.agent.entity.prompt.PromptVersion;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;

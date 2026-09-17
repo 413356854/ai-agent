@@ -1,5 +1,7 @@
 package ai.agent.service.rag.parse;
 
+import ai.agent.entity.rag.parse.ParsedBlock;
+import ai.agent.entity.rag.parse.ParsedDocument;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;

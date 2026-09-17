@@ -1,11 +1,11 @@
 package ai.agent.service.impl.agent.store;
 
 import ai.agent.service.agent.AgentStopReason;
-import ai.agent.service.agent.store.AgentRunRecord;
+import ai.agent.entity.agent.store.AgentRunRecord;
 import ai.agent.service.agent.store.AgentRunStore;
 import ai.agent.service.agent.store.RunStatus;
 import ai.agent.config.AgentStoreProperties;
-import ai.agent.service.tool.RetrievalTrace;
+import ai.agent.entity.tool.RetrievalTrace;
 import org.h2.jdbcx.JdbcConnectionPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

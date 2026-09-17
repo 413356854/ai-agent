@@ -1,11 +1,11 @@
 package ai.agent.service.rag;
 
-import ai.agent.service.rag.chunk.Chunk;
-import ai.agent.service.rag.eval.ChunkingComparison;
+import ai.agent.entity.rag.chunk.Chunk;
+import ai.agent.entity.rag.eval.ChunkingComparison;
 import ai.agent.service.rag.pipeline.CorpusLoader;
 import ai.agent.service.rag.pipeline.RagEvaluationService;
 import ai.agent.service.rag.retrieve.LexicalRetriever;
-import ai.agent.service.rag.retrieve.RetrievalHit;
+import ai.agent.entity.rag.retrieve.RetrievalHit;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

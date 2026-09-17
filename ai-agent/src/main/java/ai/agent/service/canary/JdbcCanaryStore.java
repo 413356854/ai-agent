@@ -1,5 +1,6 @@
 package ai.agent.service.canary;
 
+import ai.agent.entity.canary.CanaryDecision;
 import ai.agent.service.impl.agent.store.JdbcAgentRunStore;
 import ai.agent.service.prompt.PromptKind;
 import org.h2.jdbcx.JdbcConnectionPool;

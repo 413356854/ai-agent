@@ -1,5 +1,6 @@
 package ai.agent.service.alert;
 
+import ai.agent.entity.alert.AlertEvent;
 import ai.agent.service.alert.AlertRule.Verdict;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

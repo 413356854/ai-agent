@@ -1,5 +1,7 @@
 package ai.agent.service.alert;
 
+import ai.agent.entity.alert.AlertEvent;
+import ai.agent.entity.alert.RuntimeSnapshot;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;

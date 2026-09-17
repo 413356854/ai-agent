@@ -1,5 +1,7 @@
 package ai.agent.service.cost;
 
+import ai.agent.entity.agent.AgentRun;
+import ai.agent.entity.agent.store.AgentRunRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;

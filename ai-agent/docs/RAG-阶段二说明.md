@@ -176,6 +176,14 @@ Recall@5 / Recall@1 / MRR / token 成本 / 重复率五项全优，且三路检�
 ## 代码地图
 
 ```
+ai.agent.entity.rag                  ← 数据载体：RAG 这一路的 record 全在这里（只有字段与派生方法）
+├── parse/ParsedDocument            块序列 + 标题路径计算
+├── parse/ParsedBlock               一个块（类型 / 正文 / 层级 / 顺序）
+├── chunk/Chunk                     检索单元（含标题路径与覆盖区间）
+├── retrieve/RetrievalHit           一次命中（块 + 分数 + 名次）
+└── eval/                           EvalCase / RetrievalMetrics / BudgetAlignment /
+                                    ChunkingComparison / AlignmentExperiment / RagRegressionBaseline
+
 ai.agent.service.rag                 ← 业务层（角色在前、功能在后）
 ├── parse/                    文档解析（结构不丢）
 │   ├── DocumentParser              契约：字节流 → 带结构的块
@@ -183,11 +191,9 @@ ai.agent.service.rag                 ← 业务层（角色在前、功能在后
 │   ├── MarkdownDocumentParser      Markdown → HTML（flexmark）→ 块
 │   ├── TikaDocumentParser          Word/PDF/HTML/CSV → XHTML → 块
 │   ├── XhtmlBlockExtractor         XHTML → 块（两个解析器共用，含 XXE 加固）
-│   ├── ParsedDocument              块序列 + 标题路径计算
-│   └── BlockType / ParsedBlock     块类型（标题/段落/表格/代码/列表…）
+│   └── BlockType                   块类型（标题/段落/表格/代码/列表…）
 ├── chunk/                    分块（可替换策略）
-│   ├── DocumentChunker             契约（+ 带参数重载，供对齐实验改尺寸而不动全局配置）
-│   └── Chunk                       检索单元（含标题路径与覆盖区间）
+│   └── DocumentChunker             契约（+ 带参数重载，供对齐实验改尺寸而不动全局配置）
 ├── vector/                   向量化与向量索引
 │   └── VectorIndex                 暴力精确 KNN + 余弦相似度 + **索引指纹校验漂移**
 ├── retrieve/                 检索（三路，同一契约）
@@ -197,12 +203,8 @@ ai.agent.service.rag                 ← 业务层（角色在前、功能在后
 │   ├── HybridRetriever             **RRF 按名次融合**（不比较两种量纲的分数）
 │   └── CjkBigramAnalyzer           中文二元组 + 英文按词（两条检索路共用同一份词项）
 ├── eval/                     评测
-│   ├── EvalCase / EvalSetLoader    用例与 TSV 加载（大声校验，不许静默）
-│   ├── SectionLocator              章节 → 块区间；判定"算不算命中"
-│   ├── RetrievalMetrics            Recall@k / MRR / ContextPrecision / token 成本 / **等预算召回**
-│   ├── BudgetAlignment             固定 token 预算下的召回（等成本对照）
-│   ├── ChunkingComparison          并排报告 + 差值表
-│   └── AlignmentExperiment         对齐实验报告（扫描 / 对照组 / 等预算表 / 检索方式）
+│   ├── EvalSetLoader               用例 TSV 加载（大声校验，不许静默）
+│   └── SectionLocator              章节 → 块区间；判定"算不算命中"
 └── pipeline/
     ├── CorpusLoader                目录 → 解析好的文档（单文件失败不中断整批）
     ├── StrategyEvaluator           **变体是数据、流程只有一份**（切块→建索引→检索→算指标）
@@ -218,6 +220,14 @@ ai.agent.config.rag                  ← 配置
 ├── RagProperties                   ai.rag.* 配置绑定（含嵌套的 vector）
 └── EmbeddingProperties             ai.rag.vector.*（作为 RagProperties 的嵌套字段）
 ```
+
+> **约定：`ai.agent.service.**` 下的顶层 record 一律归到 `ai.agent.entity.<同名子包>`。**
+> 目的不是"少几个包"，而是让"一次改动的爆炸半径"看得见：实体只有字段与派生方法，改它
+> 影响的是序列化契约；业务类留在 `service` 下，改它影响的是行为。
+> 两条边界要说清楚：①**嵌套**在 interface/class 里的 record 不搬（它们是外层类型的成员，
+> 且 sealed 接口的实现必须与接口同包）；②`ai.agent.config` 下的 `@ConfigurationProperties`
+> record 也不搬（它们与配置绑定是一体的）。
+
 
 ## 这个模块踩过的坑（都写进了代码注释）
 

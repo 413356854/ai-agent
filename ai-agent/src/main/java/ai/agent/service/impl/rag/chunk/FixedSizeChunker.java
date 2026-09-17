@@ -1,10 +1,10 @@
 package ai.agent.service.impl.rag.chunk;
 
-import ai.agent.service.rag.chunk.Chunk;
+import ai.agent.entity.rag.chunk.Chunk;
 import ai.agent.service.rag.chunk.DocumentChunker;
 import ai.agent.config.rag.RagProperties;
-import ai.agent.service.rag.parse.ParsedBlock;
-import ai.agent.service.rag.parse.ParsedDocument;
+import ai.agent.entity.rag.parse.ParsedBlock;
+import ai.agent.entity.rag.parse.ParsedDocument;
 import ai.agent.service.token.TokenEstimator;
 import org.springframework.stereotype.Component;
 

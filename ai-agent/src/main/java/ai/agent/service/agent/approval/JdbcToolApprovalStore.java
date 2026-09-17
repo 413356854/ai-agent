@@ -1,5 +1,6 @@
 package ai.agent.service.agent.approval;
 
+import ai.agent.entity.agent.approval.ToolApprovalRecord;
 import ai.agent.service.impl.agent.store.JdbcAgentRunStore;
 import ai.agent.config.AgentStoreProperties;
 import org.h2.jdbcx.JdbcConnectionPool;

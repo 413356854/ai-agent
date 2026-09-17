@@ -1,6 +1,9 @@
 package ai.agent.service.tool;
 
-import ai.agent.service.model.tool.ToolHints;
+import ai.agent.entity.model.tool.ToolHints;
+import ai.agent.entity.tool.ApprovalGrant;
+import ai.agent.entity.tool.ToolCallContext;
+import ai.agent.entity.tool.ToolInvocation;
 
 /**
  * <b>人工确认（HITL）闸门</b> —— 高危写操作在执行之前必须先有人点头。

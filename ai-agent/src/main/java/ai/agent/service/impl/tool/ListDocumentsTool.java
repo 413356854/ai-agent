@@ -3,8 +3,8 @@ package ai.agent.service.impl.tool;
 import ai.agent.service.rag.pipeline.CorpusLoader;
 import ai.agent.service.tool.AgentTool;
 import ai.agent.service.tool.AgentToolResult;
-import ai.agent.service.model.tool.AgentToolDefinition;
-import ai.agent.service.model.tool.ToolHints;
+import ai.agent.entity.model.tool.AgentToolDefinition;
+import ai.agent.entity.model.tool.ToolHints;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -98,7 +98,7 @@ public class ListDocumentsTool implements AgentTool<ListDocumentsTool.NoParams> 
 	 * <p>限量是刻意的：完整标题路径可能有几十个，全列出来会把这把"目录工具"的输出
 	 * 变成第二份语料。只给顶层 + 最多 6 个，够模型判断"该去哪个文档找"，又不至于淹掉上下文。
 	 */
-	private static String topLevelSections(java.util.List<ai.agent.service.rag.parse.ParsedBlock> blocks) {
+	private static String topLevelSections(java.util.List<ai.agent.entity.rag.parse.ParsedBlock> blocks) {
 		Map<String, Boolean> seen = new LinkedHashMap<>();
 		for (var block : blocks) {
 			if (block.type() == ai.agent.service.rag.parse.BlockType.HEADING) {

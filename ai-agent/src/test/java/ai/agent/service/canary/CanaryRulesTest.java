@@ -1,8 +1,9 @@
 package ai.agent.service.canary;
 
+import ai.agent.entity.canary.CanaryDecision;
 import ai.agent.service.prompt.PromptKind;
 import ai.agent.service.prompt.PromptService;
-import ai.agent.service.prompt.PromptVersion;
+import ai.agent.entity.prompt.PromptVersion;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -318,7 +319,7 @@ class CanaryRulesTest {
 		}
 
 		@Override
-		public ai.agent.service.prompt.PromptChange save(PromptKind kind, ai.agent.service.prompt.PromptValidator.Input input) {
+		public ai.agent.entity.prompt.PromptChange save(PromptKind kind, ai.agent.service.prompt.PromptValidator.Input input) {
 			throw new UnsupportedOperationException("替身不支持写");
 		}
 
@@ -333,7 +334,7 @@ class CanaryRulesTest {
 		}
 
 		@Override
-		public ai.agent.service.prompt.PromptDiff diff(PromptKind kind, int fromVersion, int toVersion) {
+		public ai.agent.entity.prompt.PromptDiff diff(PromptKind kind, int fromVersion, int toVersion) {
 			throw new UnsupportedOperationException("替身不支持读差异");
 		}
 

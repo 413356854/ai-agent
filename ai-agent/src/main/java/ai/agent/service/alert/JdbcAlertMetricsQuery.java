@@ -1,5 +1,6 @@
 package ai.agent.service.alert;
 
+import ai.agent.entity.alert.RuntimeSnapshot;
 import ai.agent.service.impl.agent.store.JdbcAgentRunStore;
 import ai.agent.service.canary.CanaryService;
 import ai.agent.service.cost.CostPricing;

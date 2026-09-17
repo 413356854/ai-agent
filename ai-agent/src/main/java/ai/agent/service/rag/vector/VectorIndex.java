@@ -1,6 +1,6 @@
 package ai.agent.service.rag.vector;
 
-import ai.agent.service.rag.chunk.Chunk;
+import ai.agent.entity.rag.chunk.Chunk;
 import ai.agent.service.impl.rag.vector.HashingEmbeddingModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

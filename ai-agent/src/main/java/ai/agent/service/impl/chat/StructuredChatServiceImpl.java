@@ -1,7 +1,7 @@
 package ai.agent.service.impl.chat;
 
-import ai.agent.service.chat.structured.StructuredAnswer;
-import ai.agent.service.chat.structured.StructuredResult;
+import ai.agent.entity.chat.structured.StructuredAnswer;
+import ai.agent.entity.chat.structured.StructuredResult;
 import ai.agent.config.ChatCallProperties;
 import ai.agent.service.prompt.PromptKind;
 import ai.agent.service.prompt.PromptService;

@@ -1,5 +1,8 @@
 package ai.agent.service.prompt;
 
+import ai.agent.entity.prompt.PromptChange;
+import ai.agent.entity.prompt.PromptDiff;
+import ai.agent.entity.prompt.PromptVersion;
 import ai.agent.service.token.TokenEstimator;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.util.StreamUtils;

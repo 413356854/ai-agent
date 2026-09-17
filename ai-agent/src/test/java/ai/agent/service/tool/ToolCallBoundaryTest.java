@@ -1,7 +1,9 @@
 package ai.agent.service.tool;
 
+import ai.agent.entity.tool.ToolCallOutcome;
+import ai.agent.entity.tool.ToolInvocation;
 import ai.agent.service.impl.tool.ListDocumentsTool;
-import ai.agent.service.model.tool.AgentToolDefinition;
+import ai.agent.entity.model.tool.AgentToolDefinition;
 import ai.agent.service.support.tool.ToolFeedbackFormatter;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

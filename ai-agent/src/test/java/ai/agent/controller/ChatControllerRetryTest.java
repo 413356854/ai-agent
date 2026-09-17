@@ -1,6 +1,6 @@
 package ai.agent.controller;
 
-import ai.agent.service.dto.chat.ChatRequest;
+import ai.agent.entity.dto.chat.ChatRequest;
 import ai.agent.service.support.chat.ChatRetryPolicy;
 import ai.agent.config.ChatCallProperties;
 import ai.agent.service.chat.ChatService;

@@ -1,6 +1,6 @@
 package ai.agent.service.agent;
 
-import ai.agent.service.tool.ToolInvocation;
+import ai.agent.entity.tool.ToolInvocation;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;

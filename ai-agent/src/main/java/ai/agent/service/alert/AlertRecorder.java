@@ -1,5 +1,7 @@
 package ai.agent.service.alert;
 
+import ai.agent.entity.alert.AlertEvent;
+import ai.agent.entity.alert.RuntimeSnapshot;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;

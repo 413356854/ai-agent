@@ -1,5 +1,6 @@
 package ai.agent.service.canary;
 
+import ai.agent.entity.canary.CanaryDecision;
 import ai.agent.service.prompt.PromptKind;
 
 import java.time.Instant;

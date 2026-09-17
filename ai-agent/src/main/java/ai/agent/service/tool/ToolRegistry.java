@@ -1,6 +1,7 @@
 package ai.agent.service.tool;
 
-import ai.agent.service.model.tool.AgentToolDefinition;
+import ai.agent.entity.model.tool.AgentToolDefinition;
+import ai.agent.entity.model.tool.ToolHints;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;

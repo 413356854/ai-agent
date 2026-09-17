@@ -1,12 +1,12 @@
 package ai.agent.service.agent.trace;
 
 import ai.agent.service.agent.approval.AgentApprovalService;
-import ai.agent.service.agent.store.AgentRunRecord;
+import ai.agent.entity.agent.store.AgentRunRecord;
 import ai.agent.service.agent.store.AgentRunStore;
 import ai.agent.service.cost.CostPricing;
 import ai.agent.service.prompt.PromptKind;
 import ai.agent.service.prompt.PromptService;
-import ai.agent.service.tool.RetrievalTrace;
+import ai.agent.entity.tool.RetrievalTrace;
 import ai.agent.service.tool.ToolCallStage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

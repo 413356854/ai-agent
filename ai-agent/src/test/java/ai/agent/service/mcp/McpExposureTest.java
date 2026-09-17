@@ -2,7 +2,7 @@ package ai.agent.service.mcp;
 
 import ai.agent.service.tool.AgentTool;
 import ai.agent.service.tool.ToolCallExecutor;
-import ai.agent.service.tool.ToolInvocation;
+import ai.agent.entity.tool.ToolInvocation;
 import ai.agent.service.tool.ToolRegistry;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -181,7 +181,7 @@ class McpExposureTest {
 
 		// 不存在的工具名（直接在执行器上验证白名单那一层）
 		assertThat(executor.execute(ToolInvocation.from("mcp:x", "no_such_tool", "{}"),
-				ai.agent.service.tool.ToolCallContext.mcpClient()).stage())
+				ai.agent.entity.tool.ToolCallContext.mcpClient()).stage())
 				.as("白名单对外部调用同样生效").isEqualTo(ai.agent.service.tool.ToolCallStage.UNKNOWN_TOOL);
 	}
 
@@ -189,7 +189,7 @@ class McpExposureTest {
 	@DisplayName("来源被如实标成 MCP_CLIENT：'模型乱调'与'外部客户端调错'的处置方式与责任方完全不同")
 	void originIsRecorded() {
 		var outcome = executor.execute(ToolInvocation.from("mcp:list_documents", "list_documents", "{}"),
-				ai.agent.service.tool.ToolCallContext.mcpClient());
+				ai.agent.entity.tool.ToolCallContext.mcpClient());
 
 		assertThat(outcome.origin()).isEqualTo(ai.agent.service.tool.ToolCallOrigin.MCP_CLIENT);
 		assertThat(outcome.origin().label()).contains("外部");

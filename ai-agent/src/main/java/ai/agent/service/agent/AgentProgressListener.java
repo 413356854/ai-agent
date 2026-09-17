@@ -1,7 +1,8 @@
 package ai.agent.service.agent;
 
-import ai.agent.service.tool.ToolCallOutcome;
-import ai.agent.service.tool.ToolInvocation;
+import ai.agent.entity.agent.AgentRun;
+import ai.agent.entity.tool.ToolCallOutcome;
+import ai.agent.entity.tool.ToolInvocation;
 import org.springframework.ai.chat.messages.Message;
 
 import java.util.List;
