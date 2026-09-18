@@ -1,20 +1,16 @@
 package ai.agent.service.alert;
 
 import ai.agent.entity.alert.RuntimeSnapshot;
-import ai.agent.service.impl.agent.store.JdbcAgentRunStore;
+import ai.agent.mapper.MapperRows;
+import ai.agent.mapper.RetrievalSignalMapper;
 import ai.agent.service.canary.CanaryService;
 import ai.agent.service.cost.CostPricing;
 import ai.agent.service.cost.CostQuery;
-import org.h2.jdbcx.JdbcConnectionPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Component;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -70,14 +66,14 @@ public class JdbcAlertMetricsQuery implements AlertSnapshotQuery {
 
 	private final CanaryService canary;
 
-	private final JdbcConnectionPool pool;
+	private final RetrievalSignalMapper retrievalSignals;
 
 	public JdbcAlertMetricsQuery(CostQuery costQuery, CostPricing pricing, CanaryService canary,
-			JdbcAgentRunStore runStore) {
+			RetrievalSignalMapper retrievalSignals) {
 		this.costQuery = costQuery;
 		this.pricing = pricing;
 		this.canary = canary;
-		this.pool = runStore.pool();
+		this.retrievalSignals = retrievalSignals;
 	}
 
 	@Override
@@ -87,7 +83,7 @@ public class JdbcAlertMetricsQuery implements AlertSnapshotQuery {
 		LocalDate from = today.minusDays(effective - 1L);
 
 		CostQuery.Reconciliation reconciliation = costQuery.reconcile(from, today);
-		Retrieval retrieval = retrievalSignals(from);
+		Retrieval retrieval = readRetrievalSignals(from);
 		// 【阶段四第 6 件】租户口径：复用**成本看板那一条**按租户分组的查询。
 		// 不在这里另写一条 SQL —— 那正是本类类注释里那条纪律
 		//（"同一件事有两份实现，而两份迟早会对不上"），
@@ -240,37 +236,28 @@ public class JdbcAlertMetricsQuery implements AlertSnapshotQuery {
 	 * @param lastIndexSize 最新一次检索时索引里的块数（0 = 索引根本没建起来）
 	 * @param calls 窗口内一共发生了几次检索
 	 */
-	private record Retrieval(int consecutiveEmpty, int lastIndexSize, long calls) {
+	public record Retrieval(int consecutiveEmpty, int lastIndexSize, long calls) {
 	}
 
-	private Retrieval retrievalSignals(LocalDate from) {
+	private Retrieval readRetrievalSignals(LocalDate from) {
 		Instant since = from.atStartOfDay(ZoneId.systemDefault()).toInstant();
-		List<Integer> hits = new ArrayList<>();
-		int lastIndexSize = 0;
-		boolean first = true;
-		// 按时间倒序取最近 N 条：这样"从最新往前数连续空命中"只需要扫一遍
-		String sql = "SELECT hit_count, index_size FROM retrieval_call WHERE created_at >= ? "
-				+ "ORDER BY created_at DESC LIMIT " + EMPTY_STREAK_SCAN;
-		try (Connection conn = pool.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
-			ps.setTimestamp(1, Timestamp.from(since));
-			try (ResultSet rs = ps.executeQuery()) {
-				while (rs.next()) {
-					int hitCount = rs.getInt("hit_count");
-					if (first) {
-						lastIndexSize = rs.getInt("index_size");
-						first = false;
-					}
-					hits.add(hitCount);
-				}
-			}
+		List<MapperRows.RetrievalSignalRow> signals;
+		try {
+			// 按时间倒序取最近 N 条：这样"从最新往前数连续空命中"只需要扫一遍
+			signals = retrievalSignals.recentSignals(since, EMPTY_STREAK_SCAN);
 		}
-		catch (SQLException e) {
-			throw new RuntimeException("读检索信号失败（retrieval_call 表存在吗？它是第十三轮加的）", e);
+		catch (DataAccessException e) {
+			// retrieval_call 是第十三轮加的表 —— 老库里没有它时错误消息要指出这一点，
+			// 否则那个报错看起来像 SQL 写错了
+			throw new IllegalStateException(
+					"读检索信号失败（retrieval_call 表存在吗？它是第十三轮加的）", e);
 		}
 
+		int lastIndexSize = signals.isEmpty() || signals.get(0).indexSize() == null ? 0
+					: signals.get(0).indexSize();
 		int consecutive = 0;
-		for (int hitCount : hits) {
-			if (hitCount > 0) {
+		for (MapperRows.RetrievalSignalRow signal : signals) {
+			if (signal.hitCount() != null && signal.hitCount() > 0) {
 				break;
 			}
 			consecutive++;
@@ -280,17 +267,14 @@ public class JdbcAlertMetricsQuery implements AlertSnapshotQuery {
 
 	/** 窗口内的检索总次数（判据明细里要能看出"这 3 次是 3 次里的 3 次，还是 300 次里的 3 次"）。 */
 	private long countRetrievalCalls(Instant since) {
-		try (Connection conn = pool.getConnection();
-				PreparedStatement ps = conn.prepareStatement(
-						"SELECT COUNT(*) AS n FROM retrieval_call WHERE created_at >= ?")) {
-			ps.setTimestamp(1, Timestamp.from(since));
-			try (ResultSet rs = ps.executeQuery()) {
-				return rs.next() ? rs.getLong("n") : 0;
-			}
+		try {
+			return retrievalSignals.countSince(since);
 		}
-		catch (SQLException e) {
-			throw new RuntimeException("统计检索次数失败", e);
+		catch (DataAccessException e) {
+			throw new IllegalStateException("统计检索次数失败", e);
 		}
 	}
 
 }
+
+

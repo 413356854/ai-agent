@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  retrieval_call 上的告警信号。
+  这两条查询与 Agent trace 侧读的是同一张表，但问的问题不同：这里问"最近的趋势"，
+  trace 问"某一次运行看到了什么" —— 所以它们分在两个 mapper 里，而不是硬凑成一个。
+-->
+<mapper namespace="ai.agent.mapper.RetrievalSignalMapper">
+
+	<resultMap id="retrievalSignal" type="ai.agent.mapper.MapperRows$RetrievalSignalRow">
+		<constructor>
+			<arg column="hit_count" javaType="java.lang.Integer"/>
+			<arg column="index_size" javaType="java.lang.Integer"/>
+		</constructor>
+	</resultMap>
+
+	<!-- 按时间倒序：调用方只需要扫一遍就能数出"从最新往前连续几次空命中" -->
+	<select id="recentSignals" resultMap="retrievalSignal">
+		SELECT hit_count, index_size FROM retrieval_call
+		 WHERE created_at &gt;= #{since}
+		 ORDER BY created_at DESC LIMIT #{limit}
+	</select>
+
+	<select id="countSince" resultType="long">
+		SELECT COUNT(*) FROM retrieval_call WHERE created_at &gt;= #{since}
+	</select>
+
+</mapper>
+

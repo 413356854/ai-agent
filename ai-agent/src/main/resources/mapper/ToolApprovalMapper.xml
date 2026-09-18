@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  agent_tool_approval 的语句。
+
+  【映射为什么用 <constructor> 而不是 <result>】
+  ToolApprovalRecord 是不可变 record：没有无参构造器、没有 setter。
+  所以只能按构造器参数逐个映射。
+
+  【为什么每个 <arg> 都要写 javaType —— 这是实测踩出来的】
+  实测（Boot 4.1.1 + MyBatis 3.5.19）结论：
+    · 构造器映射中，MyBatis 用「已映射出来的值的运行时类型」去找匹配的构造器；
+    · 不写 javaType 时那个类型是 Object → 永远匹配不上 → 报
+      `NoSuchMethodException: <init>(...,java.lang.Object,...)`；
+    · 数值列写成基本类型（javaType="java.lang.Integer"）也匹配不上 —— 因为 MyBatis 传进去的是
+      包装类型 Integer，而 record 的规范构造器参数是 int，两者在构造器匹配里不是同一个类型；
+    · 所以**可空列一律用包装类型**，不可空列也写包装类型 + 一个 javaType 兜底。
+  这就是为什么下面既有 javaType="java.lang.Integer" 又有 javaType="java.lang.Integer"：
+  前者对应"这一列可能是 NULL"，后者对应"DDL 里有 NOT NULL 兜着"。
+-->
+<mapper namespace="ai.agent.mapper.ToolApprovalMapper">
+
+	<resultMap id="approvalRecord" type="ai.agent.entity.agent.approval.ToolApprovalRecord">
+		<constructor>
+			<idArg column="id" javaType="java.lang.String"/>
+			<arg column="run_id" javaType="java.lang.String"/>
+			<!-- 外部 MCP 链路的调用没有 step_index（DDL 里是 NULL）→ 包装类型 -->
+			<arg column="step_index" javaType="java.lang.Integer"/>
+			<arg column="tool_name" javaType="java.lang.String"/>
+			<arg column="arguments" javaType="java.lang.String"/>
+			<arg column="hints" javaType="java.lang.String"/>
+			<arg column="summary" javaType="java.lang.String"/>
+			<arg column="status" javaType="ai.agent.service.agent.approval.ApprovalStatus"/>
+			<arg column="requested_at" javaType="java.time.Instant" typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<!-- 待批时为 NULL；超时/作废时 decided_by 也是 NULL（没有"决定人"） -->
+			<arg column="decided_at" javaType="java.time.Instant" typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="decided_by" javaType="java.lang.String"/>
+			<arg column="decision_note" javaType="java.lang.String"/>
+		</constructor>
+	</resultMap>
+
+	<sql id="allColumns">
+		id, run_id, step_index, tool_name, arguments, hints, summary, status, requested_at,
+		decided_at, decided_by, decision_note
+	</sql>
+
+	<insert id="insert">
+		INSERT INTO agent_tool_approval
+		  (id, run_id, step_index, tool_name, arguments, hints, summary, status, requested_at)
+		VALUES (#{id}, #{runId}, #{stepIndex}, #{toolName}, #{arguments}, #{hints}, #{summary}, #{status},
+		        #{requestedAt})
+	</insert>
+
+	<!--
+	  人工决定与超时定时器会同时想写这一行，而**只有第一个写入才生效**：
+	  WHERE 里那个 `status = 'PENDING'` 就是全部的并发语义（受影响行数为 0 = 前提已过期）。
+	  写成无条件 UPDATE 的话，一条已被人工拒绝的记录会被随后到达的超时覆盖成 TIMED_OUT，
+	  审计时看起来像"压根没人处理过"。
+	-->
+	<update id="decide">
+		UPDATE agent_tool_approval
+		   SET status = #{status}, decided_at = #{decidedAt}, decided_by = #{decidedBy}, decision_note = #{note}
+		 WHERE id = #{id} AND status = 'PENDING'
+	</update>
+
+	<select id="findById" resultMap="approvalRecord">
+		SELECT <include refid="allColumns"/> FROM agent_tool_approval WHERE id = #{id}
+	</select>
+
+	<select id="pending" resultMap="approvalRecord">
+		SELECT <include refid="allColumns"/> FROM agent_tool_approval
+		 WHERE status = 'PENDING' ORDER BY requested_at
+	</select>
+
+	<select id="ofRun" resultMap="approvalRecord">
+		SELECT <include refid="allColumns"/> FROM agent_tool_approval
+		 WHERE run_id = #{runId} ORDER BY requested_at
+	</select>
+
+	<select id="recent" resultMap="approvalRecord">
+		SELECT <include refid="allColumns"/> FROM agent_tool_approval
+		 ORDER BY requested_at DESC LIMIT #{limit}
+	</select>
+
+</mapper>
+
+
+
+
+

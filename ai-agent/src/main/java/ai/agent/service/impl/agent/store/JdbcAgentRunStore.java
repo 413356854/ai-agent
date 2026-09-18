@@ -1,27 +1,22 @@
 package ai.agent.service.impl.agent.store;
 
-import ai.agent.service.agent.AgentStopReason;
 import ai.agent.entity.agent.store.AgentRunRecord;
+import ai.agent.entity.tool.RetrievalTrace;
+import ai.agent.mapper.AgentRunMapper;
+import ai.agent.mapper.MapperRows;
+import ai.agent.service.agent.AgentFailureCause;
+import ai.agent.service.agent.AgentStopReason;
 import ai.agent.service.agent.store.AgentRunStore;
 import ai.agent.service.agent.store.RunStatus;
-import ai.agent.config.AgentStoreProperties;
-import ai.agent.entity.tool.RetrievalTrace;
-import org.h2.jdbcx.JdbcConnectionPool;
+import org.apache.ibatis.session.ExecutorType;
+import org.apache.ibatis.session.SqlSession;
+import org.apache.ibatis.session.SqlSessionFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.core.io.ClassPathResource;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StreamUtils;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
-import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -30,91 +25,52 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * {@link AgentRunStore} 的 H2/MySQL 实现 —— <b>纯 JDBC，不依赖 Spring 的事务与异常翻译</b>。
+ * {@link AgentRunStore} 的存储实现 —— <b>SQL 在 {@link AgentRunMapper} 里，本类只管事务边界与语义</b>。
  *
- * <h2>为什么是"手写 java.sql"而不是 {@code JdbcTemplate}</h2>
- * 不是因为喜欢手写，而是因为<b>没有可用的那个依赖</b>（实测）：
- * 本地仓库里没有 spring-boot-starter-jdbc 的 4.1.1，spring-jdbc 只到 6.2.8，
- * 而本项目跑在 Spring Framework 7.0.9 上。硬引 6.x 是"编译可能过、运行期才炸"的组合。
- *
- * <p><b>代价必须写清楚</b>（不写就是假装没有）：
+ * <h2>迁移后这个类还剩什么（对照它以前的样子）</h2>
+ * 它原先 758 行，其中大部分是 `Connection` / `PreparedStatement` / `setXxx(位置, 值)` /
+ * `ResultSet` 映射的样板。现在：
  * <ul>
- *   <li>没有 {@code DataAccessException} 的异常翻译 → 这里自己包 {@link AgentStoreException}；</li>
- *   <li>没有 {@code @Transactional} → 事务手写（{@code setAutoCommit(false)} + 显式 commit/rollback）；</li>
- *   <li>没有 {@code DataSource} 自动配置 → 自己建 {@link JdbcConnectionPool}（H2 自带，不用再找依赖）。</li>
+ *   <li><b>两处手写事务改成了 {@code @Transactional}</b>（{@link #recordRetrieval}、
+ *       {@link #markInterruptedRuns}）。原先的写法是
+ *       {@code setAutoCommit(false)} + 显式 commit/rollback + finally 里
+ *       {@code setAutoCommit(true)} —— 最后那一步是**必须的**（它把连接还给池子时得是干净的），
+ *       而漏掉它不会报错，只会让下一个借到这条连接的线程**莫名处在手动事务里**。
+ *       交给 Spring 之后这一类"忘了复位"在结构上就不存在了；</li>
+ *   <li><b>池与建表不再由本类负责</b>：连接来自全应用唯一的 {@code DataSource}
+ *       （{@code AgentStoreConfig}），表由 {@code spring.sql.init} 建。
+ *       原先的 {@code pool()} 与 {@code @PreDestroy close()} 已删除 ——
+ *       删 {@code pool()} 的连带影响是"借池"那 5 个类改为注入各自的 mapper；</li>
+ *   <li>映射不再是手写的 {@code mapRun} / {@code mapStep}，而是 XML 里的
+ *       {@code <resultMap>}（仍在同一处声明列与字段的对应关系，只是可被工具检查）。</li>
  * </ul>
  *
- * <h2>什么时候该换掉这个类</h2>
- * spring-boot-starter-jdbc 4.x 可获取时。换的时候替换面**只有这一个文件**
- * （接口 {@link AgentRunStore} 不变），这类"可替换面收在一个文件里"的取舍，
- * 与阶段二把 pgvector 换成自研 {@code VectorIndex} 是同一种做法。
- *
- * <h2>关于"检查点写失败"这件事的取舍</h2>
+ * <h2>关于"检查点写失败"这件事的取舍（未变）</h2>
  * 写检查点失败时，本类<b>抛异常而不是吞掉</b>。理由是"静默失败"在这里的代价特别大：
  * 恢复能力是"进程被杀时才用到"的功能，如果写库一直在失败而没人知道，
- * 那么真正被杀的那一刻才会发现"没有检查点可恢复"——
- * 而那时已经丢掉了整次运行。宁可现在就把调用方打断。
+ * 那么真正被杀的那一刻才会发现"没有检查点可恢复"—— 而那时已经丢掉了整次运行。
+ * 宁可现在就把调用方打断。
  */
 @Component
 public class JdbcAgentRunStore implements AgentRunStore {
 
 	private static final Logger log = LoggerFactory.getLogger(JdbcAgentRunStore.class);
 
-	private final JdbcConnectionPool pool;
-
-	private final AgentStoreProperties properties;
-
-	public JdbcAgentRunStore(AgentStoreProperties properties) {
-		this.properties = properties;
-		this.pool = JdbcConnectionPool.create(properties.url(), properties.username(), properties.password());
-		initSchema();
-		log.info("Agent 状态库就绪：url={} node={}", properties.url(), properties.node());
-	}
+	private final AgentRunMapper mapper;
 
 	/**
-	 * 建表。
+	 * 只为一件小事存在：检索命中要<b>批量写</b>（一次检索 5~10 条）。
 	 *
-	 * <p>用 {@code CREATE TABLE IF NOT EXISTS}（DDL 里写的）而不是"先查元数据再决定"：
-	 * 幂等，重复启动不会报错，也不需要维护一个版本表 —— 现阶段表结构还很年轻，
-	 * 真正的迁移机制（Flyway/Liquibase）等到有"线上已有数据要保"的需求时再引。
+	 * <p>不把批处理藏进 mapper：MyBatis 的批处理是**会话的执行模式**，不是另一条 SQL。
+	 * 开一个 {@code ExecutorType.BATCH} 的会话、逐条调 mapper、最后 flush ——
+	 * 这条路径写在下面 {@link #recordRetrieval} 里，读代码时看得见。
 	 */
-	private void initSchema() {
-		String ddl = readSchema();
-		try (Connection conn = pool.getConnection(); Statement st = conn.createStatement()) {
-			// H2 允许一次执行多条语句吗？不允许 —— 必须按分号切开逐条执行。
-			// 这里踩过：直接把整个 .sql 丢给 execute() 会报语法错误，
-			// 而错误信息指向第二条语句的位置，看起来像"我的 SQL 写错了"
-			for (String statement : ddl.split(";")) {
-				String sql = stripComments(statement).strip();
-				if (!sql.isEmpty()) {
-					st.execute(sql);
-				}
-			}
-		}
-		catch (SQLException e) {
-			throw new AgentStoreException("初始化 Agent 状态库失败（url=" + properties.url() + "）", e);
-		}
-	}
+	private final SqlSessionFactory sqlSessionFactory;
 
-	/** 去掉一行里的 {@code --} 注释（DDL 里写了大量注释解释每一列，不能把它们当 SQL 执行）。 */
-	private static String stripComments(String sql) {
-		StringBuilder sb = new StringBuilder();
-		for (String line : sql.split("\n")) {
-			int idx = line.indexOf("--");
-			sb.append(idx >= 0 ? line.substring(0, idx) : line).append('\n');
-		}
-		return sb.toString();
-	}
-
-	private static String readSchema() {
-		try {
-			return StreamUtils.copyToString(new ClassPathResource("db/agent-schema.sql").getInputStream(),
-					StandardCharsets.UTF_8);
-		}
-		catch (IOException e) {
-			// 建表脚本读不到就别继续：一个"表不存在"的运行期错误会伪装成 SQL 写错
-			throw new UncheckedIOException("读不到 db/agent-schema.sql", e);
-		}
+	public JdbcAgentRunStore(AgentRunMapper mapper, SqlSessionFactory sqlSessionFactory) {
+		this.mapper = mapper;
+		this.sqlSessionFactory = sqlSessionFactory;
+		log.info("Agent 状态库就绪（表由 spring.sql.init 建好，连接来自全应用唯一的 DataSource）");
 	}
 
 	// ------------------------------------------------------------------
@@ -123,71 +79,26 @@ public class JdbcAgentRunStore implements AgentRunStore {
 
 	@Override
 	public void start(Start start) {
-		try (Connection conn = pool.getConnection();
-				PreparedStatement ps = conn.prepareStatement(
-						"INSERT INTO agent_run (id, question, status, node, intent, conversation_id, tenant_id) "
-								+ "VALUES (?, ?, ?, ?, ?, ?, ?)")) {
-			ps.setString(1, start.runId());
-			ps.setString(2, start.question());
-			ps.setString(3, RunStatus.RUNNING.name());
-			ps.setString(4, start.node());
-			// 归因键、会话 id、租户的空白值已在 Start 的紧凑构造器里归一成 NULL，
-			// 所以这里直接写 —— 不在两处判 blank：**归一化只能有一个地方**，
-			// 两处判的话，"哪一处是权威"会在下一次改动时变成一个问题
-			ps.setString(5, start.intent());
-			ps.setString(6, start.conversationId());
-			// 【阶段四第 6 件】租户与归因键**分别写进两列**，绝不拼成一个字符串：
-			// 拼起来之后"按租户看一共多少"要靠 LIKE 前缀匹配，而一次拼写不一致
-			// 就会让同一件事裂成两行 —— 且两行加起来才是真相，这种事没人会去加
-			ps.setString(7, start.tenantId());
-			ps.executeUpdate();
+		try {
+			mapper.startRun(start.runId(), start.question(), start.node(), start.intent(), start.conversationId(),
+					start.tenantId());
 		}
-		catch (SQLException e) {
+		catch (DataAccessException e) {
 			throw new AgentStoreException("开一次 Agent 运行失败 runId=" + start.runId(), e);
 		}
 	}
 
 	@Override
 	public void checkpoint(AgentRunRecord.StepCheckpoint checkpoint) {
-		String sql = """
-				INSERT INTO agent_step
-				  (run_id, step_index, thought_text, prompt_tokens, completion_tokens, cache_read_tokens,
-				   model_name, prompt_fingerprint, canary_variant, elapsed_ms, transcript)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-				ON DUPLICATE KEY UPDATE
-				  thought_text = VALUES(thought_text),
-				  prompt_tokens = VALUES(prompt_tokens),
-				  completion_tokens = VALUES(completion_tokens),
-				  cache_read_tokens = VALUES(cache_read_tokens),
-				  model_name = VALUES(model_name),
-				  prompt_fingerprint = VALUES(prompt_fingerprint),
-				  canary_variant = VALUES(canary_variant),
-				  elapsed_ms = VALUES(elapsed_ms),
-				  transcript = VALUES(transcript)
-				""";
-		try (Connection conn = pool.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
-			ps.setString(1, checkpoint.runId());
-			ps.setInt(2, checkpoint.stepIndex());
-			ps.setString(3, checkpoint.thoughtText());
-			ps.setInt(4, checkpoint.promptTokens());
-			ps.setInt(5, checkpoint.completionTokens());
-			ps.setInt(6, checkpoint.cacheReadTokens());
-			// 模型名 NOT NULL DEFAULT ''：空串是"取不到名字"，与"某个叫空串的模型"不会混淆
-			// （后者不是一个合法的模型名）。存 NULL 则要多一处 null 判断，收益为零
-			ps.setString(7, checkpoint.modelName());
-			// 提示词指纹同理：空串 = 库里读不到那一版（老数据 / 提示词服务不可用），
-			// 与"某个叫空串的版本"不会混淆（后者不是一个合法指纹）。
-			// 归一化已经在 StepCheckpoint 的紧凑构造器里做过，这里不再判 null
-			ps.setString(8, checkpoint.promptFingerprint());
-			// 灰度分组：空串 = 没参与这次实验（与 'stable' 严格区分，见 AgentRunRecord 的注释）
-			ps.setString(9, checkpoint.canaryVariant());
-			ps.setLong(10, checkpoint.elapsedMs());
-			ps.setString(11, checkpoint.transcriptJson());
-			ps.executeUpdate();
+		try {
+			mapper.saveCheckpoint(checkpoint.runId(), checkpoint.stepIndex(), checkpoint.thoughtText(),
+					checkpoint.promptTokens(), checkpoint.completionTokens(), checkpoint.cacheReadTokens(),
+					// 这三个空串由 StepCheckpoint 的紧凑构造器归一过（DDL 里是 NOT NULL DEFAULT ''）：
+					// 空串是"取不到"，与"某个叫空串的模型/版本/分组"不会混淆。存 NULL 则要多一处判断
+					checkpoint.modelName(), checkpoint.promptFingerprint(), checkpoint.canaryVariant(),
+					checkpoint.elapsedMs(), checkpoint.transcriptJson());
 		}
-		catch (SQLException e) {
-			// 抛而不是吞 —— 理由见类注释：恢复是"被杀时才用到"的能力，
-			// 写库一直失败而没人知道，代价是事发时整次运行都丢了
+		catch (DataAccessException e) {
 			throw new AgentStoreException("写检查点失败 runId=" + checkpoint.runId() + " step="
 					+ checkpoint.stepIndex(), e);
 		}
@@ -195,33 +106,17 @@ public class JdbcAgentRunStore implements AgentRunStore {
 
 	@Override
 	public void recordToolCall(AgentRunRecord.ToolCallRecord record) {
-		String sql = """
-				INSERT INTO agent_tool_invocation
-				  (run_id, step_index, call_index, call_id, tool_name, arguments, stage, feedback, elapsed_ms)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-				ON DUPLICATE KEY UPDATE
-				  call_id = VALUES(call_id), tool_name = VALUES(tool_name), arguments = VALUES(arguments),
-				  stage = VALUES(stage), feedback = VALUES(feedback), elapsed_ms = VALUES(elapsed_ms)
-				""";
-		try (Connection conn = pool.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
-			ps.setString(1, record.runId());
-			ps.setInt(2, record.stepIndex());
-			ps.setInt(3, record.callIndex());
-			ps.setString(4, record.callId());
-			ps.setString(5, record.toolName());
-			ps.setString(6, record.arguments());
-			ps.setString(7, record.stage());
-			ps.setString(8, record.feedback());
-			ps.setLong(9, record.elapsedMs());
-			ps.executeUpdate();
+		try {
+			mapper.saveToolCall(record.runId(), record.stepIndex(), record.callIndex(), record.callId(),
+					record.toolName(), record.arguments(), record.stage(), record.feedback(), record.elapsedMs());
 		}
-		catch (SQLException e) {
+		catch (DataAccessException e) {
 			throw new AgentStoreException("记工具调用失败 runId=" + record.runId() + " step=" + record.stepIndex(), e);
 		}
 	}
 
 	/**
-	 * 写一次检索的明细：<b>一行调用 + N 行命中</b>。
+	 * 写一次检索的明细：<b>一行调用 + N 行命中</b>，全在一个事务里。
 	 *
 	 * <h2>为什么必须在一个事务里</h2>
 	 * 两半各自都写得进去，所以"分开写"在本地永远看不出问题 ——
@@ -234,288 +129,72 @@ public class JdbcAgentRunStore implements AgentRunStore {
 	 *       于是"语料里没有"与"写库写丢了一半"分不开。</li>
 	 * </ul>
 	 * 后者尤其危险，因为它是**静默**的：0 条命中本来就是一个正常结果。
+	 *
+	 * <h2>为什么命中走批处理会话</h2>
+	 * 一次检索默认 5 条、上限 10 条。这个批会话会加入上面那个事务
+	 * （MyBatis-Spring 的事务同步），所以 flush 出去的语句仍然在同一个事务里 ——
+	 * 出异常时一起回滚，不会留下"调用行没了、命中行还在"的半截状态。
 	 */
 	@Override
+	@Transactional
 	public void recordRetrieval(AgentRunRecord.RetrievalRecord record) {
-		String callSql = """
-				INSERT INTO retrieval_call
-				  (run_id, step_index, call_index, tool_name, query, top_k, hit_count, index_size, elapsed_ms)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-				ON DUPLICATE KEY UPDATE
-				  tool_name = VALUES(tool_name), query = VALUES(query), top_k = VALUES(top_k),
-				  hit_count = VALUES(hit_count), index_size = VALUES(index_size), elapsed_ms = VALUES(elapsed_ms)
-				""";
-		String hitSql = """
-				INSERT INTO retrieval_hit
-				  (run_id, step_index, call_index, hit_rank, chunk_id, document_id, breadcrumb,
-				   token_count, score, excerpt)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-				ON DUPLICATE KEY UPDATE
-				  chunk_id = VALUES(chunk_id), document_id = VALUES(document_id),
-				  breadcrumb = VALUES(breadcrumb), token_count = VALUES(token_count),
-				  score = VALUES(score), excerpt = VALUES(excerpt)
-				""";
 		RetrievalTrace trace = record.trace();
-		try (Connection conn = pool.getConnection()) {
-			conn.setAutoCommit(false);
-			try {
-				try (PreparedStatement ps = conn.prepareStatement(callSql)) {
-					ps.setString(1, record.runId());
-					ps.setInt(2, record.stepIndex());
-					ps.setInt(3, record.callIndex());
-					// 工具名 NOT NULL DEFAULT ''：空串是"取不到名字"，与"某把叫空串的工具"不会混淆
-					// （后者不是一个合法工具名）。存 NULL 则要多一处 null 判断，收益为零
-					ps.setString(4, record.toolName() == null ? "" : record.toolName());
-					ps.setString(5, trace.query());
-					ps.setInt(6, trace.topK());
-					ps.setInt(7, trace.hitCount());
-					ps.setInt(8, trace.indexSize());
-					// 落的是**检索自己**的耗时，不是整个工具调用的耗时。
-					// 后者含参数解析与闸门排队，而"检索花了多久"是另一个问题
-					// （工具调用的那个数已经在 agent_tool_invocation 里了，两处给同一个数没用）
-					ps.setLong(9, trace.elapsedMs());
-					ps.executeUpdate();
-				}
-				try (PreparedStatement ps = conn.prepareStatement(hitSql)) {
-					for (RetrievalTrace.Hit hit : trace.hits()) {
-						ps.setString(1, record.runId());
-						ps.setInt(2, record.stepIndex());
-						ps.setInt(3, record.callIndex());
-						ps.setInt(4, hit.rank());
-						ps.setString(5, hit.chunkId());
-						ps.setString(6, hit.documentId());
-						ps.setString(7, hit.breadcrumb());
-						ps.setInt(8, hit.tokenCount());
-						ps.setDouble(9, hit.score());
-						ps.setString(10, hit.excerpt());
-						ps.addBatch();
-					}
-					// 0 条命中时不执行 batch：`executeBatch` 在空 batch 上是合法的（返回空数组），
-					// 但显式跳过能让"这次检索真的没有命中"这件事在代码里也读得出来
-					if (trace.hitCount() > 0) {
-						ps.executeBatch();
-					}
-				}
-				conn.commit();
-			}
-			catch (SQLException e) {
-				conn.rollback();
-				throw e;
-			}
-			finally {
-				conn.setAutoCommit(true);
+		// 工具名 NOT NULL DEFAULT ''：空串是"取不到名字"，与"某把叫空串的工具"不会混淆
+		String toolName = record.toolName() == null ? "" : record.toolName();
+		try {
+			mapper.saveRetrievalCall(record.runId(), record.stepIndex(), record.callIndex(), toolName,
+					trace.query(), trace.topK(), trace.hitCount(), trace.indexSize(),
+					// 落的是**检索自己**的耗时，不是整个工具调用的耗时：后者含参数解析与闸门排队，
+					// 而"检索花了多久"是另一个问题（工具调用那个数已经在 agent_tool_invocation 里了）
+					trace.elapsedMs());
+			if (trace.hitCount() > 0) {
+				// 0 条命中时不执行批：`flushStatements` 在空批上是合法的（返回空列表），
+				// 但显式跳过能让"这次检索真的没有命中"这件事在代码里也读得出来
+				writeHitsInBatch(record, trace, toolName);
 			}
 		}
-		catch (SQLException e) {
+		catch (DataAccessException e) {
 			throw new AgentStoreException("记检索明细失败 runId=" + record.runId() + " step=" + record.stepIndex()
 					+ " call=" + record.callIndex(), e);
 		}
 	}
 
-	@Override
-	public void updateProgress(String runId, int totalTokens, int toolCallCount, long elapsedMs) {		try (Connection conn = pool.getConnection();
-				PreparedStatement ps = conn.prepareStatement(
-						"UPDATE agent_run SET total_tokens = ?, tool_calls = ?, elapsed_ms = ? WHERE id = ?")) {
-			ps.setInt(1, totalTokens);
-			ps.setInt(2, toolCallCount);
-			ps.setLong(3, elapsedMs);
-			ps.setString(4, runId);
-			ps.executeUpdate();
+	private void writeHitsInBatch(AgentRunRecord.RetrievalRecord record, RetrievalTrace trace, String toolName) {
+		try (SqlSession batch = sqlSessionFactory.openSession(ExecutorType.BATCH)) {
+			AgentRunMapper batchMapper = batch.getMapper(AgentRunMapper.class);
+			for (RetrievalTrace.Hit hit : trace.hits()) {
+				batchMapper.saveRetrievalHit(record.runId(), record.stepIndex(), record.callIndex(), hit.rank(),
+						hit.chunkId(), hit.documentId(), hit.breadcrumb(), hit.tokenCount(), hit.score(),
+						hit.excerpt());
+			}
+			batch.flushStatements();
 		}
-		catch (SQLException e) {
+	}
+
+	@Override
+	public void updateProgress(String runId, int totalTokens, int toolCallCount, long elapsedMs) {
+		try {
+			mapper.updateProgress(runId, totalTokens, toolCallCount, elapsedMs);
+		}
+		catch (DataAccessException e) {
 			throw new AgentStoreException("更新进度失败 runId=" + runId, e);
 		}
 	}
 
 	@Override
 	public void finish(String runId, RunStatus status, AgentStopReason stopReason, String finalAnswer, int totalTokens,
-			int toolCallCount, long elapsedMs, String error, ai.agent.service.agent.AgentFailureCause failureCause) {
-		String sql = """
-				UPDATE agent_run
-				   SET status = ?, stop_reason = ?, final_answer = ?, total_tokens = ?,
-				       tool_calls = ?, elapsed_ms = ?, error = ?, failure_cause = ?
-				 WHERE id = ?
-				""";
-		try (Connection conn = pool.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
-			ps.setString(1, status.name());
-			ps.setString(2, stopReason == null ? null : stopReason.name());
-			ps.setString(3, finalAnswer);
-			ps.setInt(4, totalTokens);
-			ps.setInt(5, toolCallCount);
-			ps.setLong(6, elapsedMs);
-			ps.setString(7, error);
-			ps.setString(8, failureCause == null ? null : failureCause.name());
-			ps.setString(9, runId);
-			int updated = ps.executeUpdate();
+			int toolCallCount, long elapsedMs, String error, AgentFailureCause failureCause) {
+		try {
+			int updated = mapper.finishRun(runId, status, stopReason, finalAnswer, totalTokens, toolCallCount,
+					elapsedMs, error, failureCause);
 			if (updated == 0) {
 				// 收尾一个不存在的运行 = 有人在别处删了它，或者 runId 拼错了。
 				// 静默返回会让"状态一直是 RUNNING"这件事永远查不出来
 				throw new AgentStoreException("收尾失败：找不到运行 runId=" + runId);
 			}
 		}
-		catch (SQLException e) {
+		catch (DataAccessException e) {
 			throw new AgentStoreException("收尾失败 runId=" + runId, e);
-		}
-	}
-
-	// ------------------------------------------------------------------
-	//  读
-	// ------------------------------------------------------------------
-
-	@Override
-	public Optional<AgentRunRecord> find(String runId) {
-		try (Connection conn = pool.getConnection();
-				PreparedStatement ps = conn.prepareStatement("SELECT * FROM agent_run WHERE id = ?")) {
-			ps.setString(1, runId);
-			try (ResultSet rs = ps.executeQuery()) {
-				return rs.next() ? Optional.of(mapRun(rs)) : Optional.empty();
-			}
-		}
-		catch (SQLException e) {
-			throw new AgentStoreException("读运行失败 runId=" + runId, e);
-		}
-	}
-
-	@Override
-	public List<AgentRunRecord.ToolCallRecord> toolCallsOf(String runId) {
-		String sql = """
-				SELECT run_id, step_index, call_index, call_id, tool_name, arguments, stage, feedback, elapsed_ms
-				  FROM agent_tool_invocation
-				 WHERE run_id = ?
-				 ORDER BY step_index, call_index
-				""";
-		try (Connection conn = pool.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
-			ps.setString(1, runId);
-			try (ResultSet rs = ps.executeQuery()) {
-				List<AgentRunRecord.ToolCallRecord> records = new ArrayList<>();
-				while (rs.next()) {
-					records.add(new AgentRunRecord.ToolCallRecord(rs.getString("run_id"), rs.getInt("step_index"),
-							rs.getInt("call_index"), rs.getString("call_id"), rs.getString("tool_name"),
-							rs.getString("arguments"), rs.getString("stage"), rs.getString("feedback"),
-							rs.getLong("elapsed_ms")));
-				}
-				return List.copyOf(records);
-			}
-		}
-		catch (SQLException e) {
-			throw new AgentStoreException("读工具调用失败 runId=" + runId, e);
-		}
-	}
-
-	/**
-	 * 读一次运行的全部检索明细，<b>按调用归组</b>。
-	 *
-	 * <h2>为什么用两条查询 + 内存里归组，而不是一条 JOIN</h2>
-	 * 一条 {@code LEFT JOIN} 看起来更"省一次往返"，但它有一个安静的陷阱：
-	 * <b>调用行会被命中的条数放大</b>（一次 5 条命中的检索会变成 5 行），
-	 * 于是"这次运行检索了几次"要写成 {@code COUNT(DISTINCT ...)} ——
-	 * 而任何一处漏了 DISTINCT，统计就把"检索 3 次"报成"检索 11 次"，
-	 * 且数字看起来完全合理。成本看板那条"JOIN 不能把 token 放大"是同一个坑。
-	 *
-	 * <p>两条查询的总行数是 {@code 调用数 + 命中数}，量级很小（一次运行几十行），
-	 * 所以这个选择在数据量上也没有代价。
-	 */
-	@Override
-	public List<AgentRunRecord.RetrievalRecord> retrievalsOf(String runId) {
-		String callSql = """
-				SELECT step_index, call_index, tool_name, query, top_k, index_size, elapsed_ms
-				  FROM retrieval_call
-				 WHERE run_id = ?
-				 ORDER BY step_index, call_index
-				""";
-		// ⚠️ 命中那一侧**查不出"哪把工具发起的"**：retrieval_hit 的主键里没有 tool_name。
-		// 所以工具名从 retrieval_call 那一侧取，join 的键是 (step_index, call_index)。
-		// 这里用 JOIN 把工具名一次带出来，而不是再查一遍 agent_tool_invocation ——
-		// retrieval_call 本来就是"哪把工具在检索"的权威来源（写入时由调用方给出）
-		String hitSql = """
-				SELECT h.step_index, h.call_index, h.hit_rank, h.chunk_id, h.document_id, h.breadcrumb,
-				       h.token_count, h.score, h.excerpt, c.tool_name
-				  FROM retrieval_hit h
-				  JOIN retrieval_call c
-				    ON c.run_id = h.run_id AND c.step_index = h.step_index AND c.call_index = h.call_index
-				 WHERE h.run_id = ?
-				 ORDER BY h.step_index, h.call_index, h.hit_rank
-				""";
-		try (Connection conn = pool.getConnection()) {
-			// (step, call) → 命中列表
-			Map<String, List<RetrievalTrace.Hit>> hitsByCall = new LinkedHashMap<>();
-			try (PreparedStatement ps = conn.prepareStatement(hitSql)) {
-				ps.setString(1, runId);
-				try (ResultSet rs = ps.executeQuery()) {
-					while (rs.next()) {
-						String key = rs.getInt("step_index") + ":" + rs.getInt("call_index");
-						hitsByCall.computeIfAbsent(key, k -> new ArrayList<>())
-								.add(new RetrievalTrace.Hit(rs.getInt("hit_rank"), rs.getString("chunk_id"),
-										rs.getString("document_id"), rs.getString("breadcrumb"),
-										rs.getInt("token_count"), rs.getDouble("score"), rs.getString("excerpt")));
-					}
-				}
-			}
-
-			List<AgentRunRecord.RetrievalRecord> out = new ArrayList<>();
-			try (PreparedStatement ps = conn.prepareStatement(callSql)) {
-				ps.setString(1, runId);
-				try (ResultSet rs = ps.executeQuery()) {
-					while (rs.next()) {
-						int stepIndex = rs.getInt("step_index");
-						int callIndex = rs.getInt("call_index");
-						List<RetrievalTrace.Hit> hits = hitsByCall.getOrDefault(stepIndex + ":" + callIndex,
-								List.of());
-						out.add(new AgentRunRecord.RetrievalRecord(runId, stepIndex, callIndex,
-								rs.getString("tool_name"), new RetrievalTrace(rs.getString("query"),
-										rs.getInt("top_k"), rs.getInt("index_size"), hits, rs.getLong("elapsed_ms"))));
-					}
-				}
-			}
-			return List.copyOf(out);
-		}
-		catch (SQLException e) {
-			throw new AgentStoreException("读检索明细失败 runId=" + runId, e);
-		}
-	}
-
-	@Override
-	public Optional<AgentRunRecord.StepCheckpoint> latestCheckpoint(String runId) {
-		String sql = """
-				SELECT run_id, step_index, thought_text, prompt_tokens, completion_tokens, cache_read_tokens,
-				       model_name, prompt_fingerprint, canary_variant, elapsed_ms, transcript
-				  FROM agent_step
-				 WHERE run_id = ?
-				 ORDER BY step_index DESC
-				 LIMIT 1
-				""";
-		try (Connection conn = pool.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
-			ps.setString(1, runId);
-			try (ResultSet rs = ps.executeQuery()) {
-				return rs.next() ? Optional.of(mapStep(rs)) : Optional.empty();
-			}
-		}
-		catch (SQLException e) {
-			throw new AgentStoreException("读检查点失败 runId=" + runId, e);
-		}
-	}
-
-	@Override
-	public List<AgentRunRecord.StepCheckpoint> stepsOf(String runId) {
-		String sql = """
-				SELECT run_id, step_index, thought_text, prompt_tokens, completion_tokens, cache_read_tokens,
-				       model_name, prompt_fingerprint, canary_variant, elapsed_ms, transcript
-				  FROM agent_step
-				 WHERE run_id = ?
-				 ORDER BY step_index
-				""";
-		try (Connection conn = pool.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
-			ps.setString(1, runId);
-			try (ResultSet rs = ps.executeQuery()) {
-				List<AgentRunRecord.StepCheckpoint> steps = new ArrayList<>();
-				while (rs.next()) {
-					steps.add(mapStep(rs));
-				}
-				return List.copyOf(steps);
-			}
-		}
-		catch (SQLException e) {
-			throw new AgentStoreException("读步骤失败 runId=" + runId, e);
 		}
 	}
 
@@ -528,64 +207,46 @@ public class JdbcAgentRunStore implements AgentRunStore {
 	 * 查完之后各自去改，两边都会"认领"到同一批 —— 然后同一次任务被跑两遍，
 	 * 工具被执行两遍。用"改的时候带上 {@code status='RUNNING'} 条件"来保证只有一个赢家
 	 * （乐观锁），这是没有行锁时最省事也最可靠的做法。
+	 *
+	 * <p>认领成功的那条记录是**从候选记录派生的**（只换状态与 updatedAt），
+	 * 而不是重新拼一遍字段：拼字段的写法每加一列都要在这里补一次，
+	 * 而漏掉一个同类型的 String（tenantId 与 intent 之间）**编译得过**，
+	 * 后果是被认领的运行丢掉租户、成本从"某个租户"悄悄挪到"未标注租户"。
 	 */
 	@Override
+	@Transactional
 	public List<AgentRunRecord> markInterruptedRuns(String node) {
-		String select = "SELECT * FROM agent_run WHERE status = ? AND node = ? ORDER BY updated_at";
-		String claim = "UPDATE agent_run SET status = ? WHERE id = ? AND status = ?";
-		List<AgentRunRecord> claimed = new ArrayList<>();
-
-		try (Connection conn = pool.getConnection()) {
-			conn.setAutoCommit(false);
-			try {
-				List<AgentRunRecord> candidates = new ArrayList<>();
-				try (PreparedStatement ps = conn.prepareStatement(select)) {
-					ps.setString(1, RunStatus.RUNNING.name());
-					ps.setString(2, node);
-					try (ResultSet rs = ps.executeQuery()) {
-						while (rs.next()) {
-							candidates.add(mapRun(rs));
-						}
-					}
-				}
-				for (AgentRunRecord candidate : candidates) {
-					try (PreparedStatement ps = conn.prepareStatement(claim)) {
-						ps.setString(1, RunStatus.INTERRUPTED.name());
-						ps.setString(2, candidate.id());
-						ps.setString(3, RunStatus.RUNNING.name());
-						if (ps.executeUpdate() == 1) {
-							// 【这里手工重建一条记录，所以每加一个字段都要在这里补一次】
-							// transcript 那一批（新增字段落在末尾）用的就是这套做法。
-							// ★ 它的失败方式是**编译不过**，而不是静默丢字段 —— 这正是
-							// "位置参数多的构造器"在这里反而安全的原因：漏了编译器会拦。
-							// 而 tenantId 漏了的话，被认领的运行会**丢掉租户**，
-							// 于是它的成本从"某个租户"悄悄挪到"未标注租户"那一行
-							claimed.add(new AgentRunRecord(candidate.id(), candidate.question(),
-									RunStatus.INTERRUPTED, candidate.stopReason(), candidate.finalAnswer(),
-									candidate.totalTokens(), candidate.toolCallCount(), candidate.elapsedMs(),
-									candidate.node(), candidate.error(), candidate.createdAt(), Instant.now(),
-									candidate.failureCause(), candidate.intent(), candidate.conversationId(),
-									candidate.tenantId()));
-						}
-						else {
-							// 没抢到：说明另一个实例（或另一次启动）先改了它。
-							// 这不是错误，但必须留痕 —— 否则"为什么这次没恢复"永远查不出来
-							log.info("未认领运行 {}（已被其它实例改为非 RUNNING）", candidate.id());
-						}
-					}
-				}
-				conn.commit();
-			}
-			catch (SQLException e) {
-				conn.rollback();
-				throw e;
-			}
-			finally {
-				conn.setAutoCommit(true);
-			}
+		List<MapperRows.AgentRunRow> candidates;
+		try {
+			// 候选集先按"数据库行"取回来（mapper 只认行类型），逐条转换到 domain 再判断
+			candidates = mapper.runsByStatusAndNode(RunStatus.RUNNING, node);
 		}
-		catch (SQLException e) {
+		catch (DataAccessException e) {
 			throw new AgentStoreException("认领未完成运行失败 node=" + node, e);
+		}
+
+		List<AgentRunRecord> claimed = new ArrayList<>();
+		for (MapperRows.AgentRunRow candidateRow : candidates) {
+			AgentRunRecord candidate = candidateRow.toDomain();
+			int updated;
+			try {
+				updated = mapper.claimInterrupted(candidate.id(), RunStatus.INTERRUPTED, RunStatus.RUNNING);
+			}
+			catch (DataAccessException e) {
+				throw new AgentStoreException("认领未完成运行失败 node=" + node + " runId=" + candidate.id(), e);
+			}
+			if (updated == 1) {
+				claimed.add(new AgentRunRecord(candidate.id(), candidate.question(), RunStatus.INTERRUPTED,
+						candidate.stopReason(), candidate.finalAnswer(), candidate.totalTokens(),
+						candidate.toolCallCount(), candidate.elapsedMs(), candidate.node(), candidate.error(),
+						candidate.createdAt(), Instant.now(), candidate.failureCause(), candidate.intent(),
+						candidate.conversationId(), candidate.tenantId()));
+			}
+			else {
+				// 没抢到：说明另一个实例（或另一次启动）先改了它。
+				// 这不是错误，但必须留痕 —— 否则"为什么这次没恢复"永远查不出来
+				log.info("未认领运行 {}（已被其它实例改为非 RUNNING）", candidate.id());
+			}
 		}
 
 		if (!claimed.isEmpty()) {
@@ -597,54 +258,93 @@ public class JdbcAgentRunStore implements AgentRunStore {
 
 	@Override
 	public void markInterruptedForTesting(String runId) {
-		try (Connection conn = pool.getConnection();
-				PreparedStatement ps = conn.prepareStatement(
-						"UPDATE agent_run SET status = ? WHERE id = ?")) {
-			ps.setString(1, RunStatus.RUNNING.name());
-			ps.setString(2, runId);
-			ps.executeUpdate();
+		try {
+			mapper.setRunStatus(runId, RunStatus.RUNNING);
 		}
-		catch (SQLException e) {
+		catch (DataAccessException e) {
 			throw new AgentStoreException("标记测试状态失败 runId=" + runId, e);
 		}
 	}
 
 	@Override
 	public void replaceStepTranscriptForTesting(String runId, int stepIndex, String transcriptJson) {
-		try (Connection conn = pool.getConnection();
-				PreparedStatement ps = conn.prepareStatement(
-						"UPDATE agent_step SET transcript = ? WHERE run_id = ? AND step_index = ?")) {
-			ps.setString(1, transcriptJson);
-			ps.setString(2, runId);
-			ps.setInt(3, stepIndex);
-			int updated = ps.executeUpdate();
+		try {
+			int updated = mapper.replaceTranscript(runId, stepIndex, transcriptJson);
 			if (updated == 0) {
 				throw new AgentStoreException(
 						"要替换的检查点不存在 runId=" + runId + " step=" + stepIndex + "（先让它跑到那一步）");
 			}
 		}
-		catch (SQLException e) {
+		catch (DataAccessException e) {
 			throw new AgentStoreException("替换检查点失败 runId=" + runId, e);
 		}
 	}
 
+	// ------------------------------------------------------------------
+	//  读
+	// ------------------------------------------------------------------
+
+	@Override
+	public Optional<AgentRunRecord> find(String runId) {
+		MapperRows.AgentRunRow row = read(() -> mapper.findRun(runId), "读运行失败 runId=" + runId);
+		return row == null ? Optional.empty() : Optional.of(row.toDomain());
+	}
+
+	@Override
+	public List<AgentRunRecord.ToolCallRecord> toolCallsOf(String runId) {
+		return read(() -> mapper.toolCallsOf(runId).stream().map(MapperRows.ToolCallRow::toDomain).toList(),
+				"读工具调用失败 runId=" + runId);
+	}
+
+	/**
+	 * 读一次运行的全部检索明细，<b>按调用归组</b>。
+	 *
+	 * <h2>为什么用两条查询 + 内存里归组，而不是一条 JOIN</h2>
+	 * 理由见 {@code AgentRunMapper.retrievalHitsOf} 的注释（调用行会被命中的条数放大）。
+	 * 两条查询的总行数是 {@code 调用数 + 命中数}，量级很小（一次运行几十行），
+	 * 所以这个选择在数据量上也没有代价。
+	 */
+	@Override
+	public List<AgentRunRecord.RetrievalRecord> retrievalsOf(String runId) {
+		List<MapperRows.RetrievalHitRow> hitRows = read(() -> mapper.retrievalHitsOf(runId),
+				"读检索明细失败 runId=" + runId);
+		List<MapperRows.RetrievalCallRow> callRows = read(() -> mapper.retrievalCallsOf(runId),
+				"读检索明细失败 runId=" + runId);
+
+		// (step, call) → 命中列表
+		Map<String, List<RetrievalTrace.Hit>> hitsByCall = new LinkedHashMap<>();
+		for (MapperRows.RetrievalHitRow row : hitRows) {
+			hitsByCall.computeIfAbsent(row.stepIndex() + ":" + row.callIndex(), k -> new ArrayList<>())
+					.add(row.toHit());
+		}
+
+		List<AgentRunRecord.RetrievalRecord> out = new ArrayList<>();
+		for (MapperRows.RetrievalCallRow row : callRows) {
+			List<RetrievalTrace.Hit> hits = hitsByCall.getOrDefault(row.stepIndex() + ":" + row.callIndex(),
+					List.of());
+			out.add(new AgentRunRecord.RetrievalRecord(runId, row.stepIndex(), row.callIndex(), row.toolName(),
+					new RetrievalTrace(row.query(), row.topK(), row.indexSize(), hits, row.elapsedMs())));
+		}
+		return List.copyOf(out);
+	}
+
+	@Override
+	public Optional<AgentRunRecord.StepCheckpoint> latestCheckpoint(String runId) {
+		MapperRows.StepCheckpointRow row = read(() -> mapper.latestCheckpoint(runId),
+				"读检查点失败 runId=" + runId);
+		return row == null ? Optional.empty() : Optional.of(row.toDomain());
+	}
+
+	@Override
+	public List<AgentRunRecord.StepCheckpoint> stepsOf(String runId) {
+		return read(() -> mapper.stepsOf(runId).stream().map(MapperRows.StepCheckpointRow::toDomain).toList(),
+				"读步骤失败 runId=" + runId);
+	}
+
 	@Override
 	public List<AgentRunRecord> recentRuns(int limit) {
-		try (Connection conn = pool.getConnection();
-				PreparedStatement ps = conn.prepareStatement(
-						"SELECT * FROM agent_run ORDER BY created_at DESC, id DESC LIMIT ?")) {
-			ps.setInt(1, limit);
-			try (ResultSet rs = ps.executeQuery()) {
-				List<AgentRunRecord> runs = new ArrayList<>();
-				while (rs.next()) {
-					runs.add(mapRun(rs));
-				}
-				return List.copyOf(runs);
-			}
-		}
-		catch (SQLException e) {
-			throw new AgentStoreException("读最近运行失败", e);
-		}
+		return read(() -> mapper.recentRuns(limit).stream().map(MapperRows.AgentRunRow::toDomain).toList(),
+				"读最近运行失败");
 	}
 
 	/**
@@ -659,91 +359,21 @@ public class JdbcAgentRunStore implements AgentRunStore {
 		if (conversationId == null || conversationId.isBlank()) {
 			return List.of();
 		}
-		try (Connection conn = pool.getConnection();
-				PreparedStatement ps = conn.prepareStatement(
-						"SELECT * FROM agent_run WHERE conversation_id = ? ORDER BY created_at, id")) {
-			ps.setString(1, conversationId);
-			try (ResultSet rs = ps.executeQuery()) {
-				List<AgentRunRecord> runs = new ArrayList<>();
-				while (rs.next()) {
-					runs.add(mapRun(rs));
-				}
-				return List.copyOf(runs);
-			}
+		return read(() -> mapper.runsOfConversation(conversationId).stream()
+				.map(MapperRows.AgentRunRow::toDomain).toList(), "读会话运行失败 conversationId=" + conversationId);
+	}
+
+	/** 读操作的异常包装（六个读方法共用）。 */
+	private <T> T read(java.util.function.Supplier<T> call, String whatFailed) {
+		try {
+			return call.get();
 		}
-		catch (SQLException e) {
-			throw new AgentStoreException("读会话运行失败 conversationId=" + conversationId, e);
+		catch (DataAccessException e) {
+			throw new AgentStoreException(whatFailed, e);
 		}
 	}
 
-	// ------------------------------------------------------------------
-	//  映射
-	// ------------------------------------------------------------------
-
-	private static AgentRunRecord mapRun(ResultSet rs) throws SQLException {
-		return new AgentRunRecord(rs.getString("id"), rs.getString("question"),
-				RunStatus.valueOf(rs.getString("status")),
-				rs.getString("stop_reason") == null ? null : AgentStopReason.valueOf(rs.getString("stop_reason")),
-				rs.getString("final_answer"), rs.getInt("total_tokens"), rs.getInt("tool_calls"),
-				rs.getLong("elapsed_ms"), rs.getString("node"), rs.getString("error"),
-				toInstant(rs.getTimestamp("created_at")), toInstant(rs.getTimestamp("updated_at")),
-				// 老数据这一列是 NULL → 读成 null，页面显示"未细分"。
-				// **不给它编一个默认值**：编一个具体的默认值等于给一个假归因
-				rs.getString("failure_cause") == null ? null
-						: ai.agent.service.agent.AgentFailureCause.valueOf(rs.getString("failure_cause")),
-				// 归因键、会话 id、租户都是"可以没有"的事实，NULL 就原样读成 null。
-				// 同样不编默认值：编一个（例如"默认会话"）会让所有没有会话信息的运行
-				// 在页面上聚成一段**不存在的对话**
-				rs.getString("intent"), rs.getString("conversation_id"),
-				// 【阶段四第 6 件】租户。老数据（加列之前写的行）这一列是 NULL →
-				// 读成 null → 看板显示成「未标注租户」并独立成一行。
-				// **不给它编一个"默认租户"**：那会把一批互不相干的运行并成一个租户，
-				// 而那个租户的成本会虚高，且虚高的部分无从发现
-				rs.getString("tenant_id"));
-	}
-
-	private static AgentRunRecord.StepCheckpoint mapStep(ResultSet rs) throws SQLException {
-		return new AgentRunRecord.StepCheckpoint(rs.getString("run_id"), rs.getInt("step_index"),
-				rs.getString("transcript"), rs.getString("thought_text"), rs.getInt("prompt_tokens"),
-				rs.getInt("completion_tokens"), rs.getLong("elapsed_ms"), rs.getInt("cache_read_tokens"),
-				rs.getString("model_name"), rs.getString("prompt_fingerprint"), rs.getString("canary_variant"));
-	}
-
-	private static Instant toInstant(Timestamp timestamp) {
-		return timestamp == null ? null : timestamp.toInstant();
-	}
-
-	/**
-	 * 把连接池借给**同一个库上的其它读侧**（成本看板的聚合查询）。
-	 *
-	 * <h2>为什么是"借池子"而不是让它们各自建一个</h2>
-	 * H2 的内存库靠 {@code DB_CLOSE_DELAY=-1} 保活，所以**再多一个池子也确实连得上** ——
-	 * 也就是说，各自建池在本地完全能跑通，问题要到生产才出现：
-	 * 每个池子都有自己的连接上限与超时，于是一个"多加了几个只读查询"的改动
-	 * 会悄悄把进程的连接上限乘以几，而现象是"偶发的连接不够"，
-	 * 排查方向会跑到"是不是有连接泄漏"上去。
-	 *
-	 * <p>同时，池子的生命周期只能有一个负责人：{@link #close()} 在应用关闭时 dispose 它。
-	 * 两个类都持池、都 dispose，会在关闭时比赛谁先关掉 —— 而那个错误
-	 * 只出现在停机过程里，最难复现。
-	 */
-	public JdbcConnectionPool pool() {
-		return pool;
-	}
-
-	/**
-	 * 关池子（应用关闭时）。
-	 *
-	 * <p>不关的话：内存库靠 JVM 退出兜底，但<b>文件库可能留下未刷盘的写</b> ——
-	 * 而"关一次服务就丢最后几个检查点"这件事，正好会在"被杀之后要恢复"的场景里咬人。
-	 */
-	@jakarta.annotation.PreDestroy
-	public void close() {
-		pool.dispose();
-		log.info("Agent 状态库连接池已关闭");
-	}
-
-	/** 存储层的失败。包一层而不是把 {@link SQLException} 透出去：调用方不该被迫处理受检异常。 */
+	/** 存储层的失败。包一层而不是把 {@code SQLException} 透出去：调用方不该被迫处理受检异常。 */
 	public static class AgentStoreException extends RuntimeException {
 
 		public AgentStoreException(String message, Throwable cause) {
@@ -753,6 +383,8 @@ public class JdbcAgentRunStore implements AgentRunStore {
 		public AgentStoreException(String message) {
 			super(message);
 		}
+
 	}
 
 }
+

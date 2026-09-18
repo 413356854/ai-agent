@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  prompt_version / prompt_active 的语句。
+
+  ⚠️ kind 列的转换器全部显式写成 PromptKindTypeHandler：
+  库里存的是 PromptKind.defaultValue()（"system-agent-tools"），而不是枚举名 ——
+  用默认枚举转换器会读成 No enum constant，写的时候还会把枚举名塞进库。
+-->
+<mapper namespace="ai.agent.mapper.PromptMapper">
+
+	<resultMap id="promptVersion" type="ai.agent.mapper.MapperRows$PromptVersionRow">
+		<constructor>
+			<idArg column="kind" javaType="ai.agent.service.prompt.PromptKind"
+				typeHandler="ai.agent.mapper.handler.PromptKindTypeHandler"/>
+			<arg column="version" javaType="java.lang.Integer"/>
+			<arg column="content" javaType="java.lang.String"/>
+			<arg column="hash" javaType="java.lang.String"/>
+			<arg column="char_count" javaType="java.lang.Integer"/>
+			<arg column="token_estimate" javaType="java.lang.Integer"/>
+			<arg column="note" javaType="java.lang.String"/>
+			<arg column="author" javaType="java.lang.String"/>
+			<!-- 首次手工新建时为 NULL → 包装类型 -->
+			<arg column="forked_from" javaType="java.lang.Integer"/>
+			<arg column="created_at" javaType="java.time.Instant" typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+		</constructor>
+	</resultMap>
+
+	<!-- 列清单只写一份：原先 Java 里也用了一个共享常量，理由相同（加列时不会漏掉某一条 SELECT） -->
+	<sql id="versionColumns">
+		kind, version, content, hash, char_count, token_estimate, note, author, forked_from, created_at
+	</sql>
+
+	<select id="listByKind" resultMap="promptVersion">
+		SELECT <include refid="versionColumns"/> FROM prompt_version WHERE kind = #{kind} ORDER BY version DESC
+	</select>
+
+	<!-- 一版都没有时 MAX 返回 NULL，而调用方要的是"下一个版本号从 1 开始"，所以用 COALESCE -->
+	<select id="maxVersion" resultType="int">
+		SELECT COALESCE(MAX(version), 0) FROM prompt_version WHERE kind = #{kind}
+	</select>
+
+	<select id="findByKindAndVersion" resultMap="promptVersion">
+		SELECT <include refid="versionColumns"/> FROM prompt_version
+		 WHERE kind = #{kind} AND version = #{version}
+	</select>
+
+	<!--
+	  生效指针 JOIN 版本正文 —— 接口注释里那条"取值而不是引用"的落实点：
+	  一次查询就把"哪一版"与"这一版的内容"一起取回来，中间不会有人换掉指针。
+	-->
+	<select id="activeOfKind" resultMap="promptVersion">
+		SELECT v.kind, v.version, v.content, v.hash, v.char_count, v.token_estimate, v.note, v.author,
+		       v.forked_from, v.created_at
+		  FROM prompt_active a JOIN prompt_version v ON v.kind = a.kind AND v.version = a.version
+		 WHERE a.kind = #{kind}
+	</select>
+
+	<!-- created_at 不写：DDL 里有 DEFAULT CURRENT_TIMESTAMP，由库给时间（时钟只有一处） -->
+	<insert id="insertVersion">
+		INSERT INTO prompt_version
+		  (kind, version, content, hash, char_count, token_estimate, note, author, forked_from)
+		VALUES (#{kind}, #{version}, #{content}, #{hash}, #{charCount}, #{tokenEstimate}, #{note}, #{author},
+		        #{forkedFrom})
+	</insert>
+
+	<insert id="activateFirst">
+		INSERT INTO prompt_active (kind, version) VALUES (#{kind}, #{version})
+	</insert>
+
+	<!--
+	  带前置条件的切换：`AND version = #{expectedVersion}` 是并发语义本身。
+	  受影响行数为 0 → 在"读当前版本"与"写"之间有人动过指针 → 这次切换没有执行。
+	  去掉这个条件，一个过期的预期会**静默覆盖**另一个人的切换。
+	-->
+	<update id="updatePointer">
+		UPDATE prompt_active SET version = #{version}, activated_at = CURRENT_TIMESTAMP
+		 WHERE kind = #{kind} AND version = #{expectedVersion}
+	</update>
+
+</mapper>
+

@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  alert_event 的语句。
+
+  ⚠️ 迁移时**逐字保留**了四类判据，它们都是"不报错的错"的落点，改动前先读一遍：
+   ① upsert 而不是"先 SELECT 再决定 INSERT/UPDATE"（两次评估重叠时会写出两行）；
+   ② state 用 CASE WHEN，已确认的保持已确认；
+   ③ 重新触发要把 resolved_at 清成 NULL（否则"修好过又坏了"会停在 RESOLVED 里）；
+   ④ 确认要带前置条件 state <> 'RESOLVED'。
+  另外 first_seen_at / created_at 在 UPSERT 分支里**刻意不更新**：
+  它们记的是"这个问题最早什么时候出现的"，顺手更新会让那条时长永远接近 0。
+-->
+<mapper namespace="ai.agent.mapper.AlertMapper">
+
+	<resultMap id="alertEvent" type="ai.agent.mapper.MapperRows$AlertEventRow">
+		<constructor>
+			<idArg column="fingerprint" javaType="java.lang.String"/>
+			<arg column="rule_code" javaType="java.lang.String"/>
+			<arg column="subject" javaType="java.lang.String"/>
+			<arg column="severity" javaType="ai.agent.service.alert.AlertRule$Severity"/>
+			<arg column="phase" javaType="ai.agent.service.alert.AlertRule$AlertPhase"/>
+			<arg column="state" javaType="ai.agent.entity.alert.AlertEvent$State"/>
+			<arg column="first_seen_at" javaType="java.time.Instant" typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="last_seen_at" javaType="java.time.Instant" typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="occurrences" javaType="java.lang.Integer"/>
+			<!-- 没恢复 / 没人确认时为 NULL -->
+			<arg column="resolved_at" javaType="java.time.Instant" typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="acknowledged_at" javaType="java.time.Instant" typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="acknowledged_by" javaType="java.lang.String"/>
+			<arg column="observed" javaType="java.lang.String"/>
+			<arg column="threshold" javaType="java.lang.String"/>
+			<arg column="why" javaType="java.lang.String"/>
+			<arg column="action" javaType="java.lang.String"/>
+			<arg column="window_label" javaType="java.lang.String"/>
+		</constructor>
+	</resultMap>
+
+	<!-- 三处 SELECT 共用一份列清单：各写一份的话，加一列时很容易漏掉其中一处 -->
+	<sql id="alertColumns">
+		fingerprint, rule_code, subject, severity, phase, state, first_seen_at, last_seen_at, occurrences,
+		resolved_at, acknowledged_at, acknowledged_by, observed, threshold, why, action, window_label
+	</sql>
+
+	<insert id="recordFiring">
+		INSERT INTO alert_event
+		  (fingerprint, rule_code, subject, severity, phase, state, first_seen_at, last_seen_at,
+		   occurrences, resolved_at, observed, threshold, why, action, window_label)
+		VALUES (#{fingerprint}, #{ruleCode}, #{subject}, #{severity}, #{phase}, 'OPEN', #{at}, #{at},
+		        1, NULL, #{observed}, #{threshold}, #{why}, #{action}, #{windowLabel})
+		ON DUPLICATE KEY UPDATE
+		  state = CASE WHEN state = 'ACKNOWLEDGED' THEN 'ACKNOWLEDGED' ELSE 'OPEN' END,
+		  last_seen_at = VALUES(last_seen_at),
+		  occurrences = occurrences + 1,
+		  resolved_at = NULL,
+		  severity = VALUES(severity),
+		  observed = VALUES(observed),
+		  threshold = VALUES(threshold),
+		  why = VALUES(why),
+		  action = VALUES(action),
+		  window_label = VALUES(window_label)
+	</insert>
+
+	<update id="markResolved">
+		UPDATE alert_event SET state = 'RESOLVED', resolved_at = #{at} WHERE fingerprint = #{fingerprint}
+	</update>
+
+	<!-- `state <> 'RESOLVED'` 是前置条件：已恢复的告警不该被"确认"成已处理 -->
+	<update id="acknowledge">
+		UPDATE alert_event SET state = 'ACKNOWLEDGED', acknowledged_at = #{at}, acknowledged_by = #{by}
+		 WHERE fingerprint = #{fingerprint} AND state &lt;&gt; 'RESOLVED'
+	</update>
+
+	<!--
+	  排序：严重度、再按第一次发现的时间。
+	  为什么不是"按最后一次发现倒序"：持续响着的旧问题会因为一直被更新而永远排在最前，
+	  而真正的新问题排在它后面 —— 一个"越老越靠前"的列表很快就没人往下看了。
+	  ⚠️ severity 是 VARCHAR，所以这里是**字典序**（BLOCKER &lt; INFO &lt; WARNING），
+	  不是严重度排序。这是迁移前就存在的行为，**不要顺手"修正"**：
+	  那会让列表顺序在没有需求的情况下变化。
+	-->
+	<select id="firing" resultMap="alertEvent">
+		SELECT <include refid="alertColumns"/> FROM alert_event WHERE state &lt;&gt; 'RESOLVED'
+		 ORDER BY severity, first_seen_at, fingerprint
+	</select>
+
+	<select id="recent" resultMap="alertEvent">
+		SELECT <include refid="alertColumns"/> FROM alert_event
+		 ORDER BY last_seen_at DESC, fingerprint LIMIT #{limit}
+	</select>
+
+	<select id="findByFingerprint" resultMap="alertEvent">
+		SELECT <include refid="alertColumns"/> FROM alert_event WHERE fingerprint = #{fingerprint}
+	</select>
+
+	<select id="openCount" resultType="long">
+		SELECT COUNT(*) FROM alert_event WHERE state = 'OPEN'
+	</select>
+
+</mapper>
+

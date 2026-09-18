@@ -4,6 +4,7 @@ import ai.agent.config.AgentApprovalProperties;
 import ai.agent.config.ChatCallProperties;
 import ai.agent.config.ReviewProperties;
 import ai.agent.config.rag.RagProperties;
+import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -32,8 +33,15 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
  * {@code McpServerProperties}（前缀 {@code spring.ai.mcp.server}）管，
  * 我们只在 {@code application.properties} 里写值。包一层自己的 properties
  * 会多出一处"这个字段到底谁说了算"的歧义。
+ *
+ * <p>{@code @MapperScan} 指向 {@code ai.agent.mapper} —— <b>SQL 与 Java 的边界包</b>：
+ * 每个接口对应一张表（或一组相关查询），语句在同名 XML 里。
+ * 放在这里而不是各 mapper 上逐个标 {@code @Mapper}，是为了让"这一层有哪些 mapper"
+ * 在一个地方看得全（新增一个 mapper 忘了标注，症状是启动时"找不到 bean"，
+ * 而那种错看起来像包扫描没生效）。
  */
 @SpringBootApplication
+@MapperScan("ai.agent.mapper")
 @EnableConfigurationProperties({ ChatCallProperties.class, RagProperties.class, AgentApprovalProperties.class,
 		ReviewProperties.class })
 public class AiAgentApplication {

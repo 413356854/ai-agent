@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  prompt_canary 的配置行 + agent_step 的分流观测。
+
+  ⚠️ kind 列的转换器同样是显式的 PromptKindTypeHandler（库里存 defaultValue，不是枚举名）。
+
+  ⚠️ 观测查询里 COUNT(DISTINCT run_id) 是**口径**不是优化：
+  数步骤的话，一次跑了 5 步的运行会被算 5 次 —— 于是"跑得久的那一组"在比例里被加权，
+  而"新版是不是更啰嗦"恰恰是这次实验想看的东西之一（一个自证式的偏差）。
+-->
+<mapper namespace="ai.agent.mapper.CanaryMapper">
+
+	<resultMap id="canaryRow" type="ai.agent.mapper.MapperRows$CanaryRow">
+		<constructor>
+			<idArg column="kind" javaType="ai.agent.service.prompt.PromptKind"
+				typeHandler="ai.agent.mapper.handler.PromptKindTypeHandler"/>
+			<arg column="candidate_version" javaType="java.lang.Integer"/>
+			<arg column="weight_percent" javaType="java.lang.Integer"/>
+			<arg column="started_by" javaType="java.lang.String"/>
+			<arg column="started_at" javaType="java.time.Instant" typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="note" javaType="java.lang.String"/>
+			<!-- 进行中时为 NULL（DDL 里 ended_* 可空） -->
+			<arg column="ended_at" javaType="java.time.Instant" typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="ended_by" javaType="java.lang.String"/>
+			<arg column="end_reason" javaType="java.lang.String"/>
+		</constructor>
+	</resultMap>
+
+	<!--
+	  逐（指纹, 变体）的运行数。
+	  注意 version 不在 SQL 里：它要从 prompt_fingerprint 的 "v<数字>:" 前缀解析，
+	  而那条解析规则（解析不出来记 0，而不是丢行）在 Java 里（JdbcCanaryStore.versionOf）。
+	  variant 为空串时说明这一步没参与灰度 —— 那一行仍然要出现在报告里。
+	-->
+	<resultMap id="runBucket" type="ai.agent.mapper.MapperRows$CanaryRunBucketRow">
+		<constructor>
+			<arg column="fp" javaType="java.lang.String"/>
+			<arg column="variant" javaType="java.lang.String"/>
+			<arg column="runs" javaType="java.lang.Integer"/>
+		</constructor>
+	</resultMap>
+
+	<sql id="canaryColumns">
+		kind, candidate_version, weight_percent, started_by, started_at, note, ended_at, ended_by, end_reason
+	</sql>
+
+	<select id="activeOfKind" resultMap="canaryRow">
+		SELECT <include refid="canaryColumns"/> FROM prompt_canary WHERE kind = #{kind} AND ended_at IS NULL
+	</select>
+
+	<!-- 主键就是 kind，所以"上一轮实验"与"那一行"是同一个东西 -->
+	<select id="latestOfKind" resultMap="canaryRow">
+		SELECT <include refid="canaryColumns"/> FROM prompt_canary WHERE kind = #{kind}
+	</select>
+
+	<insert id="insert">
+		INSERT INTO prompt_canary (kind, candidate_version, weight_percent, started_by, started_at, note)
+		VALUES (#{kind}, #{candidateVersion}, #{weightPercent}, #{by}, #{now}, #{note})
+	</insert>
+
+	<!-- `AND ended_at IS NULL` 是前置条件：已经停了的再停一次必须返回 0 行，而不是静默成功 -->
+	<update id="stop">
+		UPDATE prompt_canary SET ended_at = #{now}, ended_by = #{by}, end_reason = #{endReason}
+		 WHERE kind = #{kind} AND ended_at IS NULL
+	</update>
+
+	<select id="runsByFingerprintAndVariant" resultMap="runBucket">
+		SELECT prompt_fingerprint AS fp, canary_variant AS variant, COUNT(DISTINCT run_id) AS runs
+		  FROM agent_step
+		 WHERE created_at &gt;= #{since}
+		 GROUP BY prompt_fingerprint, canary_variant
+	</select>
+
+	<!--
+	  这一档粒度上没有指纹，所以 fp 恒为空串（服务层只把 runs 相加）。
+	  写成 `'' AS fp` 而不是省掉这一列：两条查询共用同一个 record，
+	  少一列会让构造器映射在那一条上找不到参数。
+	-->
+	<select id="runsByVariant" resultMap="runBucket">
+		SELECT '' AS fp, canary_variant AS variant, COUNT(DISTINCT run_id) AS runs
+		  FROM agent_step
+		 WHERE created_at &gt;= #{since}
+		 GROUP BY canary_variant
+	</select>
+
+</mapper>
+
+
+
+
+
+

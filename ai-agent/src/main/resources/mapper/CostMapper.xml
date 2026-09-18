@@ -1,0 +1,332 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  成本看板 / 告警看板的聚合语句。
+
+  【迁移原则：SQL 一行不改】这些查询的口径是量出来的（阶段四对账那条断言就在其中），
+  所以文字只做了两件事：`?` 换成 #{名字}、把 6 个位置的绑定顺序写进参数名。
+  原先最脆的地方正是那 6 个位置：
+    · 4 个状态占位符与 4 个 CASE WHEN 隔着半个 SQL，绑错一位只会让
+      "被上限拦下"与"失败"两个数字悄悄互换，而两个数字看起来都正常；
+    · 另有 "stage = ?" 混在同一段里。
+  换成命名参数后，"这个值绑给谁"在 XML 里读得出来。
+
+  ⚠️ 两个 SQL 字面量必须与 Java 枚举一致：run.status（RunStatus）与
+  agent_tool_invocation.stage（ToolCallStage）。原先由 CostQuery.Names 保证，
+  现在这层保证换成了"如果枚举改名，这里会查不到数据"——
+  所以**改枚举名时必须一起改这里**（枚举名是接口契约的一部分，不属于随便改的东西）。
+
+  ⚠️ 时间窗一律是 `created_at >= from AND created_at < to` 且上界是**次日 0 点**：
+  用 `<= 当天末` 会漏掉 23:59:59.5 这种带毫秒的时间，而漏掉的那条会让"今天"的数字
+  比运行列表少一条 —— 一种只会让人怀疑数据的差异。上界由调用方算好传进来（to 已是次日）。
+-->
+<mapper namespace="ai.agent.mapper.CostMapper">
+
+	<!-- ============================================================
+	     resultMap：直接映射到 CostQuery 里的那几个记录类型
+	     ============================================================ -->
+
+	<resultMap id="groupTotals" type="ai.agent.mapper.MapperRows$GroupTotalsRow">
+		<constructor>
+			<!-- 未标注（NULL 或空串）→ readGroup 归一成 null；这里由 SQL 的 CASE 归一，见各 SELECT -->
+			<idArg column="grp" javaType="java.lang.String"/>
+			<arg column="run_count" javaType="java.lang.Long"/>
+			<arg column="finished_count" javaType="java.lang.Long"/>
+			<arg column="stopped_count" javaType="java.lang.Long"/>
+			<arg column="failed_count" javaType="java.lang.Long"/>
+			<arg column="prompt_tokens" javaType="java.lang.Long"/>
+			<arg column="cached_tokens" javaType="java.lang.Long"/>
+			<arg column="completion_tokens" javaType="java.lang.Long"/>
+			<arg column="tool_calls" javaType="java.lang.Long"/>
+			<arg column="tool_failures" javaType="java.lang.Long"/>
+			<arg column="tool_elapsed" javaType="java.lang.Long"/>
+			<arg column="run_elapsed" javaType="java.lang.Long"/>
+			<arg column="first_at" javaType="java.time.Instant" typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+		</constructor>
+	</resultMap>
+
+	<!--
+	  按天那一档是**扁平**的：一天 + 那一天的全部聚合列（分组键 grp 由 SQL 里显式的 NULL 占位）。
+	  不把它拆成"外层 DayTotalsRow + 嵌套 GroupTotalsRow"：实测那条路走不通，
+	  报错还是误导性的（见 MapperRows.DayTotalsRow 的注释）。
+	-->
+	<resultMap id="dayTotals" type="ai.agent.mapper.MapperRows$DayTotalsRow">
+		<constructor>
+			<arg column="bucket_day" javaType="java.time.LocalDate"
+				typeHandler="ai.agent.mapper.handler.LocalDateTypeHandler"/>
+			<arg column="grp" javaType="java.lang.String"/>
+			<arg column="run_count" javaType="java.lang.Long"/>
+			<arg column="finished_count" javaType="java.lang.Long"/>
+			<arg column="stopped_count" javaType="java.lang.Long"/>
+			<arg column="failed_count" javaType="java.lang.Long"/>
+			<arg column="prompt_tokens" javaType="java.lang.Long"/>
+			<arg column="cached_tokens" javaType="java.lang.Long"/>
+			<arg column="completion_tokens" javaType="java.lang.Long"/>
+			<arg column="tool_calls" javaType="java.lang.Long"/>
+			<arg column="tool_failures" javaType="java.lang.Long"/>
+			<arg column="tool_elapsed" javaType="java.lang.Long"/>
+			<arg column="run_elapsed" javaType="java.lang.Long"/>
+			<arg column="first_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+		</constructor>
+	</resultMap>
+
+
+	<resultMap id="modelDayRow" type="ai.agent.mapper.MapperRows$ModelDayRow">
+		<constructor>
+			<arg column="bucket_day" javaType="java.time.LocalDate"
+				typeHandler="ai.agent.mapper.handler.LocalDateTypeHandler"/>
+			<arg column="model_name" javaType="java.lang.String"/>
+			<arg column="prompt_tokens" javaType="java.lang.Long"/>
+			<arg column="cached_tokens" javaType="java.lang.Long"/>
+			<arg column="completion_tokens" javaType="java.lang.Long"/>
+		</constructor>
+	</resultMap>
+
+	<resultMap id="toolTotals" type="ai.agent.mapper.MapperRows$ToolTotalsRow">
+		<constructor>
+			<arg column="tool_name" javaType="java.lang.String"/>
+			<arg column="call_count" javaType="java.lang.Long"/>
+			<arg column="failures" javaType="java.lang.Long"/>
+			<arg column="unknown_tool" javaType="java.lang.Long"/>
+			<arg column="validation_errors" javaType="java.lang.Long"/>
+			<arg column="parse_errors" javaType="java.lang.Long"/>
+			<arg column="rejected" javaType="java.lang.Long"/>
+			<arg column="circuit_open" javaType="java.lang.Long"/>
+			<arg column="tool_elapsed_sum" javaType="java.lang.Long"/>
+			<arg column="runs" javaType="java.lang.Long"/>
+		</constructor>
+	</resultMap>
+
+	<resultMap id="reconciliation" type="ai.agent.mapper.MapperRows$ReconciliationRow">
+		<constructor>
+			<arg column="run_tokens" javaType="java.lang.Long"/>
+			<arg column="step_tokens" javaType="java.lang.Long"/>
+			<arg column="runs_without_steps" javaType="java.lang.Long"/>
+			<arg column="runs" javaType="java.lang.Long"/>
+			<arg column="cache_hit_runs" javaType="java.lang.Long"/>
+			<arg column="prompt_tokens" javaType="java.lang.Long"/>
+			<arg column="cached_tokens" javaType="java.lang.Long"/>
+		</constructor>
+	</resultMap>
+
+	<!--
+	  三个维度（天 / 业务 / 租户）共用的这一段 FROM + JOIN。
+	  抽出来不是为了少写几行，而是为了让"两个视图加起来应该相等"这条不变式
+	  在源码上就看得见：口径只有一份，改一处两处一起变
+	  （原先 Java 里是两段逐字相同的 SQL 加一句"改这一段时两处都要改"的警告）。
+	-->
+	<sql id="runWithUsage">
+		FROM agent_run r
+		LEFT JOIN (
+		      SELECT run_id, SUM(prompt_tokens) AS prompt_tokens,
+		             SUM(cache_read_tokens) AS cache_read_tokens,
+		             SUM(completion_tokens) AS completion_tokens
+		        FROM agent_step GROUP BY run_id
+		    ) s ON s.run_id = r.id
+		LEFT JOIN (
+		      SELECT run_id, COUNT(*) AS call_count,
+		             SUM(CASE WHEN stage = 'EXECUTION_ERROR' THEN 1 ELSE 0 END) AS failures,
+		             SUM(elapsed_ms) AS tool_elapsed_sum
+		        FROM agent_tool_invocation GROUP BY run_id
+		    ) t ON t.run_id = r.id
+	</sql>
+
+	<!-- 13 个聚合列：三个维度逐字共用（只换分组键），所以列清单也只写一份 -->
+	<sql id="groupAggregates">
+		COUNT(*) AS run_count,
+		SUM(CASE WHEN r.status &lt;&gt; 'RUNNING' THEN 1 ELSE 0 END) AS finished_count,
+		SUM(CASE WHEN r.status = 'STOPPED' THEN 1 ELSE 0 END) AS stopped_count,
+		SUM(CASE WHEN r.status = 'FAILED' THEN 1 ELSE 0 END) AS failed_count,
+		COALESCE(SUM(s.prompt_tokens), 0) AS prompt_tokens,
+		COALESCE(SUM(s.cache_read_tokens), 0) AS cached_tokens,
+		COALESCE(SUM(s.completion_tokens), 0) AS completion_tokens,
+		COALESCE(SUM(t.call_count), 0) AS tool_calls,
+		COALESCE(SUM(t.failures), 0) AS tool_failures,
+		COALESCE(SUM(t.tool_elapsed_sum), 0) AS tool_elapsed,
+		COALESCE(SUM(r.elapsed_ms), 0) AS run_elapsed,
+		MIN(r.created_at) AS first_at
+	</sql>
+
+	<!-- 按 token 总量倒序：看板第一眼要看到"钱花在哪" -->
+	<sql id="orderByTokens">
+		ORDER BY COALESCE(SUM(s.prompt_tokens), 0) + COALESCE(SUM(s.completion_tokens), 0) DESC
+	</sql>
+
+	<!-- ============================================================
+	     按天
+	     ============================================================ -->
+
+	<!--
+	  【分桶用 CAST(... AS DATE)，不用日期函数】
+	  H2 与 MySQL 都支持 CAST，而 DATE_FORMAT / FORMATDATETIME 各是一家之言 ——
+	  那种写法会让"换真库"变成一次重写。
+	  分组键不可能为 NULL（created_at 有 NOT NULL 约束），所以这里不需要 COALESCE 兜底。
+	-->
+	<select id="byDay" resultMap="dayTotals">
+		SELECT CAST(r.created_at AS DATE) AS bucket_day,
+		       <!--
+		         ★ 这一列必须显式写出来（值为 NULL），不能省。
+		         按天分桶时"哪一天"由 bucket_day 承担，分组键本来没有含义 ——
+		         但嵌套 resultMap（dayGroupTotals）的构造器里有一个 String 参数，
+		         而 MyBatis 的构造器映射**只把"在结果集里出现过的列"喂给构造器**：
+		         少一列时的失败形态是
+		           NoSuchMethodException: GroupTotalsRow.<init>(Long,Long,…,Instant)
+		         —— 参数个数都不对，看起来像类型问题，实际是少了一列。
+		       -->
+		       NULL AS grp,
+		       <include refid="groupAggregates"/>
+		  <include refid="runWithUsage"/>
+		 WHERE r.created_at &gt;= #{from} AND r.created_at &lt; #{to}
+		 GROUP BY CAST(r.created_at AS DATE)
+		 ORDER BY bucket_day
+	</select>
+
+	<!-- ============================================================
+	     按维度（业务归因 / 租户）
+	     ============================================================ -->
+
+	<!--
+	  ⚠️ "未标注"的归一在这里做（CASE WHEN grp IS NULL OR TRIM(grp) = '' THEN NULL）：
+	  它在库里可能有两种物理形态 —— 新建表之后写的是 NULL，而某次用空串写入
+	  （或者从别的系统导入）会留下空串。不归一的话，看板上会出现**两行都叫「未标注」**的记录：
+	  数字被拆成两半，而两半加起来才是真相，这种事没人会去加。
+	  原先这一步在 Java 的 groupRows 里做，现在放 SQL 里 —— 位置换来的是
+	  "所有分组查询都走同一条归一规则"，而不是每个调用点各写一遍。
+	-->
+	<select id="byIntent" resultMap="groupTotals">
+		SELECT CASE WHEN r.intent IS NULL OR TRIM(r.intent) = '' THEN NULL ELSE r.intent END AS grp,
+		       <include refid="groupAggregates"/>
+		  <include refid="runWithUsage"/>
+		 WHERE r.created_at &gt;= #{from} AND r.created_at &lt; #{to}
+		 GROUP BY CASE WHEN r.intent IS NULL OR TRIM(r.intent) = '' THEN NULL ELSE r.intent END
+		 <include refid="orderByTokens"/>
+	</select>
+
+	<!-- 与 byIntent 的唯一差别是分组列（tenant_id）。两个维度**必须**共用同一套口径 -->
+	<select id="byTenant" resultMap="groupTotals">
+		SELECT CASE WHEN r.tenant_id IS NULL OR TRIM(r.tenant_id) = '' THEN NULL ELSE r.tenant_id END AS grp,
+		       <include refid="groupAggregates"/>
+		  <include refid="runWithUsage"/>
+		 WHERE r.created_at &gt;= #{from} AND r.created_at &lt; #{to}
+		 GROUP BY CASE WHEN r.tenant_id IS NULL OR TRIM(r.tenant_id) = '' THEN NULL ELSE r.tenant_id END
+		 <include refid="orderByTokens"/>
+	</select>
+
+	<!-- ============================================================
+	     按模型
+	     ============================================================ -->
+
+	<!--
+	  口径来自**步骤表**（不是运行表）：一个运行里换过模型时，两步会落在两个模型上，
+	  而那正是"灰度期间钱花在哪个模型上"的唯一答案。
+	  finished/stopped/failed/tool_* 这几列在这里没有意义，所以是恒 0 的常量占位 ——
+	  它们保证与 byDay/byIntent 返回同一个记录类型（调用方不必分两种情况处理）。
+	-->
+	<select id="byModel" resultMap="groupTotals">
+		SELECT s.model_name AS grp,
+		       COUNT(DISTINCT s.run_id) AS run_count,
+		       0 AS finished_count,
+		       0 AS stopped_count,
+		       0 AS failed_count,
+		       COALESCE(SUM(s.prompt_tokens), 0) AS prompt_tokens,
+		       COALESCE(SUM(s.cache_read_tokens), 0) AS cached_tokens,
+		       COALESCE(SUM(s.completion_tokens), 0) AS completion_tokens,
+		       0 AS tool_calls,
+		       0 AS tool_failures,
+		       0 AS tool_elapsed,
+		       COALESCE(SUM(s.elapsed_ms), 0) AS run_elapsed,
+		       MIN(s.created_at) AS first_at
+		  FROM agent_step s
+		  JOIN agent_run r ON r.id = s.run_id
+		 WHERE r.created_at &gt;= #{from} AND r.created_at &lt; #{to}
+		 GROUP BY s.model_name
+		 ORDER BY COALESCE(SUM(s.prompt_tokens), 0) + COALESCE(SUM(s.completion_tokens), 0) DESC
+	</select>
+
+	<!-- (天, 模型) 是金额能被正确计算的**最小粒度**：单价按模型不同，所以不能先合并再计价 -->
+	<select id="byModelAndDay" resultMap="modelDayRow">
+		SELECT CAST(r.created_at AS DATE) AS bucket_day,
+		       s.model_name AS model_name,
+		       COALESCE(SUM(s.prompt_tokens), 0) AS prompt_tokens,
+		       COALESCE(SUM(s.cache_read_tokens), 0) AS cached_tokens,
+		       COALESCE(SUM(s.completion_tokens), 0) AS completion_tokens
+		  FROM agent_step s
+		  JOIN agent_run r ON r.id = s.run_id
+		 WHERE r.created_at &gt;= #{from} AND r.created_at &lt; #{to}
+		 GROUP BY CAST(r.created_at AS DATE), s.model_name
+		 ORDER BY bucket_day, s.model_name
+	</select>
+
+	<!-- ============================================================
+	     按工具
+	     ============================================================ -->
+
+	<!--
+	  六个 SUM(CASE WHEN stage = ...) 对应六种出口，
+	  口径与 CircuitBreaker 的判据同源（EXECUTION_ERROR 才算"工具失败"，
+	  校验失败/解析失败/被拒/熔断各算各的 —— 把它们并成一类会让"工具坏了"与"模型参数写错了"
+	  分不开，而这两件事的处置完全不同）。
+	-->
+	<select id="byTool" resultMap="toolTotals">
+		SELECT i.tool_name AS tool_name,
+		       COUNT(*) AS call_count,
+		       SUM(CASE WHEN i.stage = 'EXECUTION_ERROR' THEN 1 ELSE 0 END) AS failures,
+		       SUM(CASE WHEN i.stage = 'UNKNOWN_TOOL' THEN 1 ELSE 0 END) AS unknown_tool,
+		       SUM(CASE WHEN i.stage = 'VALIDATION_ERROR' THEN 1 ELSE 0 END) AS validation_errors,
+		       SUM(CASE WHEN i.stage = 'PARSE_ERROR' THEN 1 ELSE 0 END) AS parse_errors,
+		       SUM(CASE WHEN i.stage = 'REQUEST_REJECTED' THEN 1 ELSE 0 END) AS rejected,
+		       SUM(CASE WHEN i.stage = 'CIRCUIT_OPEN' THEN 1 ELSE 0 END) AS circuit_open,
+		       COALESCE(SUM(i.elapsed_ms), 0) AS tool_elapsed_sum,
+		       COUNT(DISTINCT i.run_id) AS runs
+		  FROM agent_tool_invocation i
+		  JOIN agent_run r ON r.id = i.run_id
+		 WHERE r.created_at &gt;= #{from} AND r.created_at &lt; #{to}
+		 GROUP BY i.tool_name
+		 ORDER BY COUNT(*) DESC, i.tool_name
+	</select>
+
+	<!-- ============================================================
+	     对账 / 模型清单
+	     ============================================================ -->
+
+	<!--
+	  两个口径并排摆出来：run_tokens 是运行行上的累计（循环自己加的，决定 token 上限），
+	  step_tokens 是步骤表之和（看板的钱数按它算）。对不上就说明其中一处漏记了，
+	  而看板上完全看不出来 —— 只是钱比真实值少一点或多一点。
+	-->
+	<select id="reconcile" resultMap="reconciliation">
+		SELECT COALESCE(SUM(r.total_tokens), 0) AS run_tokens,
+		       COALESCE(SUM(s.prompt_tokens), 0) + COALESCE(SUM(s.completion_tokens), 0) AS step_tokens,
+		       SUM(CASE WHEN s.run_id IS NULL THEN 1 ELSE 0 END) AS runs_without_steps,
+		       COUNT(*) AS runs,
+		       SUM(CASE WHEN s.cache_read_tokens &gt; 0 THEN 1 ELSE 0 END) AS cache_hit_runs,
+		       COALESCE(SUM(s.prompt_tokens), 0) AS prompt_tokens,
+		       COALESCE(SUM(s.cache_read_tokens), 0) AS cached_tokens
+		  FROM agent_run r
+		  LEFT JOIN (
+		        SELECT run_id, SUM(prompt_tokens) AS prompt_tokens,
+		               SUM(cache_read_tokens) AS cache_read_tokens,
+		               SUM(completion_tokens) AS completion_tokens
+		          FROM agent_step GROUP BY run_id
+		    ) s ON s.run_id = r.id
+		 WHERE r.created_at &gt;= #{from} AND r.created_at &lt; #{to}
+	</select>
+
+	<!-- 空模型名（"上游没上报"）也在结果里：把它过滤掉会让"未配置价格的模型"漏报一个 -->
+	<select id="modelsInWindow" resultType="java.lang.String">
+		SELECT DISTINCT s.model_name AS model_name
+		  FROM agent_step s
+		  JOIN agent_run r ON r.id = s.run_id
+		 WHERE r.created_at &gt;= #{from} AND r.created_at &lt; #{to}
+		 ORDER BY s.model_name
+	</select>
+
+</mapper>
+
+
+
+
+
+
+

@@ -1,0 +1,293 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  Agent 状态库的全部语句。
+
+  【迁移时逐字保留的语义，改动前请先读一遍】
+   ① 三处 upsert（检查点 / 工具调用 / 检索明细）不能改成"先查再写"：
+      它们在"恢复后接着跑"与"调用方重试"时会被重复执行，先查再写在两次执行重叠时会写出两行；
+   ② upsert 的列清单**刻意不含主键列与 created_at**：前者是仲裁依据，后者是"最早什么时候"；
+   ③ finishRun / claimInterrupted 的受影响行数是**契约**，不是附带信息；
+   ④ 空串与 NULL 是两件事：model_name / prompt_fingerprint / canary_variant / tool_name
+      写入空串（DDL 里 NOT NULL DEFAULT ''），读侧分组依赖这一点 ——
+      写成 NULL 会让 byModel 与灰度观测的分组结果悄悄改变。
+
+  【映射为什么用构造器而不是 setter】这些实体都是不可变 record（没有 setter、没有无参构造器），
+  所以只能按构造器参数逐个映射，且每个 <arg> 都要写 javaType（理由见 ToolApprovalMapper.xml 顶部）。
+-->
+<mapper namespace="ai.agent.mapper.AgentRunMapper">
+
+	<!-- ============================================================
+	     resultMap
+	     ============================================================ -->
+
+	<resultMap id="agentRun" type="ai.agent.mapper.MapperRows$AgentRunRow">
+		<constructor>
+			<idArg column="id" javaType="java.lang.String"/>
+			<arg column="question" javaType="java.lang.String"/>
+			<arg column="status" javaType="ai.agent.service.agent.store.RunStatus"/>
+			<!-- 未结束 / 老数据时为 NULL -->
+			<arg column="stop_reason" javaType="ai.agent.service.agent.AgentStopReason"/>
+			<arg column="final_answer" javaType="java.lang.String"/>
+			<arg column="total_tokens" javaType="java.lang.Integer"/>
+			<arg column="tool_calls" javaType="java.lang.Integer"/>
+			<arg column="elapsed_ms" javaType="java.lang.Long"/>
+			<arg column="node" javaType="java.lang.String"/>
+			<arg column="error" javaType="java.lang.String"/>
+			<arg column="created_at" javaType="java.time.Instant" typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="updated_at" javaType="java.time.Instant" typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<!-- 老数据这一列是 NULL → 读成 null，页面显示"未细分"。不编默认值：等于给一个假归因 -->
+			<arg column="failure_cause" javaType="ai.agent.service.agent.AgentFailureCause"/>
+			<!--
+			  归因键 / 会话 id / 租户都是"可以没有"的事实，NULL 原样读成 null。
+			  同样不编默认值：编一个（例如"默认会话"）会让所有没有会话信息的运行
+			  在页面上聚成一段**不存在的对话**。
+			-->
+			<arg column="intent" javaType="java.lang.String"/>
+			<arg column="conversation_id" javaType="java.lang.String"/>
+			<arg column="tenant_id" javaType="java.lang.String"/>
+		</constructor>
+	</resultMap>
+
+	<!--
+	  ⚠️ 三个 NOT NULL DEFAULT '' 的列（model_name / prompt_fingerprint / canary_variant）
+	  用包装类型 java.lang.String：String 本身可空，所以碰不到拆箱 NPE 的问题，
+	  而空串与 NULL 的区别由**写入侧**保证（见 saveCheckpoint 的注释）。
+	  thought_text 可空 → String；四个计数列 NOT NULL → 基本类型 + javaType。
+	-->
+	<resultMap id="stepCheckpoint" type="ai.agent.mapper.MapperRows$StepCheckpointRow">
+		<constructor>
+			<idArg column="run_id" javaType="java.lang.String"/>
+			<arg column="step_index" javaType="java.lang.Integer"/>
+			<arg column="transcript" javaType="java.lang.String"/>
+			<arg column="thought_text" javaType="java.lang.String"/>
+			<arg column="prompt_tokens" javaType="java.lang.Integer"/>
+			<arg column="completion_tokens" javaType="java.lang.Integer"/>
+			<arg column="elapsed_ms" javaType="java.lang.Long"/>
+			<arg column="cache_read_tokens" javaType="java.lang.Integer"/>
+			<arg column="model_name" javaType="java.lang.String"/>
+			<arg column="prompt_fingerprint" javaType="java.lang.String"/>
+			<arg column="canary_variant" javaType="java.lang.String"/>
+		</constructor>
+	</resultMap>
+
+	<resultMap id="toolCall" type="ai.agent.mapper.MapperRows$ToolCallRow">
+		<constructor>
+			<arg column="run_id" javaType="java.lang.String"/>
+			<arg column="step_index" javaType="java.lang.Integer"/>
+			<arg column="call_index" javaType="java.lang.Integer"/>
+			<arg column="call_id" javaType="java.lang.String"/>
+			<arg column="tool_name" javaType="java.lang.String"/>
+			<arg column="arguments" javaType="java.lang.String"/>
+			<arg column="stage" javaType="java.lang.String"/>
+			<arg column="feedback" javaType="java.lang.String"/>
+			<arg column="elapsed_ms" javaType="java.lang.Long"/>
+		</constructor>
+	</resultMap>
+
+	<resultMap id="retrievalHitRow" type="ai.agent.mapper.MapperRows$RetrievalHitRow">
+		<constructor>
+			<arg column="step_index" javaType="java.lang.Integer"/>
+			<arg column="call_index" javaType="java.lang.Integer"/>
+			<arg column="tool_name" javaType="java.lang.String"/>
+			<arg column="hit_rank" javaType="java.lang.Integer"/>
+			<arg column="chunk_id" javaType="java.lang.String"/>
+			<arg column="document_id" javaType="java.lang.String"/>
+			<arg column="breadcrumb" javaType="java.lang.String"/>
+			<arg column="token_count" javaType="java.lang.Integer"/>
+			<arg column="score" javaType="java.lang.Double"/>
+			<arg column="excerpt" javaType="java.lang.String"/>
+		</constructor>
+	</resultMap>
+
+	<resultMap id="retrievalCallRow" type="ai.agent.mapper.MapperRows$RetrievalCallRow">
+		<constructor>
+			<arg column="step_index" javaType="java.lang.Integer"/>
+			<arg column="call_index" javaType="java.lang.Integer"/>
+			<arg column="tool_name" javaType="java.lang.String"/>
+			<arg column="query" javaType="java.lang.String"/>
+			<arg column="top_k" javaType="java.lang.Integer"/>
+			<arg column="index_size" javaType="java.lang.Integer"/>
+			<arg column="elapsed_ms" javaType="java.lang.Long"/>
+		</constructor>
+	</resultMap>
+
+	<!-- 列清单只写一份：加列时不会漏掉某一条 SELECT（mapRun 原先就是这么做的） -->
+	<sql id="runColumns">
+		id, question, status, stop_reason, final_answer, total_tokens, tool_calls, elapsed_ms, node, error,
+		created_at, updated_at, failure_cause, intent, conversation_id, tenant_id
+	</sql>
+
+	<sql id="stepColumns">
+		run_id, step_index, transcript, thought_text, prompt_tokens, completion_tokens, elapsed_ms,
+		cache_read_tokens, model_name, prompt_fingerprint, canary_variant
+	</sql>
+
+	<!-- ============================================================
+	     写
+	     ============================================================ -->
+
+	<!-- 状态写死在这里：调用方能决定的只有"开始"，结局由 finishRun 写 -->
+	<insert id="startRun">
+		INSERT INTO agent_run (id, question, status, node, intent, conversation_id, tenant_id)
+		VALUES (#{id}, #{question}, 'RUNNING', #{node}, #{intent}, #{conversationId}, #{tenantId})
+	</insert>
+
+	<!--
+	  幂等：同一 (run_id, step_index) 再写一次是**覆盖**，不是主键冲突。
+	  去掉 ON DUPLICATE KEY UPDATE 会让"恢复后重新走这一步"直接抛异常，
+	  而那种失败会被读成"数据库坏了"。
+	  更新清单里没有 run_id / step_index（它们是仲裁依据）、也没有 created_at（"这一步最早何时写的"）。
+	-->
+	<insert id="saveCheckpoint">
+		INSERT INTO agent_step
+		  (run_id, step_index, thought_text, prompt_tokens, completion_tokens, cache_read_tokens,
+		   model_name, prompt_fingerprint, canary_variant, elapsed_ms, transcript)
+		VALUES (#{runId}, #{stepIndex}, #{thoughtText}, #{promptTokens}, #{completionTokens}, #{cacheReadTokens},
+		        #{modelName}, #{promptFingerprint}, #{canaryVariant}, #{elapsedMs}, #{transcript})
+		ON DUPLICATE KEY UPDATE
+		  thought_text = VALUES(thought_text),
+		  prompt_tokens = VALUES(prompt_tokens),
+		  completion_tokens = VALUES(completion_tokens),
+		  cache_read_tokens = VALUES(cache_read_tokens),
+		  model_name = VALUES(model_name),
+		  prompt_fingerprint = VALUES(prompt_fingerprint),
+		  canary_variant = VALUES(canary_variant),
+		  elapsed_ms = VALUES(elapsed_ms),
+		  transcript = VALUES(transcript)
+	</insert>
+
+	<insert id="saveToolCall">
+		INSERT INTO agent_tool_invocation
+		  (run_id, step_index, call_index, call_id, tool_name, arguments, stage, feedback, elapsed_ms)
+		VALUES (#{runId}, #{stepIndex}, #{callIndex}, #{callId}, #{toolName}, #{arguments}, #{stage},
+		        #{feedback}, #{elapsedMs})
+		ON DUPLICATE KEY UPDATE
+		  call_id = VALUES(call_id), tool_name = VALUES(tool_name), arguments = VALUES(arguments),
+		  stage = VALUES(stage), feedback = VALUES(feedback), elapsed_ms = VALUES(elapsed_ms)
+	</insert>
+
+	<insert id="saveRetrievalCall">
+		INSERT INTO retrieval_call
+		  (run_id, step_index, call_index, tool_name, query, top_k, hit_count, index_size, elapsed_ms)
+		VALUES (#{runId}, #{stepIndex}, #{callIndex}, #{toolName}, #{query}, #{topK}, #{hitCount},
+		        #{indexSize}, #{elapsedMs})
+		ON DUPLICATE KEY UPDATE
+		  tool_name = VALUES(tool_name), query = VALUES(query), top_k = VALUES(top_k),
+		  hit_count = VALUES(hit_count), index_size = VALUES(index_size), elapsed_ms = VALUES(elapsed_ms)
+	</insert>
+
+	<insert id="saveRetrievalHit">
+		INSERT INTO retrieval_hit
+		  (run_id, step_index, call_index, hit_rank, chunk_id, document_id, breadcrumb,
+		   token_count, score, excerpt)
+		VALUES (#{runId}, #{stepIndex}, #{callIndex}, #{rank}, #{chunkId}, #{documentId}, #{breadcrumb},
+		        #{tokenCount}, #{score}, #{excerpt})
+		ON DUPLICATE KEY UPDATE
+		  chunk_id = VALUES(chunk_id), document_id = VALUES(document_id),
+		  breadcrumb = VALUES(breadcrumb), token_count = VALUES(token_count),
+		  score = VALUES(score), excerpt = VALUES(excerpt)
+	</insert>
+
+	<update id="updateProgress">
+		UPDATE agent_run SET total_tokens = #{totalTokens}, tool_calls = #{toolCallCount},
+		       elapsed_ms = #{elapsedMs}
+		 WHERE id = #{runId}
+	</update>
+
+	<!-- 受影响行数 0 = 这次运行不存在 → 调用方必须炸（静默放过会让状态永远停在 RUNNING） -->
+	<update id="finishRun">
+		UPDATE agent_run
+		   SET status = #{status}, stop_reason = #{stopReason}, final_answer = #{finalAnswer},
+		       total_tokens = #{totalTokens}, tool_calls = #{toolCallCount}, elapsed_ms = #{elapsedMs},
+		       error = #{error}, failure_cause = #{failureCause}
+		 WHERE id = #{runId}
+	</update>
+
+	<!-- 乐观锁：`AND status = #{expected}` 让"两个实例同时认领"只有一个赢家 -->
+	<update id="claimInterrupted">
+		UPDATE agent_run SET status = #{status} WHERE id = #{runId} AND status = #{expected}
+	</update>
+
+	<update id="setRunStatus">
+		UPDATE agent_run SET status = #{status} WHERE id = #{runId}
+	</update>
+
+	<update id="replaceTranscript">
+		UPDATE agent_step SET transcript = #{transcript} WHERE run_id = #{runId} AND step_index = #{stepIndex}
+	</update>
+
+	<!-- ============================================================
+	     读
+	     ============================================================ -->
+
+	<select id="findRun" resultMap="agentRun">
+		SELECT <include refid="runColumns"/> FROM agent_run WHERE id = #{runId}
+	</select>
+
+	<!-- 认领的候选集：只认领**本实例**留下的 RUNNING 行。
+	     不区分 node 的话，B 实例会把 A 实例正在跑的运行误判成中断并抢过来，
+	     于是同一次任务的工具被执行两遍 —— 这就是"重复副作用" -->
+	<select id="runsByStatusAndNode" resultMap="agentRun">
+		SELECT <include refid="runColumns"/> FROM agent_run WHERE status = #{status} AND node = #{node}
+		 ORDER BY updated_at
+	</select>
+
+	<select id="recentRuns" resultMap="agentRun">
+		SELECT <include refid="runColumns"/> FROM agent_run ORDER BY created_at DESC, id DESC LIMIT #{limit}
+	</select>
+
+	<select id="runsOfConversation" resultMap="agentRun">
+		SELECT <include refid="runColumns"/> FROM agent_run WHERE conversation_id = #{conversationId}
+		 ORDER BY created_at, id
+	</select>
+
+	<select id="latestCheckpoint" resultMap="stepCheckpoint">
+		SELECT <include refid="stepColumns"/> FROM agent_step WHERE run_id = #{runId}
+		 ORDER BY step_index DESC LIMIT 1
+	</select>
+
+	<select id="stepsOf" resultMap="stepCheckpoint">
+		SELECT <include refid="stepColumns"/> FROM agent_step WHERE run_id = #{runId} ORDER BY step_index
+	</select>
+
+	<select id="toolCallsOf" resultMap="toolCall">
+		SELECT run_id, step_index, call_index, call_id, tool_name, arguments, stage, feedback, elapsed_ms
+		  FROM agent_tool_invocation
+		 WHERE run_id = #{runId}
+		 ORDER BY step_index, call_index
+	</select>
+
+	<!--
+	  命中那一侧查不出"哪把工具发起的"：retrieval_hit 的主键里没有 tool_name。
+	  所以工具名从 retrieval_call 那一侧 JOIN 过来（join 键是 step_index + call_index），
+	  而不是再查一遍 agent_tool_invocation —— retrieval_call 本来就是"哪把工具在检索"的权威来源。
+
+	  ⚠️ 这一层**不能**与"调用行"合成一条 LEFT JOIN 查询：调用行会被命中的条数放大
+	  （一次 5 条命中的检索会变成 5 行），于是"这次运行检索了几次"要写成 COUNT(DISTINCT ...)，
+	  而任何一处漏了 DISTINCT，统计就把"检索 3 次"报成"检索 11 次"，且数字看起来完全合理。
+	-->
+	<select id="retrievalHitsOf" resultMap="retrievalHitRow">
+		SELECT h.step_index, h.call_index, h.hit_rank, h.chunk_id, h.document_id, h.breadcrumb,
+		       h.token_count, h.score, h.excerpt, c.tool_name
+		  FROM retrieval_hit h
+		  JOIN retrieval_call c
+		    ON c.run_id = h.run_id AND c.step_index = h.step_index AND c.call_index = h.call_index
+		 WHERE h.run_id = #{runId}
+		 ORDER BY h.step_index, h.call_index, h.hit_rank
+	</select>
+
+	<select id="retrievalCallsOf" resultMap="retrievalCallRow">
+		SELECT step_index, call_index, tool_name, query, top_k, index_size, elapsed_ms
+		  FROM retrieval_call
+		 WHERE run_id = #{runId}
+		 ORDER BY step_index, call_index
+	</select>
+
+</mapper>
+
+
+
+
+
+
