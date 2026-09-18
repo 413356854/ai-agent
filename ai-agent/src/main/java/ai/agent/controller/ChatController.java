@@ -98,6 +98,12 @@ public class ChatController {
 
 	private final ChatCallProperties properties;
 
+	/**
+	 * 对话记忆的读取口 —— 重试前摘掉孤儿用户消息时要用它（见 {@link #dropOrphanedUserMessage}）。
+	 *
+	 * <p><b>它背后是内存还是数据库，由 {@code ChatClientConfig#chatMemoryRepository()} 那一个方法决定</b>
+	 * （默认是内存实现：重启即丢、多实例不共享）。这里只依赖接口，所以换存储不影响本类。
+	 */
 	private final ChatMemoryRepository chatMemoryRepository;
 
 	private final TokenBudgetGuard budgetGuard;

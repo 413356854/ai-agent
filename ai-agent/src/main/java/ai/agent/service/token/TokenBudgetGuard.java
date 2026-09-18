@@ -51,6 +51,11 @@ import java.util.List;
  * 同一个坑在重试清理孤儿消息时已经踩过一次：{@code ChatMemory.add()} 是<b>追加合并</b>语义
  * （读旧 → 合并 → 存回），拿裁剪后的列表去调它等于把裁掉的历史又加回来。
  * 真正"整段替换"的入口只有 {@link ChatMemoryRepository#saveAll}。
+ *
+ * <p>⚠️ 由此带出一个容易误解的点：<b>这里的"裁掉"只发生在存储层，不产生任何独立的"裁剪记录"</b>。
+ * 而存储层默认是内存实现（{@code ChatClientConfig#chatMemoryRepository()}），
+ * 所以进程重启之后，"裁过的历史"与"没裁过的历史"一起消失 —— 想看裁剪是否真的发生过，
+ * 只能看日志（{@code 上下文超预算 → 裁掉最旧的 N 条历史消息}）。
  */
 @Component
 public class TokenBudgetGuard {
@@ -61,6 +66,13 @@ public class TokenBudgetGuard {
 
 	private final TokenEstimator estimator;
 
+	/**
+	 * 对话历史的读写口：本类用它<b>读旧消息算 token、再把裁剪结果写回去</b>。
+	 *
+	 * <p>存储位置由 {@code ChatClientConfig#chatMemoryRepository()} 决定（默认内存实现）。
+	 * 这里只依赖接口，换存储不影响本类 —— 但注意：<b>换了存储之后，"裁剪"就会真的改变库里的内容</b>，
+	 * 而内存实现下它随进程一起消失。
+	 */
 	private final ChatMemoryRepository chatMemoryRepository;
 
 	/**
