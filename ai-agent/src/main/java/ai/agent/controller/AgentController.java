@@ -10,6 +10,8 @@ import ai.agent.service.agent.store.AgentRunStore;
 import ai.agent.service.agent.store.RunStatus;
 import ai.agent.service.agent.trace.AgentTraceView;
 import ai.agent.config.AgentApprovalProperties;
+import ai.agent.entity.agent.AgentPermissionLevel;
+import ai.agent.entity.tool.RunPermission;
 import ai.agent.entity.tool.ToolCallOutcome;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -83,6 +85,14 @@ public class AgentController {
 	private final long approvalTimeoutSeconds;
 
 	/**
+	 * 工作区与权限档位的配置（{@code ai.agent.workspace.*}）。
+	 *
+	 * <p>控制器读它<b>只为一件事</b>：判断"工作区是不是必填"以及路径长度上限。
+	 * 权限的判定本身不在这一层 —— 那在 {@code AgentPermissionPolicy}，一处。
+	 */
+	private final ai.agent.config.WorkspaceProperties workspaceProperties;
+
+	/**
 	 * 五层 trace 的装配（阶段四第 2 件）。
 	 *
 	 * <p>本类只把它转出去，不做任何装配：那一层要读五张表、要算金额、要对齐会话，
@@ -92,13 +102,15 @@ public class AgentController {
 	private final AgentTraceView traceView;
 
 	public AgentController(ResumableAgentService service, AgentRunStore store, AgentConcurrencyLimitsView limitsView,
-			AgentApprovalService approvals, AgentApprovalProperties approvalProperties, AgentTraceView traceView) {
+			AgentApprovalService approvals, AgentApprovalProperties approvalProperties, AgentTraceView traceView,
+			ai.agent.config.WorkspaceProperties workspaceProperties) {
 		this.service = service;
 		this.store = store;
 		this.limitsView = limitsView;
 		this.approvals = approvals;
 		this.approvalTimeoutSeconds = approvalProperties.timeout().toSeconds();
 		this.traceView = traceView;
+		this.workspaceProperties = workspaceProperties;
 	}
 
 	/**
@@ -124,6 +136,22 @@ public class AgentController {
 		String question = request == null || request.question() == null ? "" : request.question().strip();
 		if (question.isEmpty()) {
 			return Map.of("ok", false, "error", "问题不能为空");
+		}
+
+		// 【工作区目录与权限档位：本次新增的两个前提】
+		//
+		// 它们必须在**任何成本发生之前**校验完：这次任务会真的调模型花钱，
+		// 而"目录打错字"这种错误的正确归处是当场拒绝，不是让模型跑 6 轮之后
+		// 在结果里附一句"工作区没找到"。所以顺序是：解析 → 校验 → 才动 service。
+		RunPermission permission;
+		try {
+			permission = resolvePermission(request);
+		}
+		catch (IllegalArgumentException e) {
+			log.warn("拒绝了一次 /ask：{}", e.getMessage());
+			// 与"问题不能为空"同一个形状（200 + ok:false）：这是**调用方可以改对**的输入问题，
+			// 不是服务器故障。用 400 会让前端的错误分支把它当成链路失败，文案反而更差
+			return Map.of("ok", false, "error", e.getMessage());
 		}
 
 		String runId = java.util.UUID.randomUUID().toString();
@@ -157,8 +185,73 @@ public class AgentController {
 		//
 		// 长度裁剪同一条理由（超长 → 写库抛 SQL 异常 → 用户的几个字变成"这次任务失败了"）
 		String tenantId = clamp(request == null ? null : request.tenantId(), MAX_TENANT_CHARS);
-		AgentRun run = service.runWithId(runId, question, intent, conversationId, tenantId);
-		return assemble(runId, run);
+		AgentRun run = service.runWithPermissions(runId, question, null, intent, conversationId, tenantId,
+				permission);
+		return assemble(runId, run, permission);
+	}
+
+	/**
+	 * 把请求体里的两个参数解析成<b>这一次运行的权限</b>。
+	 *
+	 * <h2>为什么校验放在控制器，而不是 {@link RunPermission} 的构造器里</h2>
+	 * 构造器的职责是"造出一个合法对象"，它抛的是异常；
+	 * 而这里要给的是一句<b>能读的中文提示</b>（"工作区目录不存在：…"），
+	 * 并且要在任务开跑之前返回给调用方。措辞只有这一处，判据也是。
+	 *
+	 * <p>反过来说，{@link RunPermission} 那边仍然留了一道长度与空值校验 ——
+	 * 它防的是"绕过控制器直接构造"的路径（恢复、测试），
+	 * 那两种场景下抛异常才是对的（它们没有"返回一句提示给用户"的位置）。
+	 *
+	 * @throws IllegalArgumentException 工作区缺失 / 路径非法 / 目录不存在 / 档位取值不认识
+	 */
+	private RunPermission resolvePermission(AskRequest request) {
+		String workspace = request == null ? null : request.workspaceDir();
+		String level = request == null ? null : request.permissionLevel();
+
+		if (workspace == null || workspace.isBlank()) {
+			if (!workspaceProperties.requiredOnAsk()) {
+				// 显式放开之后：没有工作区就是"没有权限上下文"，档位也无从谈起。
+				// 这里**不**读 permissionLevel —— 一个没有工作区的运行没有"被授予了多大权限"这个事实
+				return RunPermission.none();
+			}
+			throw new IllegalArgumentException(
+					"工作区目录是必填的（界面上是「工作区目录」那个输入框）：它必须是当前机器上一个真实存在的目录。"
+							+ "如果这条链路确实不需要工作区，把 ai.agent.workspace.required-on-ask 设为 false");
+		}
+
+		AgentPermissionLevel parsed = level == null || level.isBlank() ? null : parseLevel(level);
+		String trimmed = workspace.strip();
+		if (trimmed.length() > workspaceProperties.maxPathChars()) {
+			throw new IllegalArgumentException("工作区目录过长（%d 字符 > 上限 %d）：%s…"
+					.formatted(trimmed.length(), workspaceProperties.maxPathChars(), trimmed.substring(0, 80)));
+		}
+
+		RunPermission permission = RunPermission.ofStored(trimmed, parsed);
+		permission.validateExistingDirectory();
+		log.info("本次运行的权限：{}", permission.describe());
+		return permission;
+	}
+
+	/**
+	 * 档位取值。
+	 *
+	 * <p><b>认不出来一律拒绝</b>（不是降成默认档）：一个拼错的档位（{@code FULL_ACESS}）
+	 * 如果被宽容成"仅可查看"，现象是"我明明选了完全权限，它还是弹审批" ——
+	 * 而那个现象会被归因成权限功能坏了，没人会想到是自己拼错了。
+	 * 这与"库里的历史取值认不出就降成仅可查看"是两个不同的场景：
+	 * 那边没有调用方可以被告知（见 {@code AgentPermissionLevel.parse}）。
+	 */
+	private static AgentPermissionLevel parseLevel(String raw) {
+		for (AgentPermissionLevel candidate : AgentPermissionLevel.values()) {
+			if (candidate.name().equalsIgnoreCase(raw.strip()) || candidate.label().equals(raw.strip())) {
+				return candidate;
+			}
+		}
+		throw new IllegalArgumentException(
+				"permissionLevel 的取值不认识：「%s」。可用取值（写枚举名或中文标签）：%s".formatted(raw.strip(),
+						java.util.Arrays.stream(AgentPermissionLevel.values())
+								.map(level -> level.name() + "=" + level.label())
+								.collect(java.util.stream.Collectors.joining("、"))));
 	}
 
 	/** 归因键的最大长度（与 {@code agent_run.intent} 的列宽一致，改一处要一起改）。 */
@@ -218,6 +311,11 @@ public class AgentController {
 			// 否则看完板的数字只能信，不能核（trace 那一层也带上，理由相同）
 			row.put("intent", record.intent() == null ? "" : record.intent());
 			row.put("tenantId", record.tenantId() == null ? "" : record.tenantId());
+			// 【运行权限】列表里也带上工作区与档位：它是"这次是在什么前提下跑的"，
+			// 而在完全权限档位下写操作不会产生待批记录 —— 事后要能回答"那次为什么没弹确认"，
+			// 只能靠这一列。空串 = 那次运行没有权限上下文（老数据、curl 直接调）
+			row.put("workspaceDir", record.hasWorkspace() ? record.workspaceDir() : "");
+			row.put("permissionLevel", record.permissionLevel() == null ? "" : record.permissionLevel().name());
 			rows.add(row);
 		}
 		Map<String, Object> body = new LinkedHashMap<>();
@@ -260,7 +358,13 @@ public class AgentController {
 				// 【阶段四第 6 件】两个归因维度都带上：详情页是"核对看板数字"的落点，
 				// 而"这次运行被算到谁头上"在这个页面上没有别的来源
 				Map.entry("intent", run.intent() == null ? "" : run.intent()),
-				Map.entry("tenantId", run.tenantId() == null ? "" : run.tenantId())));
+				Map.entry("tenantId", run.tenantId() == null ? "" : run.tenantId()),
+				// 【运行权限】详情页是"核对一次运行到底怎么跑的"的落点，
+				// 而"它在哪个目录下、拿了多大权限"是这次执行最重要的前提之一
+				Map.entry("workspaceDir", run.hasWorkspace() ? run.workspaceDir() : ""),
+				Map.entry("permissionLevel", run.permissionLevel() == null ? "" : run.permissionLevel().name()),
+				Map.entry("permissionLabel",
+						run.permissionLevel() == null ? "" : run.permissionLevel().label())));
 
 		List<Map<String, Object>> steps = new ArrayList<>();
 		for (AgentRunRecord.StepCheckpoint step : store.stepsOf(runId)) {
@@ -307,6 +411,8 @@ public class AgentController {
 			row.put("stepIndex", approval.stepIndex() == null ? -1 : approval.stepIndex());
 			row.put("toolName", approval.toolName());
 			row.put("arguments", approval.arguments() == null ? "" : approval.arguments());
+			// 【运行权限】这次为什么弹了确认 —— 与待办列表同一个字段名，界面两处渲染同一句话
+			row.put("permissionNote", approval.permissionNote() == null ? "" : approval.permissionNote());
 			row.put("status", approval.status().name());
 			row.put("pending", approval.pending());
 			row.put("requestedAt", approval.requestedAt().toString());
@@ -360,11 +466,18 @@ public class AgentController {
 	}
 
 	/** 把一次运行组装成界面要的形状。 */
-	private Map<String, Object> assemble(String runId, AgentRun run) {
+	private Map<String, Object> assemble(String runId, AgentRun run, RunPermission permission) {
 		Map<String, Object> body = new LinkedHashMap<>();
 		body.put("ok", true);
 		body.put("runId", runId);
 		body.put("question", run.question());
+		// 【这一次运行的权限】回给调用方，而不是让界面拿它自己刚才填的那份显示 ——
+		// 两者在这种场景下会不一致：工作区目录被规范化过（去掉尾部斜杠）、档位没传时落默认值。
+		// 界面显示"服务端实际用的那一份"，人与模型看到的才是同一个事实
+		body.put("workspaceDir", permission == null ? "" : permission.workspaceDir());
+		body.put("permissionLevel", permission == null ? "" : permission.level().name());
+		body.put("permissionLabel", permission == null ? "" : permission.label());
+		body.put("permissionNote", permission == null ? "" : permission.describe());
 		body.put("answered", run.answered());
 		body.put("finalAnswer", run.finalAnswer() == null ? "" : run.finalAnswer());
 		body.put("stopReason", run.stopReason().name());
@@ -468,22 +581,51 @@ public class AgentController {
 	 *            而"按租户看一共多少"会退化成前缀匹配。
 	 *            <p>同样进请求体：它是分组键，被 URL 转义改写会让同一个租户裂成两个 ——
 	 *            而那种错在看板上表现为"这个租户怎么有两行"
+	 * @param workspaceDir <b>工作区目录</b>（本次新增）：这一次运行在哪个目录下跑。
+	 *            <p>默认必填（{@code ai.agent.workspace.required-on-ask=true}）：
+	 *            界面上必须选或填一个真实存在的目录，后端在动模型之前就校验它。
+	 *            <p>它进请求体而不是 query string，与 {@code question} 同一条理由 ——
+	 *            路径里会出现反斜杠、空格、中文与冒号，而 URL 转义规则会静默改写它们
+	 *            （现象是"我填的目录它说没有"）。
+	 *            <p>它当前<b>不改变任何工具的行为</b>（本项目没有文件工具），
+	 *            而是三件事：必填校验、权限判定的依据、以及落库的审计字段。
+	 *            见 {@link ai.agent.entity.tool.RunPermission} 的注释
+	 * @param permissionLevel <b>权限档位</b>（本次新增）：{@code READ_ONLY} /
+	 *            {@code WORKSPACE_WRITE} / {@code FULL_ACCESS}
+	 *            （也认界面上的中文标签"仅可查看"/"工作区内修改"/"完全权限"）。
+	 *            <p>判据在 {@link ai.agent.service.tool.workspace.AgentPermissionPolicy}：
+	 *            读操作在任何档位下都直接执行；写操作在完全权限下直接执行、其余两档要人点头。
+	 *            <p>可空：空 = 仅可查看（最严的一档）。<b>填了但不认识一律拒绝</b>，
+	 *            不静默降级 —— 见 {@code AgentController.parseLevel}
 	 */
-	public record AskRequest(String question, String intent, String conversationId, String tenantId) {
+	public record AskRequest(String question, String intent, String conversationId, String tenantId,
+			String workspaceDir, String permissionLevel) {
 
 		/** 不带任何归因的构造器（最早的调用点与测试用）。 */
 		public AskRequest(String question) {
-			this(question, null, null, null);
+			this(question, null, null, null, null, null);
 		}
 
 		/** 带归因键、不带会话与租户的构造器（成本看板那批调用点用）。 */
 		public AskRequest(String question, String intent) {
-			this(question, intent, null, null);
+			this(question, intent, null, null, null, null);
 		}
 
 		/** 带归因键与会话、不带租户的构造器（第 2 件那批调用点用）。 */
 		public AskRequest(String question, String intent, String conversationId) {
-			this(question, intent, conversationId, null);
+			this(question, intent, conversationId, null, null, null);
+		}
+
+		/**
+		 * 带上工作区与档位（界面这条链路用）。
+		 *
+		 * <p>六参的规范构造器已经能吃下这个形态，这里再给一个五参的只是为了
+		 * 让"知道工作区但不想写档位"的调用方少写一个 {@code null} ——
+		 * 而档位为空时落的是最严的一档，方向是安全的。
+		 */
+		public AskRequest(String question, String intent, String conversationId, String tenantId,
+				String workspaceDir) {
+			this(question, intent, conversationId, tenantId, workspaceDir, null);
 		}
 	}
 

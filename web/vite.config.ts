@@ -11,7 +11,16 @@ import react from '@vitejs/plugin-react'
  *
  * 目标地址可在不改代码的情况下切换：
  *   - `pnpm dev:mock` → 代理到本地 SSE 假后端（mock/sse-server.mjs，8081），不烧 token；
- *   - 传环境变量 `VITE_API_TARGET` → 指向别的后端（例如同事机器上的服务）。
+ *   - 传环境变量 `VITE_API_TARGET` → 指向别的后端（例如同事机器上的服务）；
+ *   - 传环境变量 `VITE_MOCK_TARGET` → 改**假后端**那一路的目标。
+ *
+ * <h3>为什么假后端这一路也要能改</h3>
+ * 假后端的端口本身是 `MOCK_PORT` 决定的（默认 8081），所以"改假后端端口"这件事
+ * 天生就有两个变量要一起改：起服务的那个、代理指过去的那个。写成常量之后，
+ * 只改前者会出现**两边都对、但就是不说话**的形状 ——
+ * 代理指向 8081（那儿什么都没起）、假后端起在 8181，而失败信息是
+ * "等待假后端超时"，看起来像假后端起不来。
+ * `scripts/ci.mjs` 用的就是这一对变量（它要在别的端口上跑，以免踩到人正在用的那套服务）。
  */
 export default defineConfig(({ mode }) => ({
   plugins: [react()],
@@ -31,7 +40,9 @@ export default defineConfig(({ mode }) => ({
     },
     proxy: {
       '/api': {
-        target: mode === 'mock' ? 'http://127.0.0.1:8081' : (process.env.VITE_API_TARGET ?? 'http://localhost:8080'),
+        target: mode === 'mock'
+          ? (process.env.VITE_MOCK_TARGET ?? 'http://127.0.0.1:8081')
+          : (process.env.VITE_API_TARGET ?? 'http://localhost:8080'),
         changeOrigin: true,
         // 下面两个 0 = 关闭代理层的超时，别删。
         // 开发和联调时 Vite 的 dev server 就是这条链路上的"反向代理"，

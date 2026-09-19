@@ -50,9 +50,17 @@ import java.time.Duration;
  *              必然是一边嫌短、一边嫌长。
  *              <p>它同时让"超时"这条路径可以被测试：默认量表（分钟级）在测试里不可接受，
  *              而把逻辑删掉就等于不测它。有了覆盖，测试可以用同一个语义、只改时间刻度。
+ * @param runPermission <b>这一次运行被授予的权限</b>（工作区目录 + 三档之一），
+ *              {@code null} 表示没有权限上下文（外部 MCP 链路、执行器被单独调用）。
+ *              <p>它为什么必须在上下文里、而不是让闸门自己去查运行：闸门是<b>门禁</b>，
+ *              它只该看到"这一次给了多大权"这个事实，不该知道运行记录存在哪张表；
+ *              而"这次运行的档位是什么"只有循环（或恢复它的服务层）知道，
+ *              与 {@code runId} / {@code stepIndex} 完全同一类事实。
+ *              <p>⚠️ 缺失时一律按<b>最严的一档</b>处理（见 {@code WorkspaceApprovalGate}）——
+ *              把"没有档位"当成完全权限，会让一条没人审计的链路成为绕过审批的入口。
  */
 public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin origin, ApprovalGrant grant,
-		String approvalId, Duration decisionTimeout) {
+		String approvalId, Duration decisionTimeout, RunPermission runPermission) {
 
 	public ToolCallContext {
 		origin = origin == null ? ToolCallOrigin.AGENT_LOOP : origin;
@@ -60,12 +68,12 @@ public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin or
 
 	/** Agent 循环里的一步（没有通行证 —— 首次提出调用时必定没有）。 */
 	public static ToolCallContext ofStep(String runId, int stepIndex) {
-		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, null, null, null);
+		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, null, null, null, null);
 	}
 
 	/** Agent 循环里的一步，且这一次调用带着人工批准的通行证（恢复路径用）。 */
 	public static ToolCallContext ofStep(String runId, int stepIndex, ApprovalGrant grant) {
-		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, grant, null, null);
+		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, grant, null, null, null);
 	}
 
 	/**
@@ -75,7 +83,21 @@ public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin or
 	 * 而测试需要在不删掉逻辑的前提下把时间刻度改小。
 	 */
 	public static ToolCallContext ofStep(String runId, int stepIndex, Duration decisionTimeout) {
-		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, null, null, decisionTimeout);
+		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, null, null, decisionTimeout, null);
+	}
+
+	/**
+	 * 把<b>这一次运行的权限</b>补上 —— 循环在调执行器之前调用它。
+	 *
+	 * <p>与 {@link #withApproval(String)} 同一条做法（派生一个新对象）。
+	 * 权限是与 {@code runId} 同级的"运行级事实"，所以它进的是构造器的最后一位，
+	 * 而不是让闸门从别处去取：闸门只该看到"这次给了多大权"。
+	 *
+	 * @param permission 这次运行的权限；{@code null} 表示"没有权限上下文"
+	 *                   （执行器被单独调用、外部链路）—— 那时按最严的一档处理
+	 */
+	public ToolCallContext withRunPermission(RunPermission permission) {
+		return new ToolCallContext(runId, stepIndex, origin, grant, approvalId, decisionTimeout, permission);
 	}
 
 	/**
@@ -86,7 +108,7 @@ public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin or
 	 * 一个可变对象传进去，工具就能顺手改掉"我是谁批的"。<b>审计字段不该由被审计方改写。</b>
 	 */
 	public ToolCallContext withApproval(String approvalId) {
-		return new ToolCallContext(runId, stepIndex, origin, grant, approvalId, decisionTimeout);
+		return new ToolCallContext(runId, stepIndex, origin, grant, approvalId, decisionTimeout, runPermission);
 	}
 
 	/**
@@ -95,14 +117,18 @@ public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin or
 	 * <p>刻意<b>不带 runId</b>：这条路没有"运行"这个对象（没有模型、没有循环、没有检查点）。
 	 * 硬编一个假的 runId 会让审批记录挂到一个不存在的运行上，
 	 * 而那比"没有运行 id"更难排查 —— 后者一眼能看出是外部调用。
+	 *
+	 * <p>同样刻意<b>不带权限</b>：档位是"一次运行"的属性，这条路没有运行。
+	 * 于是它按最严的一档算（写操作要人点头），见 {@code WorkspaceApprovalGate} ——
+	 * 放宽必须有一个能被审计的主体，而这里没有。
 	 */
 	public static ToolCallContext mcpClient() {
-		return new ToolCallContext(null, null, ToolCallOrigin.MCP_CLIENT, null, null, null);
+		return new ToolCallContext(null, null, ToolCallOrigin.MCP_CLIENT, null, null, null, null);
 	}
 
 	/** 没有上下文（执行器被单独调用时用）。 */
 	public static ToolCallContext none() {
-		return new ToolCallContext(null, null, ToolCallOrigin.AGENT_LOOP, null, null, null);
+		return new ToolCallContext(null, null, ToolCallOrigin.AGENT_LOOP, null, null, null, null);
 	}
 
 	public boolean hasRun() {

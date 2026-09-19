@@ -30,6 +30,12 @@
 			<arg column="arguments" javaType="java.lang.String"/>
 			<arg column="hints" javaType="java.lang.String"/>
 			<arg column="summary" javaType="java.lang.String"/>
+			<!--
+			  运行权限（形如 `仅可查看 · D:\work\demo`）。DDL 里是 NOT NULL DEFAULT ''，
+			  但老库可能没有这一列被补过值 —— 这里用可空的 String，让"读不到"落成 null，
+			  再由 record 那一侧如实保留，而不是在映射层炸掉整条审批链。
+			-->
+			<arg column="permission_note" javaType="java.lang.String"/>
 			<arg column="status" javaType="ai.agent.service.agent.approval.ApprovalStatus"/>
 			<arg column="requested_at" javaType="java.time.Instant" typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
 			<!-- 待批时为 NULL；超时/作废时 decided_by 也是 NULL（没有"决定人"） -->
@@ -40,15 +46,15 @@
 	</resultMap>
 
 	<sql id="allColumns">
-		id, run_id, step_index, tool_name, arguments, hints, summary, status, requested_at,
+		id, run_id, step_index, tool_name, arguments, hints, summary, permission_note, status, requested_at,
 		decided_at, decided_by, decision_note
 	</sql>
 
 	<insert id="insert">
 		INSERT INTO agent_tool_approval
-		  (id, run_id, step_index, tool_name, arguments, hints, summary, status, requested_at)
-		VALUES (#{id}, #{runId}, #{stepIndex}, #{toolName}, #{arguments}, #{hints}, #{summary}, #{status},
-		        #{requestedAt})
+		  (id, run_id, step_index, tool_name, arguments, hints, summary, permission_note, status, requested_at)
+		VALUES (#{id}, #{runId}, #{stepIndex}, #{toolName}, #{arguments}, #{hints}, #{summary}, #{permissionNote},
+		        #{status}, #{requestedAt})
 	</insert>
 
 	<!--

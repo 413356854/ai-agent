@@ -1,5 +1,6 @@
 package ai.agent.entity.agent.store;
 
+import ai.agent.entity.agent.AgentPermissionLevel;
 import ai.agent.entity.agent.AgentRun;
 import ai.agent.entity.tool.ToolCallOutcome;
 import ai.agent.service.agent.AgentStopReason;
@@ -51,18 +52,28 @@ import java.util.List;
  *            <p>它与 {@code intent} 是两个维度：本字段是"谁"，{@code intent} 是"做什么"。
  *            看板上它们各自一栏、各自一行 —— 不合成一个字段，理由见
  *            {@code agent-schema.sql} 里 tenant_id 那一段。
+ * @param workspaceDir <b>工作区目录</b>：这次运行在哪个目录下跑。
+ *            {@code null} / 空串 = 没有工作区信息（老数据、curl 直接调、外部系统调）——
+ *            与 {@code intent} 同一条规矩，不编一个默认目录（编出来的那个会把
+ *            "根本没给工作区"伪装成"给定了一个目录"）。
+ * @param permissionLevel <b>权限档位</b>：这次运行被授予了多大权限。
+ *            {@code null} = 老数据（这一列加上之前写入的运行），
+ *            读侧一律按 {@link AgentPermissionLevel#READ_ONLY} 处理 ——
+ *            "认不出来就当完全权限"会让一次写操作被静默放行。
+ *            <p>它必须与运行一起落库，因为<b>恢复要用原来那一档接着跑</b>：
+ *            恢复路径没有请求体，档位只能从这里读回来。
  */
 public record AgentRunRecord(String id, String question, RunStatus status, AgentStopReason stopReason,
 		String finalAnswer, int totalTokens, int toolCallCount, long elapsedMs, String node, String error,
 		Instant createdAt, Instant updatedAt, ai.agent.service.agent.AgentFailureCause failureCause, String intent,
-		String conversationId, String tenantId) {
+		String conversationId, String tenantId, String workspaceDir, AgentPermissionLevel permissionLevel) {
 
 	/** 不带失败细分的构造器（保持旧调用点可编译）。 */
 	public AgentRunRecord(String id, String question, RunStatus status, AgentStopReason stopReason, String finalAnswer,
 			int totalTokens, int toolCallCount, long elapsedMs, String node, String error, Instant createdAt,
 			Instant updatedAt) {
 		this(id, question, status, stopReason, finalAnswer, totalTokens, toolCallCount, elapsedMs, node, error,
-				createdAt, updatedAt, null, null, null, null);
+				createdAt, updatedAt, null, null, null, null, null, null);
 	}
 
 	/**
@@ -75,12 +86,34 @@ public record AgentRunRecord(String id, String question, RunStatus status, Agent
 	 * <p>⚠️ 租户（第 6 件）同样落进这个构造器的 {@code null}：它的性质与归因键
 	 * 一字不差（"调用方在运行开始前就知道"），所以<b>不加第四个构造器</b> ——
 	 * 四个重载里有两个的差别只在一个尾部字段，那正是麻烦的开始。
+	 *
+	 * <p>工作区目录与权限档位（运行权限）走同一条路：它们同样"可以没有"，
+	 * 而缺了它们时读侧按最严的一档处理，方向是安全的。
 	 */
 	public AgentRunRecord(String id, String question, RunStatus status, AgentStopReason stopReason, String finalAnswer,
 			int totalTokens, int toolCallCount, long elapsedMs, String node, String error, Instant createdAt,
 			Instant updatedAt, ai.agent.service.agent.AgentFailureCause failureCause) {
 		this(id, question, status, stopReason, finalAnswer, totalTokens, toolCallCount, elapsedMs, node, error,
-				createdAt, updatedAt, failureCause, null, null, null);
+				createdAt, updatedAt, failureCause, null, null, null, null, null);
+	}
+
+	/**
+	 * 这一次运行的权限（工作区目录 + 档位）。
+	 *
+	 * <p>恢复路径靠它把"原来那一档"重建出来：请求体早就不在了，
+	 * 而"续跑时用哪一档"只能从库里读。见 {@code ResumableAgentService.resume}。
+	 *
+	 * <p>{@link #hasWorkspace()} 为 false 时返回的是"没有工作区 + 仅可查看"，
+	 * 而不是一个编出来的目录 —— 编一个会让"这次运行没有工作区"这件事在恢复之后消失。
+	 */
+	public ai.agent.entity.tool.RunPermission permission() {
+		return ai.agent.entity.tool.RunPermission.ofStored(workspaceDir,
+				permissionLevel == null ? AgentPermissionLevel.READ_ONLY : permissionLevel);
+	}
+
+	/** 这次运行有没有工作区信息（与 {@link #hasConversation()} 同一个理由：判据只写一处）。 */
+	public boolean hasWorkspace() {
+		return workspaceDir != null && !workspaceDir.isBlank();
 	}
 
 	/** 失败时给页面看的下一步建议。 */

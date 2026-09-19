@@ -281,9 +281,19 @@ public class ToolCallExecutor {
 							formatter.approvalRejected(invocation, tool, denied.stage(), denied.reason(), denied.approvalId()),
 							startedAt, approval, context);
 				}
-				case ToolApprovalGate.Authorization.Allowed allowed -> approval = allowed.approved()
-						? ToolApprovalRef.of(allowed.approvalId())
-						: ToolApprovalRef.none();
+				case ToolApprovalGate.Authorization.Allowed allowed -> {
+					approval = allowed.approved() ? ToolApprovalRef.of(allowed.approvalId()) : ToolApprovalRef.none();
+					// 【为什么这句日志必须有】"这次为什么没有弹人工确认"在实际排查里一定会被问到
+					// （尤其是完全权限档位下不再产生审核请求之后）。判据由闸门给
+					// （allowed.reason()），这里只负责落一行 —— 前端不判、别处也不重写一份措辞
+					if (allowed.approved()) {
+						log.info("工具「{}」带着人工批准 #{} 执行：{}", tool.name(), allowed.approvalId(),
+								allowed.reason());
+					}
+					else {
+						log.debug("工具「{}」免审批直接执行：{}", tool.name(), allowed.reason());
+					}
+				}
 				// 【这个 default 不是"兜底"而是"防漏"】
 				// Authorization 是 sealed 的，三个分支已经穷尽 —— 但 Java 的 switch **表达式**
 				// 要求赋值完备性，而这里的箭头分支没有 yield/赋值，所以编译器会要求 default。

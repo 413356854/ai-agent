@@ -69,6 +69,20 @@ CREATE TABLE IF NOT EXISTS agent_run (
   -- 与 intent 同一条规矩：看板会把它显示成「未标注租户」并**独立成一行**，
   -- 而不是并进某个租户里（那会让那个租户的成本虚高，且无从发现）。
   tenant_id     VARCHAR(64)  NULL,
+  -- 【运行权限的落点（本次新增）】发起任务时选了哪个工作区目录、哪一档权限。
+  --
+  -- 为什么必须落库而不是只留在请求体里：这两列回答的是"这次运行是在什么前提下跑的"，
+  -- 而它有两个直接后果 —— ① 完全权限档位下写操作**不会**产生审核请求，
+  -- 事后要能回答"那次为什么没弹确认"；② 恢复（断点续跑、批准后接着跑）必须
+  -- 用**原来那一档**接着跑，从请求里取是取不到的（恢复路径没有请求体）。
+  --
+  -- NULL / 空串 = 没有工作区信息（老数据、curl 直接调、外部系统调）。
+  -- 与 intent / tenant_id 同一条规矩：不编默认值，页面如实显示"未记录"。
+  workspace_dir VARCHAR(512) NULL,
+  -- 权限档位：READ_ONLY / WORKSPACE_WRITE / FULL_ACCESS。
+  -- ⚠️ 读侧对认不出的取值一律降成 READ_ONLY（见 AgentPermissionLevel.parse）：
+  -- 认不出就当完全权限会让一次写操作被静默放行，两个方向的代价不对称。
+  permission_level VARCHAR(32) NULL,
   created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id)
@@ -200,6 +214,14 @@ CREATE TABLE IF NOT EXISTS agent_tool_approval (
   arguments     TEXT         NULL,                   -- **真正会被执行的那份参数**（人批的就是它）
   hints         VARCHAR(128) NULL,                   -- 风险声明的可读描述（展示用，故存字符串）
   summary       VARCHAR(512) NULL,                   -- 工具自己的一句话摘要
+  -- 【本次新增】发起这次调用的那次运行被授予的权限（形如 `仅可查看 · D:\work\demo`）。
+  --
+  -- 为什么它与 hints 必须分开：hints 是**工具固有**的风险声明（对所有运行都一样），
+  -- 而"这一次为什么弹了确认"取决于运行档位 —— 同一把 propose_review
+  -- 在"仅可查看"下会弹、在"完全权限"下不会，只看 hints 分不出这两种情况。
+  --
+  -- 空串 = 没有权限上下文（外部 MCP 客户端那条链路没有"运行"这个对象，老数据也没有这一列）。
+  permission_note VARCHAR(512) NOT NULL DEFAULT '',
   status        VARCHAR(32)  NOT NULL,               -- PENDING / APPROVED / DENIED / TIMED_OUT / EXPIRED
   requested_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   decided_at    TIMESTAMP    NULL,

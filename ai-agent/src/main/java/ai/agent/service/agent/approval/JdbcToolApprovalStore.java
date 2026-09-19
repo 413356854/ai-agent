@@ -53,7 +53,11 @@ public class JdbcToolApprovalStore implements ToolApprovalStore {
 	public void save(ToolApprovalRecord record) {
 		try {
 			mapper.insert(record.id(), record.runId(), record.stepIndex(), record.toolName(),
-					fit(record.arguments()), record.hints(), record.summary(), record.status(), record.requestedAt());
+					fit(record.arguments()), record.hints(), record.summary(),
+					// 那一列在 DDL 里是 NOT NULL DEFAULT ''：null 与空串都会出现（外部链路没有档位），
+					// 这里统一成空串，理由是"空串表示取不到"这条规矩只在**写入侧**定义一次
+					record.permissionNote() == null ? "" : record.permissionNote(),
+					record.status(), record.requestedAt());
 		}
 		catch (DataAccessException e) {
 			// 抛而不是吞：审批记录写不进去意味着"这次写操作没有可审计的凭据"。

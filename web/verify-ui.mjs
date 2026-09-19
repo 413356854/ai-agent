@@ -1081,6 +1081,58 @@ const agentCard = page.locator('.diag-card', { hasText: '跑一个任务' }).fir
     '—— 只写两个输入框而不说区别，使用者会把租户填成业务名')
 }
 
+// ★ 本次新增的两个参数：工作区目录（必填）与权限档位
+//
+// 【为什么这两条断言比"页面上有两个控件"重要】它们与上面那两条归因断言同一个形状：
+// 目录与档位是"没有入口就等于没有"的能力 —— 后端接了参数、界面上不给入口的话，
+// 每一次运行都只会落默认值（无工作区 + 仅可查看），而**页面上看起来一切正常**。
+// 更硬的一条是：档位决定了"写操作会不会停下来等人"，选错了没有任何报错，
+// 只是那条人工闸门在你以为它开着的时候没开。
+{
+  // 两个控件存在
+  expect('★ 写了「工作区目录」输入框（本次新增的必填参数）',
+    (await agentCard.locator('[data-testid="agent-workspace-dir"]').count()) > 0)
+  expect('★ 工作区是**必填**的，而且页面上写出来了',
+    (await agentCard.locator('.agent-required').count()) > 0,
+    '—— 后端会拒绝空值，而"没说必填"是那条错误唯一能预防的地方')
+
+  // 三档权限都在，且每一档都带了"会发生什么"
+  const permissionGroup = agentCard.locator('[data-testid="agent-permission-level"]')
+  expect('★ 权限档位是一个三选一的单选组', (await permissionGroup.count()) > 0)
+  const levelHints = await agentCard.locator('.agent-permission-hint').allInnerTexts()
+  expect('★ 三档权限都在（仅可查看 / 工作区内修改 / 完全权限）',
+    levelHints.length === 3
+    && /检索/.test(levelHints[0] ?? '')
+    && /工作区内/.test(levelHints[1] ?? '')
+    && /直接执行/.test(levelHints[2] ?? ''),
+    `—— 实际：${JSON.stringify(levelHints)}`)
+
+  /*
+    ★ 三档的差异必须**如实写出来**，而不是只给三个名字。
+
+    【为什么这一条值得单独断言】「工作区内修改」这一档在当前功能下与「仅可查看」
+    行为完全相同（本项目的工具没有路径参数，判不出"写在工作区内还是外"）。
+    只给三个名字的话，使用者会以为它已经放宽了什么 —— 于是他会选一个自己以为更宽的档位，
+    然后对"怎么还在弹审批"感到困惑，而那个困惑最后会被归因成权限功能坏了。
+    所以断言的是"每一档都说清了后果"，而不是"有三个选项"。
+  */
+  const runScopeHint = levelHints[1] ?? ''
+  expect('★ 「工作区内修改」这一档写明了它与「仅可查看」当前行为相同（不夸大）',
+    /仍然要人点头|判不出|行为相同/.test(runScopeHint), `—— 实际：${runScopeHint}`)
+  expect('★ 「完全权限」那一档写明了「写操作直接执行、不产生审核请求」（这一档的真实后果）',
+    /直接执行/.test(levelHints[2] ?? '') && /审核请求/.test(levelHints[2] ?? ''),
+    `—— 实际：${levelHints[2]}`)
+
+  // 默认必须落在**最严**的一档：一个"默认就能跳过人工确认"的界面会让那条闸门多数时候不生效
+  const defaultChecked = await permissionGroup.locator('input[type="radio"]:checked').count()
+  const readOnlyChecked = await permissionGroup.locator('input[type="radio"][value="READ_ONLY"]:checked').count()
+  expect('★ 默认档位是最严的「仅可查看」（不是完全权限）',
+    defaultChecked === 1 && readOnlyChecked === 1,
+    `—— 选中的单选框数=${defaultChecked}，其中 READ_ONLY=${readOnlyChecked}`)
+
+  await page.screenshot({ path: `${SHOT_DIR}/agent-permission-controls.png`, fullPage: true })
+}
+
 // 假后端才有复位端点（真后端没有这个路径，调用会 404 —— 所以只在假路径调）
 if (EXPECT_REFLECTION) {
   const reset = await page.request.post(`${URL}/api/agent/__reset-approval`).catch(() => null)
@@ -1359,9 +1411,30 @@ if (EXPECT_REFLECTION) {
     expect('★ 出站请求体里业务归因与租户是两个**独立**的键（不是拼成一个字符串）',
       Object.prototype.hasOwnProperty.call(body, 'intent') && body.intent !== body.tenantId,
       `intent=${body.intent} tenantId=${body.tenantId}`)
+
+    /*
+      ★ 本次新增的两个参数也必须在出站请求体里。
+
+      【为什么判据是"请求体里有这个键"，而不是"页面上有这个框"】
+      中间隔着一次字段名拼接（`workspaceDir` / `permissionLevel`），而字段名写错的症状是：
+      后端认为"没传"→ 走默认值（无工作区 + 仅可查看）→ 界面上一切正常。
+      特别是档位：拼错时后端会**拒绝**（认不出的取值一律拒），而那只在点了按钮之后才现形。
+      所以这里钉的是"界面填的东西真的发出去了"这一跳。
+    */
+    expect('★ 出站请求体里有 workspaceDir 这个键（本次新增的必填参数）',
+      Object.prototype.hasOwnProperty.call(body, 'workspaceDir'),
+      `—— body=${JSON.stringify(body).slice(0, 200)}`)
+    expect('★ 出站请求体里的 workspaceDir 有值（默认值会真的被发出去）',
+      typeof body.workspaceDir === 'string' && body.workspaceDir.trim().length > 0,
+      `workspaceDir=${JSON.stringify(body.workspaceDir)}`)
+    expect('★ 出站请求体里有 permissionLevel 这个键，且是后端认识的三档之一',
+      ['READ_ONLY', 'WORKSPACE_WRITE', 'FULL_ACCESS'].includes(body.permissionLevel),
+      `permissionLevel=${JSON.stringify(body.permissionLevel)}`)
+    expect('★ 权限档位的默认值是 READ_ONLY（与界面上选中的那一档一致）',
+      body.permissionLevel === 'READ_ONLY', `permissionLevel=${body.permissionLevel}`)
   }
   catch (e) {
-    expect('抓到了 /api/agent/ask 的出站请求体（用来核对归因字段）', false, String(e))
+    expect('抓到了 /api/agent/ask 的出站请求体（用来核对归因与权限字段）', false, String(e))
   }
   await agentCard.locator('.stat-cell', { hasText: '停因' }).first().waitFor({ state: 'visible', timeout: 150000 })
   await page.waitForTimeout(800)
@@ -1369,6 +1442,18 @@ if (EXPECT_REFLECTION) {
   const resultText = (await agentCard.innerText()).trim()
   expect('显示了停因与成本', /停因/.test(resultText) && /token/.test(resultText))
   expect('显示了工具调用汇总', /工具调用/.test(resultText))
+
+  /*
+    ★ 本次运行的执行前提必须回显出来（结果卡上那一行）。
+
+    【它为什么必须有】在「完全权限」档位下写操作**不产生审核请求** ——
+    而"待我确认"那张卡片为空时，人无法区分"这次没有写操作"与"这一次被放宽了"。
+    这一行就是那个区分。所以断言"结果卡里有这一行"，而不是"界面上有这个控件"：
+    前者证明的是**服务端实际用的那份前提**被显示了。
+  */
+  expect('★ 结果卡回显了本次运行的执行前提（工作区 + 档位）',
+    /执行前提/.test(resultText) && /仅可查看|工作区内修改|完全权限|未记录/.test(resultText),
+    `—— 页面文本片段：${resultText.slice(0, 240).replace(/\n/g, ' | ')}`)
 
   // 「停因」这一格在每个路径上都该是**真实的枚举名**，而不是空 ——
   // 它是"这一页回答了为什么"的最小证据

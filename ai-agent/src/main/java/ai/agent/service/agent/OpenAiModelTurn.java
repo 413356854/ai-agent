@@ -103,31 +103,56 @@ public class OpenAiModelTurn implements ModelTurn {
 		this.chatProperties = chatProperties;
 	}
 
-	@Override
-	public String modelName() {
+	/**
+	 * 配置里那一份模型名（唯一来源：{@code spring.ai.openai.chat.options.model}）；
+	 * 取不到时返回 {@code null} —— {@link #modelName()} 把它换成 {@link #UNKNOWN_MODEL}（看板据此拒绝计价），
+	 * {@link #chat} 把它当成"配置缺失"直接报错。
+	 */
+	private String configuredModel() {
 		var properties = chatProperties.getIfAvailable();
 		String model = properties == null ? null : properties.getModel();
-		return model == null || model.isBlank() ? UNKNOWN_MODEL : model;
+		return model == null || model.isBlank() ? null : model;
+	}
+
+	@Override
+	public String modelName() {
+		String model = configuredModel();
+		return model == null ? UNKNOWN_MODEL : model;
 	}
 
 	@Override
 	public ModelReply chat(List<Message> messages) {
+		String model = configuredModel();
+		if (model == null) {
+			// 不"让它空着"：空着不会让请求不带模型，那个位置会被 SDK 默认值顶上（见下面 options 的注释），
+			// 而上游只会报"你传了一个我不支持的模型名"，看不出是配置少了一行
+			throw new IllegalStateException(
+					"spring.ai.openai.chat.options.model 没配（或为空）—— 没有模型名就不发请求");
+		}
+
 		// 工具定义随请求发出：模型据此知道能调什么、参数长什么样。
 		// 注意 toolCallbacks 里放的是 AgentTool 本身（它实现 ToolCallback）——
 		// 但**不会**被框架执行，因为走的是 ChatModel.call 而不是 ChatClient（见类注释）
 		//
-		// 【必须用 OpenAiChatOptions，不能用通用的 ToolCallingChatOptions】—— 这一条是实测踩出来的：
-		// 第一版写的是 ToolCallingChatOptions.builder().toolCallbacks(...)，
-		// 它造出来的是 DefaultToolCallingChatOptions，而 OpenAiChatModel 内部会把它
-		// **强转成 OpenAiChatOptions**，于是运行期直接：
+		// 【model 必须显式写】2.0.1 的 OpenAiChatOptions 表达不了"模型名未设置"：构造器在 model 为 null 时
+		// 填 SDK 默认的 "gpt-5-mini"；而 OpenAiChatModel 对带了 options 的 Prompt 是原样使用
+		// （buildRequestPrompt 字节码：不与环境里那份默认 options 合并）。少这一行，请求发出的就是 gpt-5-mini。
+		// 实测（假上游抓请求体）：不写 → gpt-5-mini，写 → deepseek-flash。
+		//
+		// 走 ChatClient 的两处（ChatServiceImpl / StructuredChatServiceImpl）不受这条约束：
+		// 它们传的是 Builder，合并在 builder 层（getOptions().mutate().combineWith(请求 builder)），
+		// 未设置的字段仍是 null。
+		//
+		// 【必须用 OpenAiChatOptions，不能用通用的 ToolCallingChatOptions】
+		// ToolCallingChatOptions.builder() 造出来的是 DefaultToolCallingChatOptions，
+		// 而 OpenAiChatModel 内部会把它**强转成 OpenAiChatOptions**，于是运行期直接：
 		//   ClassCastException: DefaultToolCallingChatOptions cannot be cast to OpenAiChatOptions
 		//
-		// 最值得记的是它的**症状**：这个异常被 AgentLoop 兜住、变成了 MODEL_ERROR 的 run 报告
-		// （那是刻意的设计：模型失败不该炸掉会话，已花的成本要带回来）。
-		// 于是表面上"只是模型调用失败"，而真正的原因是我传错了 options 类型。
-		// 它也说明这条路径必须**真的经过这个适配器**才会暴露：在 ModelTurn 接口上打桩的替身
-		// 一个都碰不到这一行，因为它们根本不经过这里。
+		// 它的症状：这个异常被 AgentLoop 兜住、变成 MODEL_ERROR 的 run 报告（模型失败不该炸掉会话，
+		// 已花的成本要带回来）。于是表面上"只是模型调用失败"，真正的原因是 options 的类型传错了。
+		// 这条路径必须**真的经过这个适配器**才会暴露：在 ModelTurn 接口上打桩的替身根本不经过这里。
 		OpenAiChatOptions options = OpenAiChatOptions.builder()
+				.model(model)
 				.toolCallbacks(new ArrayList<>(registry.all()))
 				.build();
 

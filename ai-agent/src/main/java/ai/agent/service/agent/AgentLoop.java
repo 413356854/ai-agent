@@ -7,6 +7,7 @@ import ai.agent.config.AgentLoopProperties;
 import ai.agent.service.prompt.PromptKind;
 import ai.agent.service.prompt.PromptService;
 import ai.agent.entity.tool.ApprovalGrant;
+import ai.agent.entity.tool.RunPermission;
 import ai.agent.entity.tool.ToolCallContext;
 import ai.agent.service.tool.ToolCallExecutor;
 import ai.agent.entity.tool.ToolCallOutcome;
@@ -107,14 +108,60 @@ public class AgentLoop {
 	 */
 	private final CanaryService canary;
 
+	/**
+	 * <b>这一次运行的权限</b>（工作区目录 + 三档之一）。
+	 *
+	 * <h2>为什么它是循环的字段，而不是 run 的参数</h2>
+	 * 与 {@code modelTurn} 完全同一个理由：它是"这一次运行怎么跑"的一个前提，
+	 * 由服务层在开跑之前定好，而循环只负责把它转成 {@link ToolCallContext} 交给执行器。
+	 * 循环自始至终不需要知道"完全权限是什么意思" —— 那个判据只在
+	 * {@code AgentPermissionPolicy} 一处。
+	 *
+	 * <p>{@code null} 表示没有权限上下文（老入口、测试直接 new 循环）：
+	 * 那时闸门按最严的一档算，也就是"和加这个字段之前完全一样"的行为。
+	 */
+	private final RunPermission permission;
+
+	/**
+	 * 容器装配用的那一个（<b>标了 `@Autowired` 是必需的，不是风格</b>）。
+	 *
+	 * <p>类里有两个构造器，而 Spring 只在"只有一个候选"时才自动选它。有了第二个之后
+	 * 两个都不标就会去找无参构造器（本类全是 final 字段，没有），启动直接报
+	 * {@code No default constructor found}；而如果把 `@Autowired` 标在**那个带权限的**上，
+	 * 失败信息会变成 {@code required a bean of type 'RunPermission' that could not be found} ——
+	 * 它指向"少一个 bean"，真正的原因却是"注解标错了构造器"。
+	 * 所以：标在这个六参的上面，权限那两个构造器保持 {@code private}。
+	 */
+	@org.springframework.beans.factory.annotation.Autowired
 	public AgentLoop(ToolRegistry registry, ToolCallExecutor executor, ModelTurn modelTurn,
 			AgentLoopProperties properties, PromptService prompts, CanaryService canary) {
+		this(registry, executor, modelTurn, properties, prompts, canary, null);
+	}
+
+	/**
+	 * 完整形态（多一个权限字段）。
+	 *
+	 * <p>⚠️ <b>它必须是 `private`，而且不能标 `@Autowired`</b> —— 两者都是为了同一件事：
+	 * 让容器只看见上面那一个公开构造器。Spring 的规则是"类里只有一个构造器时才自动选它"，
+	 * 所以多出一个公开构造器会让它去找无参构造器（本类全是 final 字段，没有），
+	 * 启动直接报 `No default constructor found`；而把 `@Autowired` 标在**这一个**上更糟 ——
+	 * 它会去容器里找一个 `RunPermission` bean，于是失败信息变成
+	 * `required a bean of type 'RunPermission' that could not be found`，
+	 * 指向的是"少一个 bean"，而真正的原因是"注解标错了构造器"。
+	 *
+	 * <p>权限由 {@code ResumableAgentService} 每次运行用 {@link #withPermission} 派生实例带进来
+	 * （它本来就为换模型这么做过），所以容器里那个循环的权限字段永远是 {@code null} ——
+	 * 语义是"没有权限上下文"，判定侧按最严的一档处理。
+	 */
+	private AgentLoop(ToolRegistry registry, ToolCallExecutor executor, ModelTurn modelTurn,
+			AgentLoopProperties properties, PromptService prompts, CanaryService canary, RunPermission permission) {
 		this.registry = registry;
 		this.executor = executor;
 		this.modelTurn = modelTurn;
 		this.properties = properties;
 		this.prompts = prompts;
 		this.canary = canary;
+		this.permission = permission;
 	}
 
 	/**
@@ -370,7 +417,7 @@ public class AgentLoop {
 				}
 
 				ToolCallOutcome outcome = executor.execute(invocation,
-						ToolCallContext.ofStep(runId, round, effectiveGrant));
+						ToolCallContext.ofStep(runId, round, effectiveGrant).withRunPermission(permission));
 
 				// ---- 出口 5：停在人工闸门上（HITL） ----
 				//
@@ -607,7 +654,18 @@ public class AgentLoop {
 	 * （这个坑阶段一的钉住实验踩过：一个"只在第一次算"的字段在真并发下会互相干扰）。
 	 */
 	public AgentLoop withModelTurn(ModelTurn otherModel) {
-		return new AgentLoop(registry, executor, otherModel, properties, prompts, canary);
+		return new AgentLoop(registry, executor, otherModel, properties, prompts, canary, permission);
+	}
+
+	/**
+	 * 换一次运行的<b>权限</b>，其余装配照旧 —— 返回一个<b>新实例</b>，不改动自己。
+	 *
+	 * <p>给恢复路径用：续跑必须用<b>原来那一档</b>（从库里读回来），
+	 * 而不是"用当前默认档位跑完剩下的步骤" —— 后者会让一次"仅可查看"的运行
+	 * 在恢复之后拿到完全权限，而那种放大在页面上完全看不出来。
+	 */
+	public AgentLoop withPermission(RunPermission other) {
+		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, other);
 	}
 
 }

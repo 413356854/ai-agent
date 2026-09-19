@@ -75,17 +75,35 @@ public interface ToolApprovalGate {
 		 *                   （"没走过审批"与"审批通过了"不是同一件事，
 		 *                   都写成 null 会让审计表里查不出"哪些调用曾经被拦下过"）
 		 * @param approved 这次放行是不是来自一次<b>真实的人工批准</b>（而不是"不需要审批"）
+		 * @param reason <b>为什么不需要审批</b>（只有 {@code approved=false} 时有意义）。
+		 *               它是"这次为什么没弹确认"的答案，而这个问题在实际排查里一定会被问到
+		 *               （例：人以为"写操作都会弹"，而这一次没有）。
+		 *               <p>判据是：{@code "工具本身免审批"} 与 {@code "本次运行的权限档位覆盖了它"}
+		 *               是两件不同的事 —— 后者意味着"换一档就会弹"，而前者不会。
+		 *               两者都不打断执行，但写进日志的是同一个字符串，所以必须能分开读
 		 */
-		record Allowed(String approvalId, boolean approved) implements Authorization {
+		record Allowed(String approvalId, boolean approved, String reason) implements Authorization {
 
-			/** 不需要审批（只读工具，或幂等的写）。 */
+			/** 不需要审批，且原因是"工具自己的声明说它免审批"（只读工具，或幂等的写）。 */
 			public static Allowed notRequired() {
-				return new Allowed(null, false);
+				return new Allowed(null, false, "工具自己的声明是免审批（只读，或幂等的写）");
+			}
+
+			/**
+			 * 不需要审批，且原因是"<b>本次运行</b>的权限档位覆盖了它"。
+			 *
+			 * <p>与 {@link #notRequired()} 分开是刻意的：这一条意味着
+			 * <b>换一个档位就会弹确认</b>，而 {@code notRequired()} 不会。
+			 * 合成一句"不需要审批"之后，"完全权限"这次放宽就只存在于配置里，
+			 * 而事后查"这次为什么没弹"会查到一段读不出结论的日志。
+			 */
+			public static Allowed byRunPermission(String reason) {
+				return new Allowed(null, false, reason);
 			}
 
 			/** 人工批准过再恢复执行。 */
 			public static Allowed preApproved(String approvalId) {
-				return new Allowed(approvalId, true);
+				return new Allowed(approvalId, true, "人工批准过（审批 #" + approvalId + "）");
 			}
 		}
 
@@ -127,9 +145,23 @@ public interface ToolApprovalGate {
 	 * @param arguments 参数的原始 JSON（<b>人必须看到真正会被执行的那份参数</b>）
 	 * @param hints 风险声明（界面据此显示"破坏性/影响外部"这类提示）
 	 * @param summary 一句话说明这次要做什么（来自工具的四段描述里的 summary）
+	 * @param permissionNote <b>这次运行被授予的权限</b>（形如
+	 *            {@code 仅可查看 · D:\work\demo}）。
+	 *            <p>它存在的理由很具体：当"要不要确认"是<b>运行档位</b>决定的而不是工具本身决定的时，
+	 *            那个档位就是人做判断的依据之一 —— 不显示的话，
+	 *            "这次为什么弹了确认"（明明上次没弹）在页面上没有任何线索。
+	 *            <p>空串表示"没有权限上下文"（外部链路 / 本次没有工作区）。
+	 *            刻意用空串而不是 null：它进的是审批记录的参数列，
+	 *            而那一列已经用空串表示"取不到"（与 {@code ToolApprovalRecord.hints} 同一套规矩）
 	 */
 	record ApprovalRequest(String approvalId, String runId, Integer stepIndex, String toolName, String arguments,
-			ToolHints hints, String summary) {
+			ToolHints hints, String summary, String permissionNote) {
+
+		/** 兼容构造器：不带权限说明的审批请求（工具自己的声明要求审批时）。 */
+		public ApprovalRequest(String approvalId, String runId, Integer stepIndex, String toolName, String arguments,
+				ToolHints hints, String summary) {
+			this(approvalId, runId, stepIndex, toolName, arguments, hints, summary, "");
+		}
 
 		/** 给界面/日志的一行摘要。 */
 		public String describe() {
@@ -157,7 +189,7 @@ public interface ToolApprovalGate {
 
 		@Override
 		public Authorization authorize(ToolInvocation invocation, AgentTool<?> tool, ToolCallContext context) {
-			return new Authorization.Allowed(null, false);
+			return Authorization.Allowed.notRequired();
 		}
 
 		@Override

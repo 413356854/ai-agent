@@ -1431,6 +1431,39 @@ body {
 .cost-intent-input { max-width: 260px; }
 .cost-intent-hint { font-size: 12px; }
 
+/* --------------------------------------------------------------------------
+   工作区目录与权限档位（Agent 面板的两个执行前提）
+   -------------------------------------------------------------------------- */
+
+/* 工作区路径会比归因键长得多（`D:\work\一些中文目录名`），
+   沿用 260px 会把路径截成看不出是哪一层目录，所以给它更宽的一格 */
+.agent-workspace-input { max-width: 420px; font-variant-numeric: tabular-nums; }
+
+/* 必填星号。它是这一页唯一一个必填项，所以要能一眼看出来 ——
+   后端会拒绝空值，而"没说必填"是那条错误唯一能预防的地方 */
+.agent-required { color: #ff4d4f; margin-left: 2px; }
+
+/*
+  三档权限并排可读。
+  【为什么不折成一行 Segmented】三档里有两档在当前功能下行为相同、
+  第三档会跳过人工确认 —— 这个差异不写出来，使用者会选一个自己以为更宽的档位。
+  所以每一档下面各挂一行小字，而不是只放三个标签。
+*/
+.agent-permission-group { display: block; }
+.agent-permission-option { display: flex; align-items: baseline; margin-bottom: 2px; }
+/* 两段都是 <label> 里的 inline 内容：换成块级元素会把每一档折成两行 */
+.agent-permission-label { font-weight: 500; margin-right: 8px; white-space: nowrap; }
+.agent-permission-hint { font-size: 12px; color: rgba(0, 0, 0, 0.45); line-height: 1.6; }
+
+/* 本次运行的执行前提（三处显示同一句话：结果卡 / 运行详情 / 五层 trace）。
+   用等宽数字：路径与档位名要能被逐字比对 */
+.agent-run-permission { font-variant-numeric: tabular-nums; }
+
+/* 待批条目里"这一次为什么弹了确认"那一行。
+   它与上面那条「风险评估（工具自己的声明）」必须**看得出是两件事**：
+   前者对所有运行都一样，后者只取决于这一次选的档位 */
+.approval-permission { font-variant-numeric: tabular-nums; }
+
 /* ==========================================================================
    Prompt 版本管理（阶段四第 3 件，第七种模式）
    ========================================================================== */

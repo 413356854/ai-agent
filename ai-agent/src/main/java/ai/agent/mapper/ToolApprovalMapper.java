@@ -27,8 +27,8 @@ public interface ToolApprovalMapper {
 	/** 写一条待批/已决记录。参数列在写之前已由调用方截断并留标记（见 store 里的 fit()）。 */
 	int insert(@Param("id") String id, @Param("runId") String runId, @Param("stepIndex") Integer stepIndex,
 			@Param("toolName") String toolName, @Param("arguments") String arguments, @Param("hints") String hints,
-			@Param("summary") String summary, @Param("status") ApprovalStatus status,
-			@Param("requestedAt") Instant requestedAt);
+			@Param("summary") String summary, @Param("permissionNote") String permissionNote,
+			@Param("status") ApprovalStatus status, @Param("requestedAt") Instant requestedAt);
 
 	/**
 	 * 落一个人工/超时的决定。返回受影响行数 ——

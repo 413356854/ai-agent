@@ -81,7 +81,7 @@ public class JdbcAgentRunStore implements AgentRunStore {
 	public void start(Start start) {
 		try {
 			mapper.startRun(start.runId(), start.question(), start.node(), start.intent(), start.conversationId(),
-					start.tenantId());
+					start.tenantId(), start.workspaceDir(), start.permissionLevel());
 		}
 		catch (DataAccessException e) {
 			throw new AgentStoreException("开一次 Agent 运行失败 runId=" + start.runId(), e);
@@ -236,11 +236,19 @@ public class JdbcAgentRunStore implements AgentRunStore {
 				throw new AgentStoreException("认领未完成运行失败 node=" + node + " runId=" + candidate.id(), e);
 			}
 			if (updated == 1) {
+				// 【为什么要从候选记录派生、而不是重新拼一遍字段】
+				// 拼字段的写法每加一列都要在这里补一次，而漏掉一个同类型的 String
+				// （tenantId 与 intent 之间、workspaceDir 与 tenantId 之间）**编译得过**，
+				// 后果是被认领的运行丢掉那一列 —— 比如丢掉工作区与权限档位，
+				// 于是"恢复之后用哪一档接着跑"这个问题会得到一个错的答案。
+				// 所以这里是"整条记录复制 + 只改状态与 updatedAt"：
+				// 每一列都显式出现在构造调用里，漏一列时编译器会报"参数不匹配"
 				claimed.add(new AgentRunRecord(candidate.id(), candidate.question(), RunStatus.INTERRUPTED,
 						candidate.stopReason(), candidate.finalAnswer(), candidate.totalTokens(),
 						candidate.toolCallCount(), candidate.elapsedMs(), candidate.node(), candidate.error(),
 						candidate.createdAt(), Instant.now(), candidate.failureCause(), candidate.intent(),
-						candidate.conversationId(), candidate.tenantId()));
+						candidate.conversationId(), candidate.tenantId(), candidate.workspaceDir(),
+						candidate.permissionLevel()));
 			}
 			else {
 				// 没抢到：说明另一个实例（或另一次启动）先改了它。

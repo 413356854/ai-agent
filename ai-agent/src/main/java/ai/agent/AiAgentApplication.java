@@ -3,6 +3,7 @@ package ai.agent;
 import ai.agent.config.AgentApprovalProperties;
 import ai.agent.config.ChatCallProperties;
 import ai.agent.config.ReviewProperties;
+import ai.agent.config.WorkspaceProperties;
 import ai.agent.config.rag.RagProperties;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
@@ -43,7 +44,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 @SpringBootApplication
 @MapperScan("ai.agent.mapper")
 @EnableConfigurationProperties({ ChatCallProperties.class, RagProperties.class, AgentApprovalProperties.class,
-		ReviewProperties.class })
+		ReviewProperties.class, WorkspaceProperties.class })
 public class AiAgentApplication {
 
 	public static void main(String[] args) {

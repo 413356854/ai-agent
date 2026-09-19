@@ -44,7 +44,8 @@ public interface AgentRunMapper {
 	/** 开一次运行。状态写死 RUNNING：调用方能决定的只有"开始"，结局由 finish 写。 */
 	int startRun(@Param("id") String id, @Param("question") String question, @Param("node") String node,
 			@Param("intent") String intent, @Param("conversationId") String conversationId,
-			@Param("tenantId") String tenantId);
+			@Param("tenantId") String tenantId, @Param("workspaceDir") String workspaceDir,
+			@Param("permissionLevel") ai.agent.entity.agent.AgentPermissionLevel permissionLevel);
 
 	/**
 	 * 写一步的检查点（幂等 upsert）。

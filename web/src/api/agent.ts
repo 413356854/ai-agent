@@ -146,6 +146,24 @@ export interface AgentAskResponse {
   stepSummaries: string[]
   steps: AgentStep[]
 
+  // ---- 运行权限（本次新增）----
+  /**
+   * **这一次运行的执行前提：在哪个目录下、拿了多大权限。**
+   *
+   * 回的是**服务端实际用的那一份**，不是界面刚才填的那一份 —— 两者会不一样：
+   * 目录被规范化过（去掉尾部斜杠）。让界面显示服务端那份，人与模型看到的才是同一个事实。
+   *
+   * `permissionLevel` 为空串有两种含义，后端会分别说明：
+   * ① 这条链路没有工作区（`ai.agent.workspace.required-on-ask=false` 时的 curl 调用）；
+   * ② 老数据。界面上按"未记录"显示，**不编一个默认档位**。
+   */
+  workspaceDir?: string
+  permissionLevel?: string
+  /** 档位的中文标签（"仅可查看" / "工作区内修改" / "完全权限"），由后端给，前端不自己映射 */
+  permissionLabel?: string
+  /** 一行可读说明，形如 `完全权限 · D:\work\demo` */
+  permissionNote?: string
+
   // ---- 第九轮新增：HITL（人工确认）----
   /**
    * **这次任务停在一次写操作上等人确认**（`stopReason === 'WAITING_FOR_APPROVAL'` 的便捷布尔）。
@@ -190,6 +208,17 @@ export interface AgentApprovalRow {
   arguments: string
   /** 风险声明的可读描述，来自 `ToolHints.describe()` */
   hints: string
+  /**
+   * **这一次为什么弹了确认**（形如 `仅可查看 · D:\work\docs`）。
+   *
+   * <p>它与 {@link hints} 是两个问题：`hints` 是**工具固有**的风险声明
+   * （对所有运行都一样），而这一条取决于**这次运行的档位** ——
+   * 同一把 `propose_review` 在「完全权限」下不会弹确认。
+   * 只看 `hints` 分不出"这次为什么弹了"。
+   *
+   * <p>空串 = 没有权限上下文（外部 MCP 链路、老数据）。**不编默认值**。
+   */
+  permissionNote?: string
   /** 工具自己的一句话摘要（来自四段描述） */
   summary: string
   requestedAt: string
@@ -258,6 +287,8 @@ export interface AgentRunApprovalRow {
   stepIndex: number
   toolName: string
   arguments: string
+  /** 这一次为什么弹了确认（与待办列表同名字段；空串 = 没有权限上下文） */
+  permissionNote?: string
   /** `PENDING` / `APPROVED` / `DENIED` / `TIMED_OUT` / `EXPIRED` */
   status: string
   pending: boolean
@@ -288,6 +319,16 @@ export interface AgentRunRow {
   intent: string
   /** 租户，空串 = 未标注租户。与 `intent` 是两个维度，别当成一回事。 */
   tenantId: string
+  /**
+   * 这一次运行的工作区目录；空串 = 没有权限上下文（老数据、curl 直接调）。
+   *
+   * 它与 {@link AgentPermissionLevelValue} 一起回答"这次是在什么前提下跑的"——
+   * 而在「完全权限」档位下**写操作不产生审核请求**，所以这一列是事后回答
+   * "那次为什么没弹确认"的唯一依据。
+   */
+  workspaceDir?: string
+  /** 档位枚举名；空串 = 未记录。取值见 {@link AgentPermissionLevelValue} */
+  permissionLevel?: string
 }
 
 /** `GET /api/agent/runs` 的响应 */
@@ -318,6 +359,12 @@ export interface AgentRunDetail {
     intent: string
     /** 租户，空串 = 未标注租户（与 `intent` 是两个维度） */
     tenantId: string
+    /** 工作区目录，空串 = 没有权限上下文（老数据、外部链路） */
+    workspaceDir?: string
+    /** 档位枚举名，空串 = 未记录 */
+    permissionLevel?: string
+    /** 档位的中文标签，空串 = 未记录 */
+    permissionLabel?: string
   }
   steps: AgentStep[]
   toolCalls: AgentToolCall[]
@@ -503,6 +550,12 @@ export interface AgentTrace {
     intent: string
     /** 租户；空串 = 未标注租户（第 6 件加上来的第二个归因维度） */
     tenantId: string
+    /** 工作区目录；空串 = 这次运行没有权限上下文 */
+    workspaceDir?: string
+    /** 档位枚举名；空串 = 未记录 */
+    permissionLevel?: string
+    /** 档位的中文标签；空串 = 未记录 */
+    permissionLabel?: string
     createdAt: string
     updatedAt: string
   }
@@ -574,11 +627,23 @@ export interface AgentLimitsResponse {
 // ---------------------------------------------------------------------------
 
 /**
- * 跑一个任务。
+ * **跑一个任务**。
  *
  * **它会真的调模型并花钱**，所以界面上必须有明确的动作（按钮 + 提示成本），
  * 不做任何自动触发。
  *
+ * <h2>两个必填的执行前提：工作区目录与权限档位（本次新增）</h2>
+ * 后端在**动模型之前**校验它们（目录必须真实存在且确实是目录）。
+ * 校验失败时后端不会开跑、不花钱，返回的是 `{ok:false, error:"…"}` ——
+ * 所以这里的失败提示是能照着改的那种（"工作区目录不存在：…"）。
+ *
+ * <p>目录当前不改变任何工具的行为（本项目没有文件工具），
+ * 它现在的作用是：必填校验、权限判定的依据、以及落库的审计字段。
+ * 完整判据见 {@link AgentPermissionLevelValue}。
+ *
+ * @param workspaceDir 工作区目录（**必填**）。可以是绝对路径，也可以是相对路径
+ *            （相对路径按 Java 进程的工作目录解析）。
+ * @param permissionLevel 权限档位；省略或传空则后端按**仅可查看**算（最严的一档）
  * @param intent 业务归因键（阶段四成本看板）：这次运行为哪个业务花的钱。
  *            留空则看板上归到「未标注」那一行 —— **不会被并进任何一个业务**，
  *            因为"猜一个业务"会让那个业务的成本虚高，而虚高的部分无从发现。
@@ -596,16 +661,106 @@ export interface AgentLimitsResponse {
  */
 export function askAgent(
   question: string,
+  workspaceDir: string,
+  permissionLevel: AgentPermissionLevelValue,
   intent = '',
   tenantId = '',
   conversationId = AGENT_CONVERSATION_ID,
 ): Promise<AgentAskResponse> {
   return postJson<AgentAskResponse>(
     '/api/agent/ask',
-    { question, intent, tenantId, [AGENT_CONVERSATION_FIELD]: conversationId },
+    {
+      question,
+      intent,
+      tenantId,
+      [AGENT_CONVERSATION_FIELD]: conversationId,
+      // 字段名与后端 AskRequest 逐字对应。**工作区进请求体而不是 query**：
+      // 路径里有反斜杠、空格、中文与冒号，URL 转义规则会静默改写它们 ——
+      // 现象是"我填的目录它说没有"，而没人会想到是转义
+      workspaceDir,
+      permissionLevel,
+    },
     '跑 Agent 任务',
   )
 }
+
+// ---------------------------------------------------------------------------
+//  运行权限（本次新增）
+//
+//  唯一事实来源：ai.agent.entity.agent.AgentPermissionLevel
+//               + ai.agent.service.tool.workspace.AgentPermissionPolicy
+// ---------------------------------------------------------------------------
+
+/**
+ * 三档权限的**取值**。它必须与后端 `AgentPermissionLevel` 的枚举名逐字一致 ——
+ * 后端对认不出的档位是**拒绝**（不是降级），所以拼错一个字母会得到一条
+ * "permissionLevel 的取值不认识"的错误，而不是一个看起来正常的运行。
+ */
+export type AgentPermissionLevelValue = 'READ_ONLY' | 'WORKSPACE_WRITE' | 'FULL_ACCESS'
+
+/**
+ * 界面上的三档，以及**每一档到底会发生什么**。
+ *
+ * <h2>为什么每一档都带一句"会发生什么"，而不是只写三个名字</h2>
+ * 这三档里有两档在**当前功能下行为完全相同**（仅可查看 / 工作区内修改：本项目的工具没有路径参数，
+ * 判不出"写在工作区内还是外"）。只给三个名字的话，使用者会以为"工作区内修改"已经放宽了什么，
+ * 而它没有 —— 于是他会选一个自己以为更宽的档位，然后对"怎么还在弹审批"感到困惑。
+ *
+ * <p>所以文案里把差异**如实说明**：这一档与上一档的差别，要等真的有了文件工具才成立。
+ * 「完全权限」那一档是真的不同（写操作直接执行、不产生审核请求），所以它的说明也最重。
+ */
+export const AGENT_PERMISSION_LEVELS: {
+  value: AgentPermissionLevelValue
+  label: string
+  /** 单选按钮下面那行小字 */
+  hint: string
+}[] = [
+  {
+    value: 'READ_ONLY',
+    label: '仅可查看',
+    hint: '只读工具（检索 / 列目录 / 读章节 / 查库）直接执行；任何写操作都要人点头',
+  },
+  {
+    value: 'WORKSPACE_WRITE',
+    label: '工作区内修改',
+    hint: '写操作仍然要人点头 —— 本项目的工具没有路径参数，判不出「写在工作区内还是外」，所以这一档与「仅可查看」当前行为相同',
+  },
+  {
+    value: 'FULL_ACCESS',
+    label: '完全权限',
+    hint: '⚠️ 写操作直接执行，不产生审核请求（建工单 / 改数据库都不会停下来等人）',
+  },
+]
+
+/** 默认档位：最严的一档。与后端"档位缺失按仅可查看算"是同一个取向。 */
+export const DEFAULT_AGENT_PERMISSION: AgentPermissionLevelValue = 'READ_ONLY'
+
+/**
+ * 请求体里工作区目录的字段名。
+ *
+ * <p>抽成常量与 {@link AGENT_CONVERSATION_FIELD} 同一条理由：它同时出现在"发请求"
+ * 与界面自检里，拼错一处不会报错 —— 只会让后端认为"没传工作区"，
+ * 而那种现象（400 或"工作区目录是必填的"）看起来像界面没填，不像字段名写错。
+ */
+export const AGENT_WORKSPACE_FIELD = 'workspaceDir'
+
+/**
+ * 请求体里权限档位的字段名（同上）。
+ */
+export const AGENT_PERMISSION_FIELD = 'permissionLevel'
+
+/**
+ * 界面默认填的工作区目录。
+ *
+ * <h2>为什么不给空串</h2>
+ * 后端把它当必填，所以空串的后果是"点一次跑一次报错"。给一个**能改的默认值**
+ * 至少让第一次点得动，而人看到它之后会顺手改成自己那条工作目录 ——
+ * 与 `intent` 默认「客服问答」、`tenantId` 默认「示例租户」是同一条取舍。
+ *
+ * <p>取值是 `.`（Java 进程的工作目录）：它是**唯一一个在任何机器上都存在**的目录，
+ * 而写死一个绝对路径会在别人的机器上必然失败。后端会把它规范化成 "." 并原样回显。
+ */
+export const DEFAULT_AGENT_WORKSPACE = '.'
 
 /** 历史运行列表。 */
 export function getAgentRuns(limit = 20): Promise<AgentRunsResponse> {

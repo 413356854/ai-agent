@@ -14,6 +14,7 @@ import type {
   AgentApprovalDecisionResponse,
   AgentAskResponse,
   AgentLimitsResponse,
+  AgentPermissionLevelValue,
   AgentRunDetail,
   AgentRunsResponse,
   AgentTrace,
@@ -57,7 +58,8 @@ export interface UseAgentResult {
   /** 决定失败的原因（后端拒绝、超时、记录已被别人处理…） */
   decisionError: string | null
 
-  ask: (question: string, intent?: string, tenantId?: string) => void
+  ask: (question: string, workspaceDir: string, permissionLevel: AgentPermissionLevelValue,
+    intent?: string, tenantId?: string) => void
   loadRuns: () => void
   openDetail: (runId: string) => void
   closeDetail: () => void
@@ -195,9 +197,15 @@ export function useAgent(active: boolean): UseAgentResult {
   }, [])
 
   const ask = useCallback(
-    async (question: string, intent = '', tenantId = '') => {
+    async (question: string, workspaceDir: string, permissionLevel: AgentPermissionLevelValue,
+      intent = '', tenantId = '') => {
       const content = question.trim()
       if (!content) return
+      // 【工作区在前端也拦一次】后端的校验才是权威的（它会真的去看那个目录在不在），
+      // 但一次"空目录"的往返完全没有意义 —— 而且后端给的是 200 + ok:false，
+      // 前端这一拦让"没填"这件事在**点下去之前**就有反馈。两处的判据指向同一件事，
+      // 只有一处负责措辞（这里只说"必填"，"不存在"由后端说）
+      if (!workspaceDir.trim()) return
       // 守卫必须在同一个 tick 内生效：await 之后再读 ref 就晚了。
       // 这个面板上"点两次"的代价是**跑两个任务、花两份钱**，比别处更该防
       if (asking.current) return
@@ -208,7 +216,7 @@ export function useAgent(active: boolean): UseAgentResult {
       // 人应当在按下"跑一次"的瞬间就看到它（而不是等 2.5 秒后的下一次轮询）
       void loadApprovals()
       try {
-        const data = await askAgent(content, intent, tenantId)
+        const data = await askAgent(content, workspaceDir.trim(), permissionLevel, intent, tenantId)
         setCurrent({ status: 'ok', data })
         // 跑完顺手刷一次列表：刚跑的任务应该立刻出现在历史里。
         // 不刷的话用户会以为"没记下来"（而它其实记了）——
@@ -336,7 +344,8 @@ export function useAgent(active: boolean): UseAgentResult {
     decision,
     deciding,
     decisionError,
-    ask: (q, intent, tenantId) => void ask(q, intent, tenantId),
+    ask: (q, workspaceDir, permissionLevel, intent, tenantId) =>
+      void ask(q, workspaceDir, permissionLevel, intent, tenantId),
     loadRuns: () => void loadRuns(),
     openDetail: id => void openDetail(id),
     closeDetail,

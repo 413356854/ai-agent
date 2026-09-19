@@ -141,6 +141,22 @@ public class AgentApprovalService implements ToolApprovalGate {
 	}
 
 	/**
+	 * 这次调用的<b>权限上下文</b>（写进待批记录，供界面显示"这次为什么弹了确认"）。
+	 *
+	 * <h2>为什么这件事不能省</h2>
+	 * 同一把 {@code propose_review}，在"仅可查看"档位下会弹确认、在"完全权限"下不会。
+	 * 人看到那条待批时，"这次为什么弹"的唯一线索就是这里 ——
+	 * 不写的话，事后对着一张只有工具名与参数的审批记录，
+	 * 分不清"是工具的固有风险"还是"这次选的档位"。
+	 *
+	 * <p>没有档位时返回空串（外部 MCP 链路、老调用点）——
+	 * 与 {@code ToolApprovalRecord} 那一列"空串表示取不到"同一套规矩。
+	 */
+	private static String permissionNote(ToolCallContext context) {
+		return context == null || context.runPermission() == null ? "" : context.runPermission().describe();
+	}
+
+	/**
 	 * 这一次调用实际用哪个等待时限。
 	 *
 	 * <p>优先级：<b>调用方给的覆盖值 &gt; 全局配置</b>。
@@ -178,11 +194,12 @@ public class AgentApprovalService implements ToolApprovalGate {
 		String id = UUID.randomUUID().toString();
 		ToolApprovalRecord record = ToolApprovalRecord.pending(id, context.runId(), context.stepIndex(), tool.name(),
 				invocation.argumentsForFeedback(ai.agent.service.agent.approval.JdbcToolApprovalStore.ARGUMENTS_MAX_CHARS),
-				hints.describe(), tool.description().summary(), Instant.now());
+				hints.describe(), tool.description().summary(), permissionNote(context), Instant.now());
 		store.save(record);
 		waiters.put(id, new CompletableFuture<>());
-		log.warn("工具「{}」需要人工确认，已登记待批 #{}（等最多 {}s）：{}", tool.name(), id, properties.timeout().toSeconds(),
-				record.arguments());
+		log.warn("工具「{}」需要人工确认，已登记待批 #{}（等最多 {}s，权限 {}）：{}", tool.name(), id,
+				properties.timeout().toSeconds(),
+				permissionNote(context).isBlank() ? "(未记录)" : permissionNote(context), record.arguments());
 		return record;
 	}
 

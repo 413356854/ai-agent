@@ -63,12 +63,13 @@ public final class MapperRows {
 	public record AgentRunRow(String id, String question, RunStatus status, AgentStopReason stopReason,
 			String finalAnswer, Integer totalTokens, Integer toolCallCount, Long elapsedMs, String node, String error,
 			Instant createdAt, Instant updatedAt, AgentFailureCause failureCause, String intent,
-			String conversationId, String tenantId) {
+			String conversationId, String tenantId, String workspaceDir,
+			ai.agent.entity.agent.AgentPermissionLevel permissionLevel) {
 
 		public AgentRunRecord toDomain() {
 			return new AgentRunRecord(id, question, status, stopReason, finalAnswer, nz(totalTokens),
 					nz(toolCallCount), nz(elapsedMs), node, error, createdAt, updatedAt, failureCause, intent,
-					conversationId, tenantId);
+					conversationId, tenantId, workspaceDir, permissionLevel);
 		}
 	}
 

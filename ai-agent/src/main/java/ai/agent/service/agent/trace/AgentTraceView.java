@@ -138,6 +138,13 @@ public class AgentTraceView {
 		// 【阶段四第 6 件】租户同理，而且它是**第二个维度**：
 		// "谁花的钱"与"花在哪个功能上"是两个问题，报告里缺任何一个都得回到库里查
 		body.put("tenantId", run.tenantId() == null ? "" : run.tenantId());
+		// 【运行权限】这次运行在哪个目录下、拿了多大权限。
+		// trace 是排查入口，而"完全权限档位下写操作不产生审核请求"这条规则意味着
+		// 一张空的审批表既可能表示"没有写操作"，也可能表示"这一次被放宽了" ——
+		// 区分这两者的唯一依据就是这里。空串 = 没有权限上下文（老数据、外部链路）
+		body.put("workspaceDir", run.hasWorkspace() ? run.workspaceDir() : "");
+		body.put("permissionLevel", run.permissionLevel() == null ? "" : run.permissionLevel().name());
+		body.put("permissionLabel", run.permissionLevel() == null ? "" : run.permissionLevel().label());
 		body.put("createdAt", run.createdAt() == null ? "" : run.createdAt().toString());
 		body.put("updatedAt", run.updatedAt() == null ? "" : run.updatedAt().toString());
 		return body;
@@ -420,6 +427,8 @@ public class AgentTraceView {
 			row.put("id", approval.id());
 			row.put("stepIndex", approval.stepIndex() == null ? -1 : approval.stepIndex());
 			row.put("toolName", approval.toolName());
+			// 【运行权限】这次为什么弹了确认（同一把工具在不同档位下结局不同）
+			row.put("permissionNote", approval.permissionNote() == null ? "" : approval.permissionNote());
 			row.put("status", approval.status().name());
 			row.put("pending", approval.pending());
 			row.put("decidedBy", approval.decidedBy() == null ? "" : approval.decidedBy());
@@ -555,6 +564,18 @@ public class AgentTraceView {
 			notes.add("这次运行没有业务归因键（调用方没有传 intent）—— 所以它的花费在看板的"
 					+ "「按业务」那一栏会落在『未标注』那一行。它与『未标注租户』是两件事："
 					+ "前者是不知道属于哪个功能，后者是不知道算谁的钱。");
+		}
+		// 【完全权限必须在这里说一句】它唯一的可见症状是"审批记录少了一条"，
+		// 而"没有写操作"与"写操作被放宽了"在数据上完全一样。
+		// 所以只要档位是完全权限，就明确写出"这次不会有审核请求"这个后果
+		if (run.permissionLevel() == ai.agent.entity.agent.AgentPermissionLevel.FULL_ACCESS) {
+			notes.add("⚠️ 这次运行是在「完全权限」档位下跑的：写操作**直接执行、不产生审核请求**。"
+					+ "所以这次运行的审批记录为空是档位的后果，不是「没有写操作」的证据。"
+					+ "工作区目录：" + (run.hasWorkspace() ? run.workspaceDir() : "(未记录)"));
+		}
+		if (!run.hasWorkspace()) {
+			notes.add("这次运行没有工作区目录（调用方没有传 workspaceDir，或这一列加上之前就写入的运行）—— "
+					+ "它按「仅可查看」处理：写操作会停下来等人确认。");
 		}
 		notes.add("默认库是内存库（ai.agent.store.url 默认 jdbc:h2:mem:...）：进程退出即清空，"
 				+ "所以『历史运行里没有昨天那次』是预期行为。");

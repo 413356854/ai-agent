@@ -88,6 +88,10 @@ public class AgentApprovalController {
 			// 否则他批的就不是真正会被执行的那一份（见 ToolApprovalRecord 的注释）
 			row.put("arguments", record.arguments() == null ? "" : record.arguments());
 			row.put("hints", record.hints() == null ? "" : record.hints());
+			// 【运行权限】这次为什么弹了确认。
+			// 同一把 propose_review 在「完全权限」档位下**不会**弹 —— 只看 hints
+			// （工具固有的风险声明）分不出这两种情况，而人做判断时这两条信息都要看
+			row.put("permissionNote", record.permissionNote() == null ? "" : record.permissionNote());
 			row.put("summary", record.summary() == null ? "" : record.summary());
 			row.put("requestedAt", record.requestedAt().toString());
 			row.put("waitedMs", record.waitedMs(now));
@@ -201,6 +205,7 @@ public class AgentApprovalController {
 			row.put("stepIndex", record.stepIndex() == null ? -1 : record.stepIndex());
 			row.put("toolName", record.toolName());
 			row.put("arguments", record.arguments() == null ? "" : record.arguments());
+			row.put("permissionNote", record.permissionNote() == null ? "" : record.permissionNote());
 			row.put("status", record.status().name());
 			row.put("pending", record.pending());
 			row.put("requestedAt", record.requestedAt().toString());

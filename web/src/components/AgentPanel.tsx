@@ -1,11 +1,17 @@
 import { useState } from 'react'
-import { Alert, Button, Card, Empty, Flex, Input, Spin, Table, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Empty, Flex, Input, Radio, Spin, Table, Tag, Tooltip, Typography } from 'antd'
 import type { UseAgentResult } from '../hooks/useAgent'
+import {
+  AGENT_PERMISSION_LEVELS,
+  DEFAULT_AGENT_PERMISSION,
+  DEFAULT_AGENT_WORKSPACE,
+} from '../api/agent'
 import type {
   AgentApprovalsResponse,
   AgentApprovalRow,
   AgentAskResponse,
   AgentLimitsResponse,
+  AgentPermissionLevelValue,
   AgentRunApprovalRow,
   AgentRunDetail,
   AgentRunRow,
@@ -327,6 +333,17 @@ function ApprovalItem({
       </div>
 
       {/*
+        【运行权限】"这一次为什么弹了确认"必须单独一行、且与上面那条风险声明分开。
+        两者回答的是两个问题：上面那条是**工具固有**的（同一把工具每次都一样），
+        而这一条取决于**这次运行的档位** —— 同一把 propose_review 在「完全权限」下不会弹。
+        合成一行的话，人会以为"弹确认"只与工具有关，于是对"为什么这次没弹"无从理解
+      */}
+      <div className="agent-tool-args">
+        <span className="agent-tool-label">这一次为什么弹确认（运行权限）：</span>
+        <code className="approval-permission">{row.permissionNote || '(未记录 —— 这条链路没有权限上下文)'}</code>
+      </div>
+
+      {/*
         参数原样、可滚动、不折行截断。
         这里刻意**不做**"只显示前 N 个字符"的处理：人批的就是这份参数，
         看到一半就批等于批了一个自己没看清的操作
@@ -476,6 +493,12 @@ function DecisionBanner({
  *
  * **它必须明确标出"这一步会真的调模型花钱"**：整张页面上只有这一个按钮有外部代价，
  * 而其余三块都是只读的。不标出来的话，用户点它和点"刷新"的心理预期是一样的。
+ *
+ * <h2>本次新增：两个执行前提（工作区目录 + 权限档位）排在最上面</h2>
+ * 它们不是"又多两个归因输入框"——归因那两个是**事后分组用的标签**（填错只影响看板怎么分组），
+ * 而这两个是**这次运行的前提**：目录打错会被后端当场拒绝（不花钱），
+ * 档位决定写操作会不会弹审批。所以它们排在提问框下面、两个归因输入框<b>上面</b>，
+ * 并且各自带一句"会发生什么"。
  */
 function AskCard({
   remote,
@@ -484,9 +507,30 @@ function AskCard({
 }: {
   remote: Remote<AgentAskResponse>
   running: boolean
-  onAsk: (q: string, intent: string, tenantId: string) => void
+  onAsk: (q: string, workspaceDir: string, permissionLevel: AgentPermissionLevelValue,
+    intent: string, tenantId: string) => void
 }) {
   const [question, setQuestion] = useState('分块策略的结论是什么？')
+  /**
+   * 工作区目录（本次新增，**必填**）。
+   *
+   * <h2>为什么它必须是一个能填的输入框，而不是只有下拉选框</h2>
+   * 后端要的是一个<b>当前机器上真实存在的目录</b>，而浏览器**给不出本机路径**
+   * （`<input type="file">` 只给文件名、`showDirectoryPicker` 拿到的是句柄且默认不可见路径）。
+   * 所以这里只能让人自己填或粘一个路径 —— 把它做成"看起来能选目录"的假控件，
+   * 会让人以为选完了、实际什么都没传。
+   *
+   * <p>默认值给 {@link DEFAULT_AGENT_WORKSPACE}（`.`，Java 进程的工作目录）：
+   * 它是唯一一个在任何机器上都存在的目录，而写死一个绝对路径会在别人的机器上必然失败。
+   */
+  const [workspaceDir, setWorkspaceDir] = useState(DEFAULT_AGENT_WORKSPACE)
+  /**
+   * 权限档位（本次新增）。默认是最严的一档（仅可查看）。
+   *
+   * <p>默认值刻意<b>不是</b>完全权限：一个"默认就能跳过人工确认"的界面，
+   * 会让那条最重要的人工闸门在多数运行里都不生效 —— 而它失效时没有任何报错。
+   */
+  const [permissionLevel, setPermissionLevel] = useState<AgentPermissionLevelValue>(DEFAULT_AGENT_PERMISSION)
   /**
    * 业务归因键（阶段四成本看板）。
    *
@@ -513,6 +557,11 @@ function AskCard({
    */
   const [tenantId, setTenantId] = useState('示例租户')
 
+  /** 工作区为空时不能跑：后端的必填校验会给 200 + ok:false，但那是一次白往返。 */
+  const workspaceMissing = workspaceDir.trim() === ''
+  const canRun = !running && !workspaceMissing
+  const run = () => onAsk(question, workspaceDir, permissionLevel, intent, tenantId)
+
   return (
     <Card
       size="small"
@@ -525,14 +574,85 @@ function AskCard({
           <Input
             value={question}
             onChange={e => setQuestion(e.target.value)}
-            onPressEnter={() => onAsk(question, intent, tenantId)}
+            onPressEnter={() => canRun && run()}
             placeholder="问一个需要查文档的问题（Enter 发送）"
             className="rag-input"
             disabled={running}
           />
-          <Button type="primary" onClick={() => onAsk(question, intent, tenantId)} loading={running}>
-            跑一次
-          </Button>
+          {/*
+            工作区为空时按钮置灰，并且**用 Tooltip 说明原因** ——
+            只用 disabled 的话，人看到的是一个点不动的按钮，
+            而"为什么点不动"在页面上没有任何线索。
+          */}
+          <Tooltip title={workspaceMissing ? '先填「工作区目录」：它是必填的，后端在动模型之前就会校验它' : ''}>
+            <Button type="primary" onClick={run} loading={running} disabled={!canRun}>
+              跑一次
+            </Button>
+          </Tooltip>
+        </Flex>
+
+        {/*
+          工作区目录与权限档位**排在最前面**（在两个归因输入框之上）：
+          它们是这次运行的前提，而不是事后分组的标签。
+          排到下面会让人先填完两个"标签"，才发现真正决定这次怎么跑的两项在更下面
+        */}
+        <Flex gap={8} align="center" wrap className="agent-permission-row">
+          <Typography.Text type="secondary" className="cost-intent-label">
+            工作区目录
+            {/* 必填必须写出来 —— 后端会拒绝，而"没说必填"是那条错误唯一能预防的地方 */}
+            <span className="agent-required">*</span>
+          </Typography.Text>
+          <Input
+            value={workspaceDir}
+            onChange={e => setWorkspaceDir(e.target.value)}
+            placeholder="这一次运行在哪个目录下跑（必须是本机真实存在的目录）"
+            maxLength={512}
+            disabled={running}
+            status={workspaceMissing ? 'error' : undefined}
+            className="agent-workspace-input"
+            data-testid="agent-workspace-dir"
+          />
+          <Typography.Text type="secondary" className="cost-intent-hint">
+            必填。相对路径按 Java 进程的工作目录解析（<code>.</code> 就是后端进程的工作目录）。
+            目录不存在会被当场拒绝，<strong>不会开跑、不花钱</strong>。
+            它当前不改变任何工具的行为（本项目没有文件工具），而是权限判定的依据与审计字段
+          </Typography.Text>
+        </Flex>
+
+        <Flex gap={8} align="start" wrap className="agent-permission-row">
+          <Typography.Text type="secondary" className="cost-intent-label">
+            权限
+          </Typography.Text>
+          {/*
+            用 Radio.Group 而不是 Segmented：三档各自的含义**必须能并排读**，
+            而 Segmented 只放得下三个标签。这里是"选一个会影响钱与风险的档位"，
+            把后果写出来比省一行高度重要（同族的取舍：结构化模式里那个
+            "拖了不生效的滑块不如不给"）
+          */}
+          <Radio.Group
+            value={permissionLevel}
+            onChange={e => setPermissionLevel(e.target.value as AgentPermissionLevelValue)}
+            disabled={running}
+            className="agent-permission-group"
+            data-testid="agent-permission-level"
+          >
+            <Flex vertical gap={4}>
+              {AGENT_PERMISSION_LEVELS.map(level => (
+                <Radio key={level.value} value={level.value} className="agent-permission-option">
+                  <span className="agent-permission-label">{level.label}</span>
+                  {/*
+                    每一档下面那句"会发生什么"用 span（不是 div）：
+                    它是 Radio 那个 <label> 的内容，而 label 是 inline 元素 ——
+                    放一个块级元素进去会让每一行被折成两段，在小屏上还会横向溢出
+                    （界面自检里就有一条"无横向溢出"的断言）
+                  */}
+                  <span className="agent-permission-hint" data-testid={`agent-permission-hint-${level.value}`}>
+                    {level.hint}
+                  </span>
+                </Radio>
+              ))}
+            </Flex>
+          </Radio.Group>
         </Flex>
 
         {/*
@@ -595,7 +715,10 @@ function AskCard({
                 // 全按输入框里那两个值记的话，成本看板上这几个分组会被并成一个
                 setIntent(sample.intent)
                 setTenantId(sample.tenantId)
-                onAsk(sample.q, sample.intent, sample.tenantId)
+                // 工作区与权限**不跟着切**：它们是这次运行的前提（其中一个是必填），
+                // 而点一个例子不该顺手把"完全权限"或某个目录一起改掉 ——
+                // 那种"点一下就把风险档位换了"的行为在页面上没有任何提示
+                onAsk(sample.q, workspaceDir, permissionLevel, sample.intent, sample.tenantId)
               }}
             >
               {sample.q}
@@ -630,6 +753,17 @@ function AskBody({ data }: { data: AgentAskResponse }) {
         <Stat label="耗时" value={`${data.elapsedMs} ms`} />
         <Stat label="步数" value={data.steps.length} />
       </div>
+
+      {/*
+        【运行权限】"这次是在什么前提下跑的"必须显示出来，而且显示的是**服务端实际用的那一份**。
+        理由很具体：在「完全权限」档位下写操作**不产生审核请求** ——
+        而"待我确认"那张卡片为空时，人无法区分"这次没有写操作"与"这一次被放宽了"。
+        这一行就是那个区分。空档位时如实写"未记录"，不编一个默认档位
+      */}
+      <Typography.Text type="secondary" className="diag-note agent-run-permission">
+        本次运行的执行前提：{data.permissionNote || '未记录'}
+        {!data.workspaceDir && '（这条链路没有传工作区目录 —— 没有权限上下文，写操作按最严的一档处理）'}
+      </Typography.Text>
 
       {/*
         【第九轮】"停在等人确认"必须单独一条、并且指向那张待办卡片。
@@ -962,6 +1096,30 @@ function RunsBody({ data, onOpen }: { data: AgentRunList; onOpen: (id: string) =
               align: 'right' as const,
               render: (ms: number) => `${ms} ms`,
             },
+            /*
+              【运行权限】列表里也带一列。
+              它不是"多一列信息"：在「完全权限」档位下写操作**不产生审核请求**，
+              所以"这次为什么没有待批"只有在这一列上看得出来。
+              空档位如实显示「未记录」，不编一个默认档位 —— 编出来的那句看起来具体、
+              实际是假的（那次运行可能压根没有权限上下文）。
+            */
+            {
+              title: '权限',
+              dataIndex: 'permissionLevel',
+              width: 150,
+              render: (level: string, row: AgentRunRow) =>
+                level ? (
+                  <Tooltip title={`工作区：${row.workspaceDir || '(未记录)'}`}>
+                    <Tag color={level === 'FULL_ACCESS' ? 'red' : 'default'}>
+                      {PERMISSION_LABELS[level] ?? level}
+                    </Tag>
+                  </Tooltip>
+                ) : (
+                  <Typography.Text type="secondary" title={row.workspaceDir || undefined}>
+                    未记录
+                  </Typography.Text>
+                ),
+            },
           ]}
         />
       )}
@@ -984,6 +1142,19 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
   */
   WAITING_APPROVAL: { label: '等人工确认', color: 'magenta' },
 }
+
+/**
+ * 权限档位的中文标签。
+ *
+ * <p><b>它只是一份"显示名"的兜底</b>：界面上的三档选择直接读
+ * {@link AGENT_PERMISSION_LEVELS}（那里每一档还带一句"会发生什么"），
+ * 而这里是给历史列表用的 —— 列表里的档位是**后端存下来的枚举名**，
+ * 用不着那三句说明。认不出的取值原样显示枚举名，不猜一个中文名
+ * （猜错会把一档"完全权限"显示成"仅可查看"）。
+ */
+const PERMISSION_LABELS: Record<string, string> = Object.fromEntries(
+  AGENT_PERMISSION_LEVELS.map(level => [level.value, level.label]),
+)
 
 // ---------------------------------------------------------------------------
 //  3. 某一次运行的详情
@@ -1068,6 +1239,15 @@ function TraceBody({ data }: { data: AgentTrace }) {
         <Typography.Title level={5} className="rag-subtitle">
           ① 会话{data.conversation.present ? `：这段对话里一共 ${data.conversation.runCount} 次运行` : ''}
         </Typography.Title>
+        {/*
+          【运行权限】trace 是排查入口，而"完全权限档位下写操作不产生审核请求"
+          意味着：一张空的审批列表既可能表示"没有写操作"，也可能表示"这一次被放宽了"。
+          区分这两者的唯一依据就是这一行（后端也会在 notes 里显式说一遍）
+        */}
+        <Typography.Text type="secondary" className="diag-note agent-run-permission">
+          执行前提：{data.run.permissionLabel || '未记录'}
+          {data.run.workspaceDir ? ` · 工作区 ${data.run.workspaceDir}` : ' · 工作区未记录'}
+        </Typography.Text>
         {!data.conversation.present ? (
           /*
             【这两种情况必须分开说】
@@ -1124,8 +1304,7 @@ function TraceBody({ data }: { data: AgentTrace }) {
         <Typography.Title level={5} className="rag-subtitle">
           ⑤ 检索：这次任务查了 {data.retrieval.calls} 次
           {data.retrieval.emptyCalls > 0 ? `，其中 ${data.retrieval.emptyCalls} 次一条都没查到` : ''}
-        </Typography.Title>
-        {data.retrieval.calls === 0 ? (
+        </Typography.Title>        {data.retrieval.calls === 0 ? (
           <Typography.Text type="secondary" className="diag-note" data-testid="trace-retrieval-none">
             {data.layers.find(l => l.key === 'retrieval')?.expected === false
               ? '这次运行没有检索 —— 它没有调用过检索类工具，所以这一层为空是正常的（不是漏记）。'
@@ -1368,6 +1547,17 @@ function DetailBody({ data }: { data: AgentRunDetail }) {
         问题：<strong>{data.run.question}</strong>
       </Typography.Text>
 
+      {/*
+        【运行权限】详情页是"核对这次运行到底怎么跑的"落点，
+        而"它在哪个目录下、拿了多大权限"是这次执行最重要的前提之一 ——
+        尤其是完全权限档位下写操作不再产生审核请求，那件事只能在这里看到。
+        与另两个归因维度一样：空值如实显示「未记录」，不编默认值
+      */}
+      <Typography.Text type="secondary" className="diag-note agent-run-permission">
+        执行前提：{data.run.permissionLabel || '未记录'}
+        {data.run.workspaceDir ? ` · 工作区 ${data.run.workspaceDir}` : ' · 工作区未记录'}
+      </Typography.Text>
+
       {data.run.failureCause && (
         <Alert type="error" showIcon title={`失败细分：${data.run.failureCause}`} description={data.run.failureAdvice} />
       )}
@@ -1462,7 +1652,7 @@ function DetailBody({ data }: { data: AgentRunDetail }) {
         </Typography.Text>
       </div>
 
-      <RunApprovals runId={data.run.id} rows={data.approvals ?? []} />
+      <RunApprovals runId={data.run.id} rows={data.approvals ?? []} permissionLevel={data.run.permissionLevel ?? ''} />
     </Flex>
   )
 }
@@ -1478,17 +1668,41 @@ function DetailBody({ data }: { data: AgentRunDetail }) {
  *
  * <p>合并成一个列表的代价很具体：人分不清"这条是要我处理的"还是"这条是已经处理过的"。
  */
-function RunApprovals({ runId, rows }: { runId: string; rows: AgentRunApprovalRow[] }) {
+function RunApprovals({ runId, rows, permissionLevel }: {
+  runId: string
+  rows: AgentRunApprovalRow[]
+  permissionLevel: string
+}) {
   if (rows.length === 0) {
+    /*
+      【空列表必须区分两种含义 —— 本次新增的那一种是「被放宽了」】
+      一张空的审批表原本只有一个读法："这次没有需要确认的写操作"。
+      加上运行权限之后，多出第二种：**完全权限档位下写操作根本不产生审核请求**。
+      两者在数据上完全一样，而它们的含义正好相反 ——
+      一个是"它没做写操作"，一个是"它做了但没人被问过"。
+      所以这里按档位分开说，而不是笼统地写一句"没有触发人工确认"
+    */
+    const fullAccess = permissionLevel === 'FULL_ACCESS'
     return (
       <div>
         <Typography.Title level={5} className="rag-subtitle">
           人工确认（HITL）
         </Typography.Title>
-        <Typography.Text type="secondary" className="diag-note">
-          这次运行<strong>没有触发人工确认</strong> —— 它用到的全是只读工具，
-          而按规矩只有非幂等的写操作才需要审批。
-        </Typography.Text>
+        {fullAccess ? (
+          <Alert
+            type="warning"
+            showIcon
+            data-testid="run-approval-empty-full-access"
+            title="这次运行是在「完全权限」档位下跑的 —— 写操作直接执行，不产生审核请求"
+            description="所以这张表为空【不能】读成「这次没有写操作」：它只说明这一次没有任何人被人问过。要判断它到底做没做写操作，看下面「每次工具调用」那一节。"
+          />
+        ) : (
+          <Typography.Text type="secondary" className="diag-note">
+            这次运行<strong>没有触发人工确认</strong> —— 它用到的全是只读工具，
+            而按规矩只有非幂等的写操作才需要审批。
+            {permissionLevel && `（本次档位：${PERMISSION_LABELS[permissionLevel] ?? permissionLevel}）`}
+          </Typography.Text>
+        )}
       </div>
     )
   }

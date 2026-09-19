@@ -46,6 +46,16 @@
 			<arg column="intent" javaType="java.lang.String"/>
 			<arg column="conversation_id" javaType="java.lang.String"/>
 			<arg column="tenant_id" javaType="java.lang.String"/>
+			<!--
+			  工作区目录与权限档位（本次新增）同样是"可以没有"的事实：老数据这两列是 NULL。
+			  档位用 javaType 指定枚举：它走的是 MyBatis 默认的 EnumTypeHandler（按枚举名读写），
+			  而这里刻意**不用**宽松解析 —— 库里的值只由我们写入（枚举名），
+			  一个认不出来的值说明有人改过库，那该在**这一行**报出来，
+			  而不是被悄悄降成"仅可查看"（宽松解析留给 RunPermission.ofStored 那一层，
+			  它服务的是"恢复历史运行"这种不该炸的路径）。
+			-->
+			<arg column="workspace_dir" javaType="java.lang.String"/>
+			<arg column="permission_level" javaType="ai.agent.entity.agent.AgentPermissionLevel"/>
 		</constructor>
 	</resultMap>
 
@@ -115,7 +125,7 @@
 	<!-- 列清单只写一份：加列时不会漏掉某一条 SELECT（mapRun 原先就是这么做的） -->
 	<sql id="runColumns">
 		id, question, status, stop_reason, final_answer, total_tokens, tool_calls, elapsed_ms, node, error,
-		created_at, updated_at, failure_cause, intent, conversation_id, tenant_id
+		created_at, updated_at, failure_cause, intent, conversation_id, tenant_id, workspace_dir, permission_level
 	</sql>
 
 	<sql id="stepColumns">
@@ -129,8 +139,10 @@
 
 	<!-- 状态写死在这里：调用方能决定的只有"开始"，结局由 finishRun 写 -->
 	<insert id="startRun">
-		INSERT INTO agent_run (id, question, status, node, intent, conversation_id, tenant_id)
-		VALUES (#{id}, #{question}, 'RUNNING', #{node}, #{intent}, #{conversationId}, #{tenantId})
+		INSERT INTO agent_run
+		  (id, question, status, node, intent, conversation_id, tenant_id, workspace_dir, permission_level)
+		VALUES (#{id}, #{question}, 'RUNNING', #{node}, #{intent}, #{conversationId}, #{tenantId},
+		        #{workspaceDir}, #{permissionLevel})
 	</insert>
 
 	<!--

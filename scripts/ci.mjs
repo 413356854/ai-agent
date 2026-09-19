@@ -377,10 +377,20 @@ function startService(name, command, options = {}) {
 async function gateUiMock() {
   const webDir = path.join(ROOT, 'web')
 
-  startService('00-mock-backend', 'pnpm mock', { cwd: webDir })
+  // 【假后端的端口必须显式传给子进程，不能只在这里等】
+  //
+  // `web/mock/sse-server.mjs` 读的是 `MOCK_PORT`（默认 8081），而本脚本用的环境变量叫
+  // `CI_MOCK_PORT` —— 只改后者的话，假后端仍然起在 8081，而就绪检查等的是 8181：
+  // 现象是"等待假后端超时（90000ms）"，看起来像假后端起不来，其实是两个端口号没接上。
+  startService('00-mock-backend', 'pnpm mock', { cwd: webDir, env: { MOCK_PORT: String(MOCK_PORT) } })
   await waitForHttp(`http://127.0.0.1:${MOCK_PORT}/api/agent/runs`, { label: '假后端' })
 
-  startService('00-vite-mock', `pnpm dev:mock --port ${UI_PORT} --strictPort`, { cwd: webDir })
+  // vite 的 mock 代理目标同样要跟着走（`vite.config.ts` 里 `VITE_MOCK_TARGET`）：
+  // 两个变量是"起在哪"与"代理指哪"的两半，只改一半就得到"假后端起好了、前端却连不上"
+  startService('00-vite-mock', `pnpm dev:mock --port ${UI_PORT} --strictPort`, {
+    cwd: webDir,
+    env: { VITE_MOCK_TARGET: `http://127.0.0.1:${MOCK_PORT}` },
+  })
   await waitForHttp(`http://127.0.0.1:${UI_PORT}`, { label: 'vite（mock 模式）' })
 
   const env = { UI_URL: `http://127.0.0.1:${UI_PORT}` }

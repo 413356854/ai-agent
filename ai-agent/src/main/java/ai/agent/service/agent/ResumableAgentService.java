@@ -9,7 +9,9 @@ import ai.agent.service.agent.store.AgentRunStore;
 import ai.agent.service.agent.store.RunStatus;import ai.agent.service.support.agent.store.TranscriptCodec;
 import ai.agent.config.AgentStoreProperties;
 import ai.agent.entity.tool.ApprovalGrant;
+import ai.agent.entity.tool.RunPermission;
 import ai.agent.entity.tool.ToolInvocation;
+import ai.agent.entity.agent.AgentPermissionLevel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -197,13 +199,42 @@ public class ResumableAgentService {
 	 */
 	public AgentRun runWithId(String runId, String question, ModelTurn modelTurn, String intent,
 			String conversationId, String tenantId) {
-		store.start(new AgentRunStore.Start(runId, question, properties.node(), intent, conversationId, tenantId));
+		// 没有运行权限上下文：档位缺失一律按**最严的一档**处理（见 RunPermission.none）。
+		// 这条入口留给"不知道工作区"的调用方（测试、外部链路、老调用点），
+		// 而界面上发起任务走的是 runWithPermissions —— 它会把工作区与档位一起落库
+		return runWithPermissions(runId, question, modelTurn, intent, conversationId, tenantId,
+				RunPermission.none());
+	}
+
+	/**
+	 * 完整入口，多一个<b>运行权限</b>（工作区目录 + 三档之一）。
+	 *
+	 * <h2>为什么它是指名的方法，而不是再加一个 {@code String} 参数</h2>
+	 * 这个类上已经有六个 {@code runWithId} 重载，而其中三个的尾部是相邻的 {@code String}
+	 * （归因键 / 会话 id / 租户）。再加一个 String 的后果在第六件时已经预演过一次：
+	 * 调用点出现「对 runWithId 的引用不明确」，而更坏的一种是它能编译过、
+	 * 只是那个值被静默写进了另一列（现象是"成本看板上多出一个叫 web-xxxx 的租户"）。
+	 * 权限包成 {@link RunPermission} 之后，参数位置与类型都不可能与别的重载混淆。
+	 *
+	 * <h2>它必须把权限落库，而不是只传给循环</h2>
+	 * 因为<b>恢复路径没有请求体</b>：一次运行停在人工闸门上（或被杀掉）之后，
+	 * "续跑时用哪一档"只能从 {@code agent_run} 读回来。不落库的话，
+	 * 一次"仅可查看"的运行在被恢复之后会按当前默认档位继续 ——
+	 * 那是一次**静默的权限放大**，而它在页面上完全看不出来。
+	 *
+	 * @param permission 这次运行的权限；{@code null} 按 {@link RunPermission#none()} 处理
+	 */
+	public AgentRun runWithPermissions(String runId, String question, ModelTurn modelTurn, String intent,
+			String conversationId, String tenantId, RunPermission permission) {
+		RunPermission effective = permission == null ? RunPermission.none() : permission;
+		store.start(new AgentRunStore.Start(runId, question, properties.node(), intent, conversationId, tenantId)
+				.withPermissions(effective));
 		// 把"这次实际用哪个模型"传给监听器 —— 它是成本归因的一部分（见 PersistingListener.override）
 		PersistingListener listener = new PersistingListener(runId, modelTurn);
 		try {
-			// 传了模型就临时换一个 loop：AgentLoop 是无状态的（所有可变状态都在方法局部变量里），
+			// 传了模型或权限就临时换一个 loop：AgentLoop 是无状态的（所有可变状态都在方法局部变量里），
 			// 所以这里 new 一个是安全的 —— 不是"共享可变状态"那种危险做法
-			AgentLoop effectiveLoop = modelTurn == null ? loop : loop.withModelTurn(modelTurn);
+			AgentLoop effectiveLoop = effectiveLoop(modelTurn, effective);
 			AgentRun run = effectiveLoop.run(runId, question, listener);
 			store.persistCompletedRun(runId, run);
 			return run;
@@ -216,6 +247,18 @@ public class ResumableAgentService {
 			safeFinishFailed(runId, e);
 			throw e;
 		}
+	}
+
+	/**
+	 * 这一次用哪个循环实例：模型与权限各可能被这一次运行覆盖。
+	 *
+	 * <p>做成一个方法而不是在三处各写一遍 {@code modelTurn == null ? loop : loop.withModelTurn(...)}：
+	 * 漏掉权限那一半的表现是"完全权限的运行仍然弹审批"，
+	 * 而那看起来像权限参数没传到，排查方向会跑到控制器上去。
+	 */
+	private AgentLoop effectiveLoop(ModelTurn modelTurn, RunPermission permission) {
+		AgentLoop effective = modelTurn == null ? loop : loop.withModelTurn(modelTurn);
+		return permission == null ? effective : effective.withPermission(permission);
 	}
 
 	/**
@@ -395,6 +438,7 @@ public class ResumableAgentService {
 			ToolInvocation pending, ApprovalGrant grant) {
 		List<Message> messages = codec.decode(checkpoint.latestStep().transcriptJson());
 		PersistingListener listener = new PersistingListener(record.id());
+		RunPermission permission = permissionOf(record);
 		// 【续跑时的提示词指纹：沿用检查点里那一步记的，不重新去读】
 		//
 		// 理由写在 AgentLoop 那个重载的注释里，这里只说结论：续跑的步骤用的确实是**原来那一版**
@@ -403,14 +447,50 @@ public class ResumableAgentService {
 		//  ② 更坏的是它会把一条运行切成两版（前 2 步记 v3、续跑的 3~5 步记 v4），
 		//     于是"这次运行到底用的哪一版"这个问题得到两个都"有据可查"的答案。
 		// 而正是为了回答那个问题才有这一列 —— 一个会自相矛盾的观测字段比没有更糟。
-		AgentRun run = loop.run(record.id(), record.question(), messages, checkpoint.resumeFromStep(), listener,
-				pending, grant, checkpoint.latestStep().promptFingerprint());
+		AgentRun run = loop.withPermission(permission).run(record.id(), record.question(), messages,
+				checkpoint.resumeFromStep(), listener, pending, grant, checkpoint.latestStep().promptFingerprint());
 		store.persistCompletedRun(record.id(), run);
-		log.info("运行 {} 已从第 {} 步{}结束：{}（提示词指纹 {}）", record.id(), checkpoint.resumeFromStep(),
+		log.info("运行 {} 已从第 {} 步{}结束：{}（提示词指纹 {}，权限 {}）", record.id(), checkpoint.resumeFromStep(),
 				grant == null ? "恢复并" : "（人工批准后）接着跑，", run.stopReason(),
 				checkpoint.latestStep().promptFingerprint().isBlank() ? "(未记录)"
-						: checkpoint.latestStep().promptFingerprint());
+						: checkpoint.latestStep().promptFingerprint(),
+				permission.describe());
 		return ResumeResult.resumed(record.id(), checkpoint.resumeFromStep(), run, pending);
+	}
+
+	/**
+	 * <b>续跑时用哪一档权限：库里存的那一档</b>，不是当前默认值。
+	 *
+	 * <h2>为什么必须从库里读，而不能"沿用配置"或"用最严的一档"</h2>
+	 * <ul>
+	 *   <li><b>沿用当前默认档位</b>：一次"仅可查看"的运行在恢复之后会拿到完全权限 ——
+	 *       那是一次静默的权限放大，而它在页面上完全看不出来；</li>
+	 *   <li><b>一律降成仅可查看</b>：一次"完全权限"的运行恢复之后会突然停下来等人，
+	 *       而人不在页面前（恢复多半发生在启动时）—— 于是那个任务会一直等到超时然后按拒绝处理。
+	 *       这不是更安全，而是把一次本该跑完的任务变成一次必然失败的等待。</li>
+	 * </ul>
+	 *
+	 * <h2>工作区目录已经不存在时怎么办</h2>
+	 * 只记一条 WARN，<b>不抛</b>：目录被删掉是正常会发生的事，
+	 * 而为此让一次能跑完的恢复永远卡住，代价与收益完全不成比例。
+	 * 目录没了意味着"没有额外授权"，所以档位也一并降成仅可查看 ——
+	 * 这是唯一一个"权限随外部状态变化"的地方，所以它必须留日志。
+	 */
+	private RunPermission permissionOf(AgentRunRecord record) {
+		RunPermission stored = record.permission();
+		if (!stored.hasWorkspace()) {
+			// 老数据（这一列加上之前的运行）与外部链路：没有工区，也就没有额外授权
+			return stored;
+		}
+		try {
+			stored.validateExistingDirectory();
+			return stored;
+		}
+		catch (IllegalArgumentException | SecurityException e) {
+			log.warn("运行 {} 记录的工作区目录当前不可用（{}），恢复时按【仅可查看】继续：{}", record.id(),
+					e.getMessage(), "写操作会重新停下来等人；要换回原来的档位，请先让那个目录重新可用");
+			return RunPermission.ofStored(stored.workspaceDir(), AgentPermissionLevel.READ_ONLY);
+		}
 	}
 
 	/**

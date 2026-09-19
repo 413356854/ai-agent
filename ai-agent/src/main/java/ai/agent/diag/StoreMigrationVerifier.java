@@ -140,14 +140,25 @@ public class StoreMigrationVerifier implements ApplicationRunner {
 
 	private void verifyAgentRuns() {
 		String runId = "verify-run-1";
+		// 用 withPermissions 补上"这一次运行的权限"：它走的就是界面那条链路的同一个方法，
+		// 所以这两列的往返（写进去、读回来）在启动自检里也被覆盖到了
 		AgentRunStore.Start start = new AgentRunStore.Start(runId, "验证问题：检查点能不能读回来？", "verify-node",
-				"验证业务", "verify-conversation", "verify-tenant");
+				"验证业务", "verify-conversation", "verify-tenant")
+				.withPermissions(ai.agent.entity.tool.RunPermission.ofStored(".",
+						ai.agent.entity.agent.AgentPermissionLevel.WORKSPACE_WRITE));
 
 		check("start：开一次运行后能按 id 读回来（含归因/会话/租户三列）", () -> {
 			runStore.start(start);
 			AgentRunRecord run = runStore.find(runId).orElseThrow();
 			return run.status() == RunStatus.RUNNING && "验证业务".equals(run.intent())
 					&& "verify-conversation".equals(run.conversationId()) && "verify-tenant".equals(run.tenantId());
+		});
+
+		check("start：工作区目录与权限档位能原样读回来（恢复要靠它们续跑）", () -> {
+			AgentRunRecord run = runStore.find(runId).orElseThrow();
+			return run.hasWorkspace() && ".".equals(run.workspaceDir())
+					&& run.permissionLevel() == ai.agent.entity.agent.AgentPermissionLevel.WORKSPACE_WRITE
+					&& !run.permission().allowsWriteWithoutApproval();
 		});
 
 		check("checkpoint：写一步后 latestCheckpoint 能读回 JSON + 指纹 + 灰度分组（空串不是 NULL）", () -> {

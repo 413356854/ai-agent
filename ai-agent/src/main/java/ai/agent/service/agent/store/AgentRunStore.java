@@ -77,9 +77,19 @@ public interface AgentRunStore {
 	 *            {@code intent} 回答"花在哪个功能上"，本字段回答"谁在花钱"。
 	 *            拼成一个字段（{@code 京东-客服问答}）会让两个维度互相污染 ——
 	 *            改名或换归属都要动历史数据，而历史是只追加的。
+	 * @param workspaceDir <b>工作区目录</b>：这次运行在哪个目录下跑。
+	 *            {@code null} 或空白 = <b>没有工作区信息</b>（老调用点、外部链路）。
+	 *            界面上发起任务时它是必填的，所以在那一层不会为空
+	 *            （必填校验在 {@code AgentController}：那里才有一句能读的中文提示）。
+	 * @param permissionLevel <b>权限档位</b>：这次运行被授予了多大权限。
+	 *            {@code null} = 没有额外授权（读侧按仅可查看处理）。
+	 *            <p>它必须与运行一起落库，理由只有一个但很硬：<b>恢复要用原来那一档接着跑</b>，
+	 *            而恢复路径没有请求体 —— 档位只能从库里读回来。
+	 *            不落库的话，一次"仅可查看"的运行在恢复之后会按当前默认档位继续，
+	 *            而那是一次**静默的权限放大**。
 	 */
 	record Start(String runId, String question, String node, String intent, String conversationId,
-			String tenantId) {
+			String tenantId, String workspaceDir, ai.agent.entity.agent.AgentPermissionLevel permissionLevel) {
 
 		/**
 		 * 不带租户的构造器（第六件之前的调用点与测试用）。
@@ -89,7 +99,42 @@ public interface AgentRunStore {
 		 * 与 {@code AgentRunRecord} 那几个构造器同一条取舍。
 		 */
 		public Start(String runId, String question, String node, String intent, String conversationId) {
-			this(runId, question, node, intent, conversationId, null);
+			this(runId, question, node, intent, conversationId, null, null, null);
+		}
+
+		/**
+		 * 带租户、不带运行权限的构造器（第 6 件之后的调用点与自检用）。
+		 *
+		 * <p>它落下的工作区与档位两列是 {@code null}，含义是"没有权限上下文"——
+		 * 判定侧按最严的一档处理（{@code RunPermission.ofStored}），方向是安全的：
+		 * 漏传不会放宽任何东西，只会让写操作照旧停下来等人。
+		 */
+		public Start(String runId, String question, String node, String intent, String conversationId,
+				String tenantId) {
+			this(runId, question, node, intent, conversationId, tenantId, null, null);
+		}
+
+		/**
+		 * 补上这一次运行的权限（界面那条链路在 {@code start} 之前调它）。
+		 *
+		 * <p>做成实例方法而不是再加一个 {@code (…, String, String, String)} 重载：那会与五参构造器
+		 * 在 {@code (String,String,String,String,String)} 这一组实参上<b>歧义</b>
+		 * （javac 报「对 Start 的引用不明确」）；更坏的一种是它能编译过、
+		 * 却把工作区目录写进了租户列 —— 两个相邻的 String 参数正是这类错的高发处。
+		 *
+		 * <p>它同时负责"没有工作区就不写这一列"：{@code RunPermission.none()} 的语义是
+		 * "没有额外授权"，落成 {@code null} 而不是空串，
+		 * 与 {@code intent} / {@code tenantId} 那条"没标注不编默认值"的规矩一致。
+		 */
+		public Start withPermissions(ai.agent.entity.tool.RunPermission permission) {
+			String workspace = blankToNull(permission == null ? null : permission.workspaceDir());
+			return new Start(runId, question, node, intent, conversationId, tenantId, workspace,
+					// 【档位随工作区一起为空】没有工作区就没有"这次运行被授予了多大权限"这个事实：
+					// 它不是"仅可查看"（那是一个**选了**的档位），而是"没有权限上下文"。
+					// 落成 READ_ONLY 会让页面上的一次 curl 调用被显示成"在仅可查看下跑的" ——
+					// 那是一句看起来具体、实际是编出来的话。判定侧的默认值仍然是仅可查看
+					// （见 RunPermission.ofStored），那一边是安全的，显示这一边不许编。
+					workspace == null ? null : permission.level());
 		}
 
 		/**
@@ -109,11 +154,13 @@ public interface AgentRunStore {
 			intent = blankToNull(intent);
 			conversationId = blankToNull(conversationId);
 			tenantId = blankToNull(tenantId);
+			workspaceDir = blankToNull(workspaceDir);
 		}
 
 		/** 同一个节点模板，换一次运行的 id 与问题（服务层为每次运行派生一个）。 */
 		public Start forRun(String runId, String question) {
-			return new Start(runId, question, node, intent, conversationId, tenantId);
+			return new Start(runId, question, node, intent, conversationId, tenantId, workspaceDir,
+					permissionLevel);
 		}
 
 		private static String blankToNull(String value) {

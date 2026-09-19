@@ -43,6 +43,19 @@
 const TIMEOUT_SECONDS = 120
 
 /**
+ * 权限档位的中文标签。
+ *
+ * <p>与真后端 `AgentPermissionLevel.label()` 逐字一致 —— 界面上那两个地方
+ * （单选组与回显行）读的是**同一个词**，所以假数据里换一个说法会让
+ * "页面显示的是服务端给的那份还是自己写死的那份"分不出来。
+ */
+const PERMISSION_LABELS = {
+  READ_ONLY: '仅可查看',
+  WORKSPACE_WRITE: '工作区内修改',
+  FULL_ACCESS: '完全权限',
+}
+
+/**
  * 一条待批的写操作。
  *
  * `arguments` 是**同一个字符串**在待批列表、`/ask` 返回、以及批准后执行的那一步里复用 ——
@@ -173,6 +186,15 @@ function detailFromScript(runId, question, overrides = {}) {
       toolCalls: toolCalls.length,
       elapsedMs: 7402,
       node: 'local',
+      /*
+        【运行权限（本次新增）】与 intent / tenantId 同一个规矩：
+        真后端在这三个键上返回**空串而不是缺字段**，所以假数据也要给全。
+        默认给一档 WORKSPACE_WRITE（运行详情里那一行会显示它 + 工作区），
+        调用方要造别的档位就通过 overrides 覆盖
+      */
+      workspaceDir: 'D:\\work\\docs',
+      permissionLevel: 'WORKSPACE_WRITE',
+      permissionLabel: PERMISSION_LABELS.WORKSPACE_WRITE,
       ...overrides,
     },
     steps,
@@ -422,6 +444,13 @@ function traceFromScript(runId, known) {
       intent: '文档问答',
       // 【第 6 件】租户与业务是两个维度，trace 两个都带（与真后端 AgentTraceView 一致）
       tenantId: '示例租户',
+      // 【本次新增】工作区与档位同样两个都带。
+      // trace 是排查入口，而"完全权限档位下写操作不产生审核请求"意味着
+      // 一张空的审批表有两种含义 —— 区分它们的唯一依据就是这两列。
+      // 取值从 known 那一行来（真后端 trace 读的就是同一条 agent_run）
+      workspaceDir: (known && known.workspaceDir) || '',
+      permissionLevel: (known && known.permissionLevel) || '',
+      permissionLabel: PERMISSION_LABELS[(known && known.permissionLevel) || ''] ?? '',
       createdAt: (known && known.createdAt) || '2026-09-15T21:40:12',
       updatedAt: '2026-09-15T21:40:19',
     },
@@ -496,6 +525,15 @@ function traceFromScript(runId, known) {
  *
  * <p>这五行的两个维度刻意**各不相同**（有的只有租户、有的只有业务、有的都没有）：
  * 一一对应的话，"两个维度是独立的"这个结构在自检里就走不到。
+ *
+ * <h2>★ 工作区目录与权限档位（本次新增）也照同一个规矩给</h2>
+ * 真后端在这两个键上返回**空串而不是缺字段**（没有权限上下文时也是空串），
+ * 所以假数据必须有几行是空串 —— 否则"界面上那两个格子显示「未记录」"
+ * 这条分支在假后端路径上永远走不到，而它正是老数据/外部调用的形状。
+ *
+ * <p>有一条刻意写成 {@code FULL_ACCESS}：那一档在页面上是**红色标签**，
+ * 而它是"这次为什么没有待批"的唯一线索 —— 不造一条的话，那条渲染与着色
+ * 在自检里没有任何东西覆盖。
  */
 const RUNS = [
   {
@@ -511,6 +549,8 @@ const RUNS = [
     node: 'local',
     intent: '文档问答',
     tenantId: '示例租户',
+    workspaceDir: 'D:\\work\\docs',
+    permissionLevel: 'READ_ONLY',
   },
   {
     id: 'run-demo-0003',
@@ -526,6 +566,9 @@ const RUNS = [
     // 只有业务归因、没有租户 —— 两个维度的独立性靠这种组合验证
     intent: '成本排查',
     tenantId: '',
+    // 【完全权限】列表里它会渲染成红色标签，而这一行是"这次为什么没有待批"的唯一线索
+    workspaceDir: 'D:\\work\\reports',
+    permissionLevel: 'FULL_ACCESS',
   },
   {
     id: 'run-demo-0002',
@@ -559,6 +602,11 @@ const RUNS = [
     // 两个都没有（curl 直接调用的形状）
     intent: '',
     tenantId: '',
+    // 工作区与档位也都没有 —— 这一个形状**必须**出现在假数据里：
+    // 真后端的老数据与外部链路就是这样，而界面上那两个格子要如实显示「未记录」，
+    // 不编一个默认档位（编出来的那句看起来具体、实际是假的）
+    workspaceDir: '',
+    permissionLevel: '',
   },
   {
     id: 'run-demo-0000',
@@ -671,8 +719,11 @@ const LIMITS = {
  * 【故意睡 900ms】理由与 RAG 那边一样：让"正在跑"那个 loading 分支**真的被渲染到一次**，
  * 否则自检里"点完立刻断言结果"会跳过 loading 分支，那条路径就永远没被验证过。
  * 但别睡太久：真后端要十几秒，自检每次多等十几秒并不值得（超时是 180 秒，0.9 秒和 15 秒都在余量内）。
+ *
+ * @param workspaceDir 请求体里带来的工作区目录（**原样回显**，与真后端一样）
+ * @param permissionLevel 请求体里带来的档位枚举名（原样回显）
  */
-function askResponse(question) {
+function askResponse(question, workspaceDir = '', permissionLevel = '') {
   /**
    * 【第九轮】`/ask` 的返回按**审批状态**分三条分支。
    *
@@ -692,6 +743,17 @@ function askResponse(question) {
     totalTokens: detail.run.totalTokens,
     elapsedMs: detail.run.elapsedMs,
     toolCallCount: detail.run.toolCalls,
+    /*
+      【本次新增】把请求体里的执行前提**原样回显**，与真后端的 `assemble(...)` 一致。
+
+      三条都带上是刻意的：真后端回的是**服务端实际用的那一份**（目录被规范化过），
+      而界面上显示的是这一份 —— 所以假数据也不能自己编一个，
+      否则"界面显示的是服务端那份还是自己填的那份"这件事就分不出来了。
+    */
+    workspaceDir,
+    permissionLevel,
+    permissionLabel: PERMISSION_LABELS[permissionLevel] ?? '',
+    permissionNote: workspaceDir ? `${PERMISSION_LABELS[permissionLevel] ?? '未记录'} · ${workspaceDir}` : '',
     stepSummaries: [
       '第 1 步：调用 [list_documents] ×1（1222 tokens, 1420ms）',
       '第 2 步：调用 [doc_search] ×1（1675 tokens, 1680ms）',
@@ -868,18 +930,30 @@ export function handleAgentRoutes(req, res, url, json) {
       // 这里解析它只有一个目的：让"请求体里字段名写错了"这件事在假路径上也现形
       // （跨路径一致性断言会读它 —— 见 verify-ui 里那条）
       let tenantId = ''
+      /*
+        【运行权限（本次新增）：这两个字段与上面三个不同，假后端要**用**它们】
+        真后端拿它们做三件事：必填校验、权限判定、落库后回显。
+        假后端这边只需要做第三件（回显），但**必须真的从请求体里读** ——
+        假数据里写死一个档位的话，"界面选的档位有没有真的传出去"这件事
+        在假路径上永远验不到，而它恰恰是这一次最该被验证的东西
+        （请求体字段名写错 = 后端按默认档位跑，界面上却显示你选了的那一档）。
+      */
+      let workspaceDir = ''
+      let permissionLevel = ''
       try {
         const parsed = JSON.parse(body || '{}')
         question = parsed.question ?? question
         intent = parsed.intent ?? ''
         tenantId = parsed.tenantId ?? ''
+        workspaceDir = parsed.workspaceDir ?? ''
+        permissionLevel = parsed.permissionLevel ?? ''
       } catch {
         // 解析失败就用默认值：这是**假后端**，它的职责是让界面能跑起来，
         // 不是严格校验输入（严格校验在真后端，而且那里有测试）
       }
       void intent
       void tenantId
-      setTimeout(() => json(res, askResponse(question)), 900)
+      setTimeout(() => json(res, askResponse(question, workspaceDir, permissionLevel)), 900)
     })
     return true
   }
@@ -1009,7 +1083,14 @@ export function handleAgentRoutes(req, res, url, json) {
       return true
     }
     const source = known ?? { id: runId, question: '把文档里那个自相矛盾的地方提交成一条审查工单' }
-    json(res, traceFromScript(source.id, known))
+    // trace 那一层的运行记录也跟着这一行的档位走（真后端读的是同一行 agent_run）
+    json(res, traceFromScript(source.id, known ?? {
+      id: runId,
+      question: source.question,
+      status: 'WAITING_APPROVAL',
+      workspaceDir: 'D:\\work\\docs',
+      permissionLevel: 'READ_ONLY',
+    }))
     return true
   }
 
@@ -1048,6 +1129,11 @@ export function handleAgentRoutes(req, res, url, json) {
         known && known.failureCause === 'LOCAL_CONCURRENCY_LIMIT'
           ? '本机并发闸门满了（这是我们自己的限制，不是上游的问题）。稍后重试即可；如果经常出现，按实际配额调大 ai.agent.concurrency.max-concurrent-model-requests。'
           : '',
+      // 【运行权限】详情页那一行显示它 —— 从**这一行自己的**列里取，
+      // 而不是给所有运行写同一个档位：那样"档位是每一次运行各自的属性"这件事在假数据里就不成立
+      workspaceDir: known ? (known.workspaceDir ?? '') : 'D:\\work\\docs',
+      permissionLevel: known ? (known.permissionLevel ?? '') : 'READ_ONLY',
+      permissionLabel: known ? (PERMISSION_LABELS[known.permissionLevel] ?? '') : PERMISSION_LABELS.READ_ONLY,
       finalAnswer: known && known.status === 'ANSWERED' ? detailFromScript(known.id, known.question).run.finalAnswer : '',
     })
 
@@ -1157,6 +1243,13 @@ function pendingRow(waitedMs = 12800) {
     toolName: approvalState.toolName,
     arguments: approvalState.arguments,
     hints: approvalState.hints,
+    /*
+      【本次新增】这次为什么弹了确认。
+      真后端从 `ToolApprovalRecord.permissionNote` 给（形如 `仅可查看 · D:\work\docs`），
+      它回答的是"同一把 propose_review 在完全权限下不会弹，这一次为什么弹了" ——
+      只看 hints（工具固有的风险声明）分不出这两种情况
+    */
+    permissionNote: '仅可查看 · D:\\work\\docs',
     summary: approvalState.summary,
     requestedAt: '2026-09-16T10:12:03',
     waitedMs,
@@ -1176,6 +1269,12 @@ function pendingRunRow() {
     elapsedMs: 8430,
     createdAt: '2026-09-16T10:12:03',
     node: 'local',
+    intent: '文档问答',
+    tenantId: '示例租户',
+    // 停在等人确认的那次运行：它是**仅可查看**档位下的写操作 ——
+    // 与列表里那条 FULL_ACCESS 构成对照（同一把工具，两档下结局完全不同）
+    workspaceDir: 'D:\\work\\docs',
+    permissionLevel: 'READ_ONLY',
   }
 }
 
