@@ -285,8 +285,7 @@ public class AgentLoop {
 			ModelTurn.ModelReply reply;
 			try {
 				reply = modelTurn.chat(messages);
-			}
-			catch (RuntimeException e) {
+			} catch (RuntimeException e) {
 				// 模型调用失败：把已有步骤带回去，而不是抛掉已经花掉的成本
 				//
 				// 【这里做了一次"翻译"】把异常分成"太挤/鉴权/限流/超时/连不上/其它"。

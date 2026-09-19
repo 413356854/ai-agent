@@ -213,8 +213,7 @@ public class AgentApprovalService implements ToolApprovalGate {
 
 		try {
 			return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
-		}
-		catch (TimeoutException e) {
+		} catch (TimeoutException e) {
 			boolean written = store.decide(approvalId, ApprovalStatus.TIMED_OUT, Instant.now(), null,
 					"超过 %d 秒没有人处理".formatted(timeout.toSeconds()));
 			log.warn("待批 #{} 超时（{}s）{}", approvalId, timeout.toSeconds(),
@@ -226,22 +225,19 @@ public class AgentApprovalService implements ToolApprovalGate {
 				future.complete(null);
 			}
 			return written ? ApprovalStatus.TIMED_OUT : statusOf(approvalId);
-		}
-		catch (InterruptedException e) {
+		} catch (InterruptedException e) {
 			// 恢复中断标志：吞掉它会让"取消"这个信号在这一层消失，
 			// 而调用方（虚拟线程的取消 / 关闭流程）正是靠它在等的
 			Thread.currentThread().interrupt();
 			store.decide(approvalId, ApprovalStatus.EXPIRED, Instant.now(), null, "等待被中断");
 			log.warn("待批 #{} 的等待被中断", approvalId);
 			return ApprovalStatus.EXPIRED;
-		}
-		catch (ExecutionException e) {
+		} catch (ExecutionException e) {
 			// decide() 只 complete 不 completeExceptionally，所以走到这里说明是别处出的问题。
 			// 保守地按"没批"处理 —— 与超时同一条取向：默认不做
 			log.error("待批 #{} 的等待异常", approvalId, e);
 			return ApprovalStatus.EXPIRED;
-		}
-		finally {
+		} finally {
 			// 把手撤掉：否则每处理一次写调用就往这个 map 里留一条，
 			// 长时间跑下来是一次典型的内存泄漏（工具数量有上限，审批次数没有）
 			waiters.remove(approvalId);

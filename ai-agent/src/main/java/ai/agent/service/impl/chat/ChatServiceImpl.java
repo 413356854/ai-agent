@@ -57,6 +57,17 @@ public class ChatServiceImpl implements ChatService {
 				.user(userText)
 				// 注意：options(...) 接收的是 ChatOptions.Builder，不是构建好的 ChatOptions
 				.options(OpenAiChatOptions.builder().temperature(temperature))
+				// 【读取历史会话】这一行的 param 就是"把本次请求接到该会话的历史上"的开关：
+				// ChatClient 上挂了 MessageChatMemoryAdvisor（装配见 ChatClientConfig#chatClient），
+				// 它在 before() 阶段用这个 conversationId 调 ChatMemory.get(id) 取出历史消息、
+				// 合并进本次 Prompt（2.0.1 字节码核过：before() → getConversationId(ctx) →
+				// ChatMemory.get(id) → Prompt.Builder.messages(...)；流式也走 before()，
+				// adviseStream() 的第一步 map 调的就是它）。
+				// 所以"第 2 轮还记得第 1 轮说过什么"发生在这里 —— 端点只把 conversationId 传下来，
+				// 自己并不拼历史；反过来说，这一行去掉就等于每轮都是新会话（且不报错，只是"失忆"）。
+				// 同一个 param 也是写入的键：before() 落本次用户消息、after() 落回答（流式只在正常完成时落），
+				// 重试会留下孤儿用户消息，所以每轮重试前必须先摘掉它（ChatController#dropOrphanedUserMessage）。
+				// 2.0 起这个 param 每次调用必传、没有默认值，不传直接抛 IllegalArgumentException。
 				.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, conversationId))
 				.stream()
 				.chatClientResponse();
@@ -67,6 +78,8 @@ public class ChatServiceImpl implements ChatService {
 		return chatClient.prompt()
 				.system(prompts.currentContent(PromptKind.CHAT_SYSTEM))
 				.user(message)
+				// 【读取历史会话】与上面 stream() 同一件事：非流式通路用的是同一个记忆 advisor，
+				// 同样按 conversationId 取历史并进本次 Prompt（判据与坑见 stream() 里的那段注释）
 				.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, conversationId))
 				.call()
 				.content();

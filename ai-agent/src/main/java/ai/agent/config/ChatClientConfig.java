@@ -103,7 +103,7 @@ public class ChatClientConfig {
 	 *       {@code MAX_CONVERSATION_CHARS}）—— 超长会在真 MySQL 上插入失败，
 	 *       所以要么把列改宽，要么让调用方只用 UUID / 短 id。
 	 *       <b>这是换存储时最容易漏的问题，而且它在 H2 上根本不报</b>
-	 *       （H2 不校验 VARCHAR 长度，本机测一切正常，换到 MySQL 才炸）—— 又一次"不报错的错"。</li>
+	 *       （H2 不校验 VARCHAR 长度，本机测一切正常，换到 MySQL 才炸）。</li>
 	 *   <li><b>方言识别失败时会静默按 Postgres 走</b>：{@code dialect(...)} 是按数据库产品名
 	 *       做 switch 的（PostgreSQL / MySQL / MariaDB / SQL Server / HSQLDB / SQLite / H2 / Oracle）；
 	 *       读不到产品名时它的兜底是 <b>Postgres 方言</b>，那时生成的 SQL 在 MySQL 上不对，
