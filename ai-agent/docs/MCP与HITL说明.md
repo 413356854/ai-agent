@@ -153,13 +153,24 @@ pwsh -File scripts/verify-mcp.ps1 -BaseUrl http://127.0.0.1:8080
 
 实测输出结尾是 `合计 19 项：通过 19，失败 0`。
 
-### 3.2 对外提供的工具（恰好 3 把，全是只读）
+### 3.2 对外提供的工具（4 把，全是只读）
 
 | 工具 | 它做什么 |
 |---|---|
 | `search_docs` | 在项目语料里做关键词检索，返回最相关的若干片段 |
 | `list_documents` | 列出知识库里有哪些文档、各自规模与主要章节 |
 | `read_section` | 读出指定文档里某一节的完整正文 |
+| `query_sql` | 对**应用自己的库**执行一条读语句（表名自己查 `INFORMATION_SCHEMA`） |
+
+⚠️ **`query_sql` 让这条边界的含义变了，必须看清**：前三把只能看到**项目语料**，
+而这一把能看到**整个运行库** —— `agent_run` / `agent_step`（含每步的完整对话检查点！）/
+`agent_tool_invocation` / `agent_tool_approval` / `prompt_version` / `retrieval_hit`。
+"只读"保证的是"改不了"，它**不保证**"看不到"。所以：
+
+- 能访问 `/mcp` 端口的人（目前**没有鉴权**）就能把这些数据读走；
+- 如果那个库同时存着别的业务数据（例如把 `ai.agent.store.url` 指向一个共用库），
+  这条暴露面会一起把它带出去；
+- 要关掉它，改 `McpToolExposure` 的暴露路由即可（那是**唯一**决定"对外暴露什么"的地方）。
 
 每把都带 MCP 的 `annotations`，由 `ToolHints` 单一来源驱动。实测 `search_docs` 的：
 
@@ -167,12 +178,24 @@ pwsh -File scripts/verify-mcp.ps1 -BaseUrl http://127.0.0.1:8080
 {"title":"search_docs","readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}
 ```
 
+真启动时的自检日志（它逐把比对"服务器实际装的"与"我们打算暴露的"）：
+
+```
+MCP Server 自检通过：对外提供 4 把只读工具 [list_documents、query_sql、read_section、search_docs]；
+刻意不暴露的写工具 [execute_sql、propose_review]（写操作只能由本应用自己的模型链路发起，并经过人工确认）
+```
+
 ### 3.3 刻意不暴露：写操作
 
-`propose_review` **不在** MCP 的工具列表里。理由不是省事 ——
+`propose_review` 与 `execute_sql` **都不在** MCP 的工具列表里。理由不是省事 ——
 **MCP 调用的对面是另一个系统**，它既看不到本项目的待办界面、也没法替人点"批准"。
-暴露它只有两种结局：要么外部调用永远卡在等人上（对调用方是"这个工具坏了"），
+暴露它们只有两种结局：要么外部调用永远卡在等人上（对调用方是"这个工具坏了"），
 要么我们为了让外部能用而给它开后门 —— 而**那道门一开，审批就形同虚设**。
+
+`execute_sql` 把这条规矩的代价抬高了：它是一把"影响面由模型生成的 SQL 决定"的写工具，
+对它的审批**只有人**能做（`ToolHints.writeRequiringApproval()` → 必然触发人工确认），
+所以它比 `propose_review` 更没有开放外部调用的余地 ——
+外部客户端连"这条 SQL 会改什么"都没法让人看一眼。
 
 规矩是**硬失败**而不是过滤：
 
@@ -214,7 +237,8 @@ Spring AI 的 `ToolCallbackConverterAutoConfiguration` 会收集容器里**全�
 1. **MCP 端点没有鉴权。** `/mcp` 对任何能访问该端口的人开放。
    本地演示够用，**上生产必须加一层**（网关鉴权 / token）。
    ⚠️ 这与"写操作不对外"是**两件不同的事**：前者管"谁能读"，后者管"能改什么" —— 本轮只做了后者。
-   风险目前可控：暴露的三把工具全是只读的，且只能看到本项目自己的语料。
+   ⚠️ **"只读"只保证改不了，不保证看不到**：对外暴露的 `query_sql` 能读到整个运行库
+   （含 `agent_step.transcript` 里每一步的完整对话检查点）。见 3.2 那一节。
 2. **`ai.agent.approval.timeout` 的 120 秒没有被"真人"验证过。**
    本机没有真人会去点批准按钮，所以端到端只验证到"8 秒超时按拒绝处理"这条路径。
    "人点了批准、任务当场接着跑完"原先靠后端测试的一个唤醒用例覆盖，那批测试已在
