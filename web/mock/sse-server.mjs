@@ -28,6 +28,7 @@ import { createServer } from 'node:http'
 import { handleAgentRoutes } from './agent-routes.mjs'
 import { handleAlertsRoutes } from './alert-routes.mjs'
 import { handleCostRoutes } from './cost-routes.mjs'
+import { handlePermissionRoutes } from './permission-routes.mjs'
 import { handlePromptRoutes } from './prompt-routes.mjs'
 import { handleRagRoutes } from './rag-routes.mjs'
 
@@ -360,11 +361,25 @@ const server = createServer((req, res) => {
     return
   }
 
+  // ---------------------------------------------------------------
+  //  权限管理端点（应用管理 · 权限管理）
+  //
+  //  ⚠️ 与 alerts / prompts 同一类：**有写端点，所以状态是进程内可变的**，
+  //  并且必须配一条 `POST /api/permissions/__reset`（自检跑第二遍时会用到）。
+  //  这一组与上面所有组还有一处**性质不同**：它的假数据要**照搬真后端的判据**
+  //  （工具名对注册表、同名 409、目录按路径分段比），
+  //  否则"界面能不能把后端的拒绝显示清楚"这个分支在自检里永远走不到。
+  //  三条纪律写在 permission-routes.mjs 开头。
+  // ---------------------------------------------------------------
+  if (url.pathname.startsWith('/api/permissions') && handlePermissionRoutes(req, res, url, json)) {
+    return
+  }
+
   res.writeHead(404, { 'Content-Type': 'application/json' })
   res.end(
     JSON.stringify({
       message:
-        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async、POST /api/agent/ask、GET /api/agent/*、GET /api/cost/*、GET|POST /api/prompts/*、GET|POST /api/alerts/*、GET|POST /api/canary/*',
+        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async、POST /api/agent/ask、GET /api/agent/*、GET /api/cost/*、GET|POST /api/prompts/*、GET|POST /api/alerts/*、GET|POST /api/canary/*、GET|POST|PUT|DELETE /api/permissions/*',
     }),
   )
 })

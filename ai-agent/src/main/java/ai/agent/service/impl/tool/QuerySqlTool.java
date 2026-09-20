@@ -37,6 +37,8 @@ import java.util.Optional;
  * 库里有什么，模型自己用 {@code INFORMATION_SCHEMA} 查得出来 —— 所以四段描述里
  * <b>刻意不写任何表名</b>：写进去的那一刻它就开始随 DDL 漂移，
  * 而漂移之后的表现是"模型拿着一份过时的目录去查一个不存在的表"。
+ * 同理，{@link #SCHEMA_QUERY} 里也不写死库名（MySQL 上是 {@code db_ai_agent}，
+ * H2 内存库上是 {@code PUBLIC}）。
  *
  * <h2>为什么读也要有上限，而且上限写在 schema 里</h2>
  * 这把工具的返回值就是<b>进模型的上下文</b>，而上下文是花钱的。
@@ -47,6 +49,18 @@ import java.util.Optional;
 public class QuerySqlTool implements AgentTool<QuerySqlTool.Params> {
 
 	private static final Logger log = LoggerFactory.getLogger(QuerySqlTool.class);
+
+	/**
+	 * 给模型的"先查目录"那条语句。
+	 *
+	 * <p>⚠️ 这一条**不能写死 schema 名**：本应用的库在 MySQL 上是 {@code db_ai_agent}、
+	 * 在 H2 内存库上是 {@code PUBLIC}，把其中一个名字写进提示词，换库之后模型就会拿着
+	 * 一个不存在的 schema 去查、然后报告"库里没有表"（而库里有）。
+	 * {@code DATABASE()} 在两种库上都返回当前库名，所以它写一次、两边都对。
+	 */
+	private static final String SCHEMA_QUERY =
+			"SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+					+ "WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME";
 
 	private final JdbcSqlExecutor executor;
 
@@ -65,8 +79,8 @@ public class QuerySqlTool implements AgentTool<QuerySqlTool.Params> {
 				"对应用自己的数据库执行一条**读**语句（SELECT 一族），返回结果表格。",
 				"当用户的问题需要看数据库里的真实数据时使用：运行记录（哪些任务跑过、花了多少 token、"
 						+ "失败原因）、提示词版本、审批待办、检索命中明细等。"
-						+ "表名不确定时先查目录：SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
-						+ "WHERE TABLE_SCHEMA='PUBLIC'；表结构用 SELECT * FROM INFORMATION_SCHEMA.COLUMNS。"
+						+ "表名不确定时先查目录：" + SCHEMA_QUERY
+						+ "；表结构用 SELECT * FROM INFORMATION_SCHEMA.COLUMNS。"
 						+ "典型用法：先查目录或结构，再写一条聚合查询（COUNT / GROUP BY）回答用户。",
 				"⚠️ **不要**用它改任何数据（INSERT / UPDATE / DELETE / CREATE / DROP / ALTER 都会被拒绝）——"
 						+ "写语句要用 execute_sql，那条路会要求人工确认。"
@@ -115,8 +129,8 @@ public class QuerySqlTool implements AgentTool<QuerySqlTool.Params> {
 			return new AgentToolResult.Failure("sql_error",
 					("这条查询没有执行成功：%s（SQLState %s，错误码 %d）。"
 							+ "**原样重试不会有不同结果**：请先确认表名与列名 —— 用 "
-							+ "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='PUBLIC' "
-							+ "看真实表名，用 SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='…' 看列名。"
+							+ SCHEMA_QUERY + " 看真实表名，用 "
+							+ "SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='…' 看列名。"
 							+ "如果查询本身没问题，把它改简单一些再试。")
 							.formatted(rootMessage(e), e.getSQLState(), e.getErrorCode()),
 					false);

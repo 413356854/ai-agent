@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS prompt_version (
   forked_from  INT           NULL,
   created_at   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (kind, version)
-);
+) COMMENT='提示词版本';
 
 -- 当前生效的那一版（每份提示词一行）
 CREATE TABLE IF NOT EXISTS prompt_active (
@@ -53,4 +53,4 @@ CREATE TABLE IF NOT EXISTS prompt_active (
   activated_by  VARCHAR(128) NULL,
   activated_at  TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (kind)
-);
+) COMMENT='提示词生效';

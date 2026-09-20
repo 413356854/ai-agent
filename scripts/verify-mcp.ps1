@@ -72,9 +72,9 @@ if ($p3) {
   } catch { }
 }
 Check 'tools/list 返回 200' ($r3.Status -eq 200) "status=$($r3.Status)"
-Check '对外恰好暴露 3 把只读工具' ($toolNames.Count -eq 3) "实际=$($toolNames -join ',')"
+Check '对外恰好暴露 4 把只读工具' ($toolNames.Count -eq 4) "实际=$($toolNames -join ',')"
 Check '★ 写工具 propose_review 不在列表里' ($toolNames -notcontains 'propose_review') ""
-Check '三把只读工具齐全' ((@($toolNames | Sort-Object) -join ',') -eq 'list_documents,read_section,search_docs') ""
+Check '四把只读工具齐全（三把语料工具 + query_sql）' ((@($toolNames | Sort-Object) -join ',') -eq 'list_documents,query_sql,read_section,search_docs') ""
 Check 'search_docs 带 readOnlyHint=true 的 annotations' ($searchTool -and $searchTool.annotations.readOnlyHint -eq $true) "$($searchTool.annotations | ConvertTo-Json -Compress)"
 
 Write-Host "`n=== 4) tools/call：只读工具真的能调通（那个坑正是在这里炸）==="
@@ -87,6 +87,20 @@ Check '★ 调用真的成功（不是抛 UnsupportedOperationException）' ($ca
 Check '返回执行器那一套回填文本（含 call_id）' ([bool]($callText -match 'call_id')) ""
 Check '内容里带知识库文档数（真的读到了语料）' ([bool]($callText -match '知识库共')) ""
 if ($callText) { Write-Host "     返回内容前 200 字：$(($callText -replace '\s+',' ').Substring(0, [Math]::Min(200, ($callText -replace '\s+',' ').Length)))" }
+
+Write-Host "`n=== 4b) tools/call：query_sql 读到的是**当前这个库**（换库之后这条最容易悄悄失效）==="
+# 为什么单独测这一条：工具描述里给模型的"先查目录"那句话曾经写死过 H2 的 schema 名
+# （`TABLE_SCHEMA='PUBLIC'`）。换成 MySQL 之后，那句话会让模型查到一个空目录、
+# 然后报告"库里没有表"—— 而库里有。所以断言落在**真实返回**上，而不是描述文本上。
+$r4b = Invoke-Mcp -Body '{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"query_sql","arguments":{"sql":"SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME","purpose":"核对 query_sql 读到的是当前库的表目录"}}}' -SessionId $r1.Session
+$p4b = Get-Payload -Raw $r4b.Raw
+$sqlText = $null; $sqlIsError = $null
+if ($p4b) { try { $x4b = $p4b | ConvertFrom-Json; $sqlText = (($x4b.result.content | ForEach-Object { $_.text }) -join ''); $sqlIsError = $x4b.result.isError } catch { } }
+Check 'query_sql 调用成功' ($sqlText -and $sqlIsError -ne $true) "isError=$sqlIsError"
+Check '★ 表目录非空（写死 schema 名会在这里变成一个空结果）' ([bool]($sqlText -match 'agent_run')) ""
+Check '返回的是应用自己的表（agent_step 也在）' ([bool]($sqlText -match 'agent_step')) ""
+Check '★ 写语句被拒（query_sql 不是写入口）' ((Invoke-Mcp -Body '{"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"query_sql","arguments":{"sql":"DELETE FROM agent_run","purpose":"验证写语句被拒"}}}' -SessionId $r1.Session).Raw -match 'write_not_allowed|写') ""
+if ($sqlText) { Write-Host "     返回内容前 160 字：$(($sqlText -replace '\s+',' ').Substring(0, [Math]::Min(160, ($sqlText -replace '\s+',' ').Length)))" }
 
 Write-Host "`n=== 5) tools/call：错参数走同一道门禁 ==="
 $r5 = Invoke-Mcp -Body '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search_docs","arguments":{}}}' -SessionId $r1.Session

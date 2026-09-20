@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  agent_role 表的 SQL。
+
+  ⚠️ 按名字查与库里的唯一约束是两种判据，理由同 AccountMapper.xml 的头注。
+
+  ⚠️ byIds 的 IN 列表：调用方（服务层）在列表为空时**不发这条查询** ——
+  `IN ()` 在两种库上都是语法错，而它只在"这个账号一个角色都没有"时才出现，
+  也就是新账号第一次打开权限页的时候。
+-->
+<mapper namespace="ai.agent.mapper.RoleMapper">
+
+	<resultMap id="roleRow" type="ai.agent.mapper.MapperRows$RoleRow">
+		<constructor>
+			<idArg column="id" javaType="java.lang.Long"/>
+			<arg column="name" javaType="java.lang.String"/>
+			<arg column="description" javaType="java.lang.String"/>
+			<!-- access_scope 保持字符串：宽松解析（认不出落 LISTED）在 RoleRow.toDomain() 里，
+			     不给 MyBatis 配枚举处理器（理由见 RoleMapper 接口注释） -->
+			<arg column="access_scope" javaType="java.lang.String"/>
+			<arg column="created_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="updated_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+		</constructor>
+	</resultMap>
+
+	<sql id="roleColumns">
+		id, name, description, access_scope, created_at, updated_at
+	</sql>
+
+	<insert id="insert">
+		INSERT INTO agent_role (name, description, access_scope)
+		VALUES (#{name}, #{description}, #{access})
+	</insert>
+
+	<!-- 取键必须紧接着插入调用，理由见 AccountMapper 的类注释与 AccountMapper.xml -->
+	<select id="lastInsertId" resultType="java.lang.Long">
+		SELECT LAST_INSERT_ID()
+	</select>
+
+	<select id="findById" resultMap="roleRow">
+		SELECT <include refid="roleColumns"/> FROM agent_role WHERE id = #{id}
+	</select>
+
+	<select id="findByName" resultMap="roleRow">
+		SELECT <include refid="roleColumns"/>
+		  FROM agent_role
+		 WHERE LOWER(TRIM(name)) = LOWER(TRIM(#{name}))
+	</select>
+
+	<select id="list" resultMap="roleRow">
+		SELECT <include refid="roleColumns"/> FROM agent_role ORDER BY name
+	</select>
+
+	<select id="byIds" resultMap="roleRow">
+		SELECT <include refid="roleColumns"/>
+		  FROM agent_role
+		 WHERE id IN
+		<foreach item="id" collection="ids" open="(" separator="," close=")">#{id}</foreach>
+	</select>
+
+	<update id="update">
+		UPDATE agent_role
+		   SET name = #{name}, description = #{description}, access_scope = #{access}
+		 WHERE id = #{id}
+	</update>
+
+	<!-- 级联删掉 agent_role_tool / agent_role_dir / agent_user_role（DDL 里的外键） -->
+	<delete id="delete">
+		DELETE FROM agent_role WHERE id = #{id}
+	</delete>
+
+</mapper>

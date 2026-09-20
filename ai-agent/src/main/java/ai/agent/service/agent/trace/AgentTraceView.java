@@ -577,8 +577,8 @@ public class AgentTraceView {
 			notes.add("这次运行没有工作区目录（调用方没有传 workspaceDir，或这一列加上之前就写入的运行）—— "
 					+ "它按「仅可查看」处理：写操作会停下来等人确认。");
 		}
-		notes.add("默认库是内存库（ai.agent.store.url 默认 jdbc:h2:mem:...）：进程退出即清空，"
-				+ "所以『历史运行里没有昨天那次』是预期行为。");
+		notes.add("库是 MySQL（ai.agent.store.url 指向 db_ai_agent）：运行记录跨重启保留，"
+				+ "所以『历史运行里没有昨天那次』不是预期现象（默认只取最近若干条，见这一页的条数上限）。");
 		return List.copyOf(notes);
 	}
 

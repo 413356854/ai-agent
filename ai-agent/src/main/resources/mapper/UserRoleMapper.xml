@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  agent_user_role 表的 SQL。
+
+  ⚠️ 只返回 (user_id, role_id, role_name)：角色的**其它**字段（说明、access）不在这里取。
+  "这个账号有哪些角色"与"这些角色的权限是什么"是两个问题，前者要的是名字（页面上的标签），
+  后者要的是权限页那一份详情。合成一条 JOIN 会让账号列表那次查询拖回一堆用不上的列，
+  而真正需要详情的权限页仍然要按角色再查一次。
+-->
+<mapper namespace="ai.agent.mapper.UserRoleMapper">
+
+	<resultMap id="accountRoleRow" type="ai.agent.mapper.MapperRows$AccountRoleRow">
+		<constructor>
+			<arg column="user_id" javaType="java.lang.Long"/>
+			<arg column="role_id" javaType="java.lang.Long"/>
+			<arg column="role_name" javaType="java.lang.String"/>
+		</constructor>
+	</resultMap>
+
+	<sql id="accountRoleColumns">
+		ur.user_id AS user_id, ur.role_id AS role_id, r.name AS role_name
+	</sql>
+
+	<select id="byUser" resultMap="accountRoleRow">
+		SELECT <include refid="accountRoleColumns"/>
+		  FROM agent_user_role ur
+		  JOIN agent_role r ON r.id = ur.role_id
+		 WHERE ur.user_id = #{userId}
+		 ORDER BY r.name
+	</select>
+
+	<select id="all" resultMap="accountRoleRow">
+		SELECT <include refid="accountRoleColumns"/>
+		  FROM agent_user_role ur
+		  JOIN agent_role r ON r.id = ur.role_id
+		 ORDER BY ur.user_id, r.name
+	</select>
+
+	<!-- created_at 由 DDL 的 DEFAULT CURRENT_TIMESTAMP 填 -->
+	<insert id="insert">
+		INSERT INTO agent_user_role (user_id, role_id, granted_by) VALUES (#{userId}, #{roleId}, #{grantedBy})
+	</insert>
+
+	<delete id="delete">
+		DELETE FROM agent_user_role WHERE user_id = #{userId} AND role_id = #{roleId}
+	</delete>
+
+	<delete id="deleteAllOfUser">
+		DELETE FROM agent_user_role WHERE user_id = #{userId}
+	</delete>
+
+	<select id="countByRole" resultType="java.lang.Integer">
+		SELECT COUNT(*) FROM agent_user_role WHERE role_id = #{roleId}
+	</select>
+
+</mapper>

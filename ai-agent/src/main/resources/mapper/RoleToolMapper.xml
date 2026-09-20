@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  agent_role_tool 表的 SQL。
+
+  ⚠️ 三条 insert 的目标列里没有 created_at：它由 DDL 的 DEFAULT CURRENT_TIMESTAMP 填。
+  在 SQL 里再写一次 NOW() 会让"什么时候授权的"有两个来源，而它们不一定相等
+  （应用进程与数据库的时钟不是同一个）。
+-->
+<mapper namespace="ai.agent.mapper.RoleToolMapper">
+
+	<resultMap id="roleToolRow" type="ai.agent.mapper.MapperRows$RoleToolRow">
+		<constructor>
+			<arg column="role_id" javaType="java.lang.Long"/>
+			<arg column="tool_name" javaType="java.lang.String"/>
+			<arg column="note" javaType="java.lang.String"/>
+		</constructor>
+	</resultMap>
+
+	<select id="byRole" resultMap="roleToolRow">
+		SELECT role_id, tool_name, note FROM agent_role_tool WHERE role_id = #{roleId} ORDER BY tool_name
+	</select>
+
+	<select id="all" resultMap="roleToolRow">
+		SELECT role_id, tool_name, note FROM agent_role_tool ORDER BY role_id, tool_name
+	</select>
+
+	<insert id="insert">
+		INSERT INTO agent_role_tool (role_id, tool_name, note) VALUES (#{roleId}, #{toolName}, #{note})
+	</insert>
+
+	<delete id="delete">
+		DELETE FROM agent_role_tool WHERE role_id = #{roleId} AND tool_name = #{toolName}
+	</delete>
+
+	<delete id="deleteAllOfRole">
+		DELETE FROM agent_role_tool WHERE role_id = #{roleId}
+	</delete>
+
+</mapper>

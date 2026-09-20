@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  agent_role_dir 表的 SQL。
+
+  ⚠️ 这里**没有**任何按目录匹配的查询，而且这是刻意的：
+  LIKE CONCAT(dir_prefix, '%') 会让 `_` 变成通配符、也会把 demo-other 算进 demo。
+  判定在 Java 里只有一处（RoleDirectory.covers，按路径分段比）。
+
+  ⚠️ created_at 不写进 insert：由 DDL 的 DEFAULT CURRENT_TIMESTAMP 填，理由同 RoleToolMapper.xml。
+-->
+<mapper namespace="ai.agent.mapper.RoleDirectoryMapper">
+
+	<resultMap id="roleDirectoryRow" type="ai.agent.mapper.MapperRows$RoleDirectoryRow">
+		<constructor>
+			<arg column="role_id" javaType="java.lang.Long"/>
+			<arg column="dir_prefix" javaType="java.lang.String"/>
+			<arg column="note" javaType="java.lang.String"/>
+		</constructor>
+	</resultMap>
+
+	<select id="byRole" resultMap="roleDirectoryRow">
+		SELECT role_id, dir_prefix, note FROM agent_role_dir WHERE role_id = #{roleId} ORDER BY dir_prefix
+	</select>
+
+	<select id="all" resultMap="roleDirectoryRow">
+		SELECT role_id, dir_prefix, note FROM agent_role_dir ORDER BY role_id, dir_prefix
+	</select>
+
+	<insert id="insert">
+		INSERT INTO agent_role_dir (role_id, dir_prefix, note) VALUES (#{roleId}, #{dirPrefix}, #{note})
+	</insert>
+
+	<delete id="delete">
+		DELETE FROM agent_role_dir WHERE role_id = #{roleId} AND dir_prefix = #{dirPrefix}
+	</delete>
+
+	<delete id="deleteAllOfRole">
+		DELETE FROM agent_role_dir WHERE role_id = #{roleId}
+	</delete>
+
+</mapper>

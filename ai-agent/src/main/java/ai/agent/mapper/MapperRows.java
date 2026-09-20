@@ -1,6 +1,12 @@
 package ai.agent.mapper;
 
 import ai.agent.entity.agent.store.AgentRunRecord;
+import ai.agent.entity.agent.permission.Account;
+import ai.agent.entity.agent.permission.AccountStatus;
+import ai.agent.entity.agent.permission.PermissionAccess;
+import ai.agent.entity.agent.permission.Role;
+import ai.agent.entity.agent.permission.RoleDirectory;
+import ai.agent.entity.agent.permission.RoleTool;
 import ai.agent.entity.alert.AlertEvent;
 import ai.agent.entity.prompt.PromptVersion;
 import ai.agent.entity.tool.RetrievalTrace;
@@ -247,6 +253,58 @@ public final class MapperRows {
 		public CanaryRunBucket toDomain() {
 			return new CanaryRunBucket(fingerprint, variant, nz(runs));
 		}
+	}
+
+	// ==================================================================
+	//  权限管理（agent_user / agent_role / agent_user_role / agent_role_tool / agent_role_dir）
+	// ==================================================================
+
+	/** {@code agent_user} 的一行。 */
+	public record AccountRow(Long id, String name, String passwordHash, String displayName, String status,
+			Instant createdAt, Instant updatedAt) {
+
+		/**
+		 * {@code status} 在这里才解析成枚举（而不是让 MyBatis 直接映射枚举）：
+		 * 宽松解析的规则（认不出落 DISABLED）与 {@code AgentPermissionLevel} 的处理保持一致 ——
+		 * 它是一条业务判断，放在 {@link ai.agent.entity.agent.permission.AccountStatus#parse} 里只有一处。
+		 */
+		public Account toDomain() {
+			return new Account(id, name, passwordHash, displayName, AccountStatus.parse(status));
+		}
+	}
+
+	/** {@code agent_role} 的一行。 */
+	public record RoleRow(Long id, String name, String description, String access, Instant createdAt,
+			Instant updatedAt) {
+
+		public Role toDomain() {
+			return new Role(id, name, description, PermissionAccess.parse(access));
+		}
+	}
+
+	/** {@code agent_role_tool} 的一行。 */
+	public record RoleToolRow(Long roleId, String toolName, String note) {
+
+		public RoleTool toDomain() {
+			return new RoleTool(roleId, toolName, note);
+		}
+	}
+
+	/** {@code agent_role_dir} 的一行。 */
+	public record RoleDirectoryRow(Long roleId, String dirPrefix, String note) {
+
+		public RoleDirectory toDomain() {
+			return new RoleDirectory(roleId, dirPrefix, note);
+		}
+	}
+
+	/**
+	 * 账号 ↔ 角色（JOIN 出来的名字）。
+	 *
+	 * <p>为什么不只返回 {@code role_id} 再去查一次角色：权限页要显示"他有哪些角色"，
+	 * 而那些名字是唯一需要的东西 —— 按 id 逐个回查是典型的 N+1。
+	 */
+	public record AccountRoleRow(Long userId, Long roleId, String roleName) {
 	}
 
 	// ==================================================================

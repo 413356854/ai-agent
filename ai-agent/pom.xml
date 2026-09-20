@@ -73,6 +73,14 @@
 			<!-- 作用域 compile 而不是 runtime：代码里要直接用它的 JdbcConnectionPool（作为 DataSource 实现） -->
 		</dependency>
 
+		<!-- 数据库：MySQL 驱动。url 指向 MySQL 时由它建连（ai.agent.store.url 见 application.properties）。
+		     不写版本号：Boot 4.1.1 的依赖清单管着它（mysql.version=9.7.0）。
+		     它同时提供 java.sql.Driver 与 com.mysql.cj.jdbc.MysqlConnectionPoolDataSource（后者不在这里用） -->
+		<dependency>
+			<groupId>com.mysql</groupId>
+			<artifactId>mysql-connector-j</artifactId>
+		</dependency>
+
 		<!-- 文档解析：Word / PDF / HTML / CSV 统一读成文本与 XHTML 结构，供结构化分块使用 -->
 		<dependency>
 			<groupId>org.apache.tika</groupId>

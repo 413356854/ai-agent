@@ -1,6 +1,7 @@
 package ai.agent.config;
 
-import org.h2.jdbcx.JdbcConnectionPool;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
@@ -15,47 +16,58 @@ import javax.sql.DataSource;
  * 见 {@link AgentStoreProperties} 的类注释：那个命名空间是"谁负责一望而知"的一部分。
  * 这里显式把它转成一个 {@code DataSource} bean ——
  * 于是"Boot 的自动配置有没有在管它"这个问题有了确定答案：
- * <b>自动配置不会介入</b>（{@code spring.datasource.*} 没配，`DataSourceAutoConfiguration`
- * 在类路径上没有可用的连接池属性时不会被触发来抢着建第二个库），
- * 而这个 bean 就是全应用唯一的库。
+ * <b>自动配置不会介入建第二个库</b>（{@code spring.datasource.*} 没配，
+ * {@code DataSourceAutoConfiguration} 不会被触发），而这个 bean 就是全应用唯一的库。
  *
- * <h2>为什么用 H2 自带的 {@link JdbcConnectionPool} 当 DataSource</h2>
- * 它本来就实现了 {@code javax.sql.DataSource}，而这台机器上它已经在用（阶段三的选择）。
- * 换成 HikariCP 能拿到更细的池参数，但那是**另一个决定**（连接数、泄漏检测、超时），
- * 与"把 SQL 收进 mapper"这件事无关 —— 这次迁移刻意不捆绑它。
- * 唯一的形状变化：池现在由 Spring 管理生命周期（{@code destroyMethod = "dispose"}），
- * 不再是 {@code JdbcAgentRunStore} 里那个 {@code @PreDestroy}。
+ * <h2>池：{@link HikariDataSource}</h2>
+ * 它是 Boot 的默认池，由 {@code spring-boot-starter-jdbc}（经 mybatis starter）带进来。
+ * 用它的理由与"库换成 MySQL"是同一件事：H2 自带的 {@code JdbcConnectionPool}
+ * 只有 url/user/password 三个参数，**没有建连超时** ——
+ * 而这恰好是跨网络访问数据库时最常见的故障形态，现象是"启动卡在那里不报错"。
+ * 本库的两种形态（MySQL / H2 内存）走同一个池，少一条按 url 分支的装配路径。
  *
- * <h2>{@code DB_CLOSE_DELAY=-1} 是这整套配置的隐含前提</h2>
- * 默认 url 是内存库，而内存库在**最后一个连接关闭时**会被删掉。
- * 没有这个参数，一次性用完就归还的池会让库在两次操作之间消失 ——
- * 现象是"表不存在"，看起来像建表没跑。这个参数写在
- * {@link AgentStoreProperties#defaults()} 的默认连接串里。
+ * <p>{@code maximumPoolSize} 取 10：本应用压到库上的是**短查询**
+ * （单表 CRUD 与聚合，毫秒级），并发上限由 {@code ai.agent.concurrency.*} 管着，
+ * 真正同时用库的连接数远小于模型并发的 8。池开大没有收益 ——
+ * MySQL 的 {@code max_connections} 默认 151，多实例部署时每个实例各占一份。
+ * 这个值写在代码里而不是做成配置项：与 {@code ai.chat.estimation.*} 那几个估算系数同一条规矩，
+ * 它的依据是"本应用怎么用库"，不是部署方的环境差异。
  *
- * <h2>建表交给 {@code spring.sql.init}</h2>
- * 原先三处手写的 DDL 执行（`ddl.split(";")` + 逐行去 `--` 注释）已经删除。
- * 换过去不只是少了几十行：那个 split 的做法**只在"没有注释里带分号"时才正确**
- * （原代码里就留着这条警告），而 Boot 的脚本执行器是真正解析 SQL 的。
- * 脚本清单在 {@code application.properties} 的 {@code spring.sql.init.schema-locations}。
+ * <h2>表与索引分别由谁建</h2>
+ * 表：Boot 的脚本初始化器执行 {@code spring.sql.init.schema-locations} 里那几份脚本 ——
+ * 它的 bean 由 {@code DataSourceInitializationAutoConfiguration} 提供，本项目不接管，
+ * 因为"用库的 bean 都排在脚本之后"这条顺序保证正是它给的。
+ * 索引：{@link SchemaIndexInitializer}，它依赖那个脚本初始化器，所以表一定先于索引。
+ * 两者都是幂等的，所以"启动一次 = 对齐一次表结构"不需要版本表。
+ *
+ * <p>⚠️ 第一次连库失败（库没起、账号密码不对、库名不存在）会让应用**起不来**。
+ * 这是刻意的：这几件事都不是"跑起来再说的"问题，而一个连不上库却启动成功的实例
+ * 会在收到第一个请求时才报错 —— 排查方向那时会跑到接口上去。
  */
 @Configuration
 public class AgentStoreConfig {
 
 	private static final Logger log = LoggerFactory.getLogger(AgentStoreConfig.class);
 
-	/**
-	 * 全应用唯一的库。
-	 *
-	 * <p>{@code destroyMethod = "dispose"} 是必须显式写的：
-	 * Spring 猜不出这个非标准名字的关闭方法，不写就会在停机时泄漏池里的连接 ——
-	 * 对文件库而言，那意味着<b>最后几个检查点可能没刷盘</b>，
-	 * 而这恰好会在"进程被杀要恢复"的场景里咬人。
-	 */
-	@Bean(destroyMethod = "dispose")
+	/** 建连超时（毫秒）。连不上就该响亮地失败，见下面的注释。 */
+	private static final long CONNECTION_TIMEOUT_MS = 10_000;
+
+	/** 池上限。依据见类注释 —— 它是"本应用怎么用库"，不是部署参数。 */
+	private static final int MAXIMUM_POOL_SIZE = 10;
+
+	@Bean(destroyMethod = "close")
 	public DataSource dataSource(AgentStoreProperties properties) {
-		JdbcConnectionPool pool = JdbcConnectionPool.create(properties.url(), properties.username(),
-				properties.password());
-		log.info("状态库就绪：url={} node={}（DataSource 由 Spring 持有，建表由 spring.sql.init 负责）",
+		HikariConfig config = new HikariConfig();
+		config.setPoolName("ai-agent-store");
+		config.setJdbcUrl(properties.url());
+		config.setUsername(properties.username());
+		config.setPassword(properties.password());
+		config.setMaximumPoolSize(MAXIMUM_POOL_SIZE);
+		// 10 秒而不是默认的 30 秒：连不上时启动日志会白等 20 秒，
+		// 而这段时间里什么都没有 —— 看起来像卡死（与"无限等"是同一类现象，只是有上限）
+		config.setConnectionTimeout(CONNECTION_TIMEOUT_MS);
+		HikariDataSource pool = new HikariDataSource(config);
+		log.info("状态库就绪：url={} node={}（DataSource 由 Spring 持有，表由 spring.sql.init 建、索引由 SchemaIndexInitializer 建）",
 				properties.url(), properties.node());
 		return pool;
 	}

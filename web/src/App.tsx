@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Empty, Flex, Segmented, Tag, Typography } from 'antd'
+import { Button, Empty, Flex, Typography } from 'antd'
 import { AgentPanel } from './components/AgentPanel'
 import { AlertPanel } from './components/AlertPanel'
+import { AppManagementPanel } from './components/AppManagementPanel'
+import { AppSidebar } from './components/AppSidebar'
 import { Composer } from './components/Composer'
 import { CostPanel } from './components/CostPanel'
 import { MessageBubble } from './components/MessageBubble'
+import { PermissionPanel } from './components/PermissionPanel'
 import { PromptPanel } from './components/PromptPanel'
 import { RagPanel } from './components/RagPanel'
 import { StructuredResultCard } from './components/StructuredResultCard'
@@ -13,18 +16,23 @@ import { useAgent } from './hooks/useAgent'
 import { useAlerts } from './hooks/useAlerts'
 import { useChatStream } from './hooks/useChatStream'
 import { useCost } from './hooks/useCost'
+import { usePermissions } from './hooks/usePermissions'
 import { usePrompt } from './hooks/usePrompt'
 import { useRagDiag } from './hooks/useRagDiag'
 import { useStructuredChat } from './hooks/useStructuredChat'
 import { useThreadDiag } from './hooks/useThreadDiag'
-
-/** 八种模式共用一个壳。加模式时要改四处：这个联合类型、Segmented 的 options、头部那个 Tag 的文案表、下面渲染分支的那串三元表达式 */
-type Mode = 'stream' | 'structured' | 'threads' | 'rag' | 'agent' | 'cost' | 'prompt' | 'alerts'
+import { sectionOf } from './nav'
+import type { Mode } from './nav'
 
 /**
- * 八种模式的对照台。
+ * 类后台的三段式外壳：**左侧目录 / 页头 / 内容**。
  *
- * **为什么做成"模式切换"而不是八个页面**：这些模式的差别本身就是这个项目要讲的东西 ——
+ * 加一个视图要改两处：`nav.ts` 里的 `NAV_SECTIONS`，以及下面那串渲染分支。
+ * （旧版是三处：联合类型、Segmented 的 options、头部那排 Tag 文案 ——
+ * 现在模式名、分组标题、顶栏标签都从 `NAV_SECTIONS` 读，只剩这两处。）
+ *
+ * <h2>为什么做成"目录 + 视图切换"而不是多开几个页面</h2>
+ * 这些视图的差别本身就是这个项目要讲的东西 ——
  * 同样一次模型调用，一个走 SSE 逐字推、回答是自由文本；另一个同步等、回答必须先过结构校验；
  * 第三个干脆不是"回答"，而是把线程模型和 token 预算的运行时证据摆出来；
  * 第四个更不同 —— 它**不调用模型**，量的是"文档怎么切、检索找不找得到"；
@@ -32,14 +40,17 @@ type Mode = 'stream' | 'structured' | 'threads' | 'rag' | 'agent' | 'cost' | 'pr
  * "它为什么这么选、失败在哪一步、花的钱值不值"；
  * 第六个（成本看板）是**回头看**的一页：前五个都在回答"这一次怎么样"，
  * 只有它回答"这一批一共花了多少、谁花的、花得值不值"；
- * 第七个（Prompt 版本）是**唯一一个会改"前面这些页面的行为"的页面** ——
+ * 第七个（Prompt 版本）是**唯一一个会改"前面这些页面的行为"的视图** ——
  * 它管的不是一次调用，而是"以后所有调用的指令"。
  * 这一点决定了它的交互必须比别的页更谨慎：存与生效分成两次，回滚永远可见。
  * 第八个（告警与灰度）回答的是"**谁被通知**"：前面七个面板都在等人打开页面看，
  * 只有它会在没人看的时候自己出现、自己消失。
- * 放在同一个界面里能直接对比"同一个系统里，不同的契约 / 线程模型 / 检索链路 / 自主程度各自长什么样"。
+ * 第九个（应用管理 · 应用清单）换了一层：前面八个都是"跑一次看看"，它管的是"以后每次调用按什么配置走"。
+ * 第十个（应用管理 · 权限管理）管的是这一层里**与人有关的那一半**：
+ * 谁可以用、能用哪几把工具、能在哪些目录下干活。它是这一区唯一有写端点的一页，
+ * 所以它的返回体里刻意**没有**口令（那一列只以散列存在，响应里根本没有那个键）。
  *
- * 八个 hook 都挂在 App 上（而不是按模式条件挂载）：切换模式时对话记录和实验数据不会被清空，
+ * 九个 hook 都挂在 App 上（而不是按视图条件挂载）：切换视图时对话记录和实验数据不会被清空，
  * 来回切两次不会丢掉刚才的结果 —— 这也是把状态放在这一层的理由。
  * **Agent 那一页尤其需要这样**：一次任务会真的调模型花钱、要等十几秒，
  * 切走再切回来就重跑一遍（再花一次钱）的代价太大。
@@ -67,16 +78,18 @@ export default function App() {
   // 第八个：进面板只拉三样**只读**的（判据 / 当前状态 / 灰度）。
   // 「跑一轮评估」要点按钮 —— 它会写库，自动跑会让'打开这一页看看'本身改变告警状态
   const alerts = useAlerts(mode === 'alerts')
+  // 第九个（权限管理）：进面板拉一次全量（账号 + 角色 + 可分配工具）。
+  // 同样不轮询 —— 这一页的数据只被本页面自己改，而每次写完之后 hook 会自己重拉一次
+  const permissions = usePermissions(mode === 'permissions')
+  // 应用清单（appRegistry）没有 hook：那一页是静态的聚合清单，见 AppManagementPanel 的文件头
 
   const listRef = useRef<HTMLElement>(null)
 
-  // 当前模式对应的视图数据，只用于"滚动到底部"和空状态判断。
-  // 五个诊断/只读面板没有这两件事（面板自己滚、没有空状态），所以这里不参与，免得白白触发一次 effect；
-  // 它们同时也都不显示头部那块 conversationId + 「新会话」—— 那两样属于对话状态。
-  // ⚠️ alerts 是本轮补上的：漏了它并不会让页面报错，只是告警页上会多出一个
-  //    点了没意义的「新会话」按钮（它调的是结构化那条链路的 newConversation）
+  // 当前视图对应的数据，只用于"滚动到底部"和空状态判断。
+  // 诊断/只读面板没有这两件事（面板自己滚、没有空状态），所以这里不参与，免得白白触发一次 effect；
+  // 它们同时也都不显示页头那块 conversationId + 「新会话」—— 那两样属于对话状态。
   const isDiagnostic = mode === 'threads' || mode === 'rag' || mode === 'agent' || mode === 'cost'
-    || mode === 'prompt' || mode === 'alerts'
+    || mode === 'prompt' || mode === 'alerts' || mode === 'appRegistry' || mode === 'permissions'
   const activeCount = mode === 'stream' ? stream.messages.length : structured.turns.length
   const busy = mode === 'stream' ? stream.streaming : structured.loading
   const conversationId = mode === 'structured' ? structured.conversationId : stream.conversationId
@@ -98,111 +111,101 @@ export default function App() {
     return ''
   }, [mode])
 
+  // 顶栏标题与标签跟着"当前视图属于哪一区"走，所以它们只有一份定义（nav.ts）
+  const section = sectionOf(mode)
+
   return (
     <div className="app-shell">
-      <header className="app-header">
-        <Flex align="center" gap={12} wrap>
-          <Typography.Title level={4} className="app-title">
-            AI Agent 对话台
-          </Typography.Title>
-          <Segmented
-            value={mode}
-            onChange={v => setMode(v as Mode)}
-            options={[
-              { label: 'SSE 流式', value: 'stream' },
-              { label: '结构化输出', value: 'structured' },
-              { label: '线程与预算', value: 'threads' },
-              { label: 'RAG 分块评测', value: 'rag' },
-              { label: 'Agent 工具调用', value: 'agent' },
-              { label: '成本看板', value: 'cost' },
-              { label: 'Prompt 版本', value: 'prompt' },
-              { label: '告警与灰度', value: 'alerts' },
-            ]}
-          />
-          {mode === 'stream' && <Tag color="blue">逐字推送 · 自由文本</Tag>}
-          {mode === 'structured' && <Tag color="purple">同步返回 · JSON 校验</Tag>}
-          {mode === 'threads' && <Tag color="cyan">运行时取证 · 不写死结论</Tag>}
-          {mode === 'rag' && <Tag color="green">离线链路 · 调模型 0 次</Tag>}
-          {mode === 'agent' && <Tag color="orange">会调模型 · 自主选工具</Tag>}
-          {mode === 'cost' && <Tag color="gold">只读聚合 · 不估算 token</Tag>}
-          {mode === 'prompt' && <Tag color="magenta">改的是以后的每一次调用 · 可回滚</Tag>}
-          {mode === 'alerts' && <Tag color="volcano">上线前挡 · 上线后报</Tag>}
-        </Flex>
-        {/*
-          右侧这一段只在对话模式里有意义。两个诊断模式刻意不显示 conversationId 和「新会话」：
-          那两个东西属于对话状态，摆在一个纯诊断页面上只会让人以为"这个面板也有会话"，
-          而线程面板借用的其实是流式模式那个 conversationId（见 useThreadDiag 的注释）。
-          RAG 面板更是完全无会话 —— 它跑的是离线语料，跟对话没有半点关系。
-        */}
-        {!isDiagnostic && (
-          <Flex align="center" gap={12}>
-            <Typography.Text type="secondary" className="conversation-id" title={conversationId}>
-              conversationId: {conversationId.slice(0, 8)}…
-            </Typography.Text>
-            <Button
-              onClick={mode === 'stream' ? stream.newConversation : structured.newConversation}
-              disabled={busy}
-            >
-              新会话
-            </Button>
+      <AppSidebar mode={mode} onSelect={setMode} />
+
+      <div className="app-main">
+        <header className="app-topbar">
+          <Flex align="center" gap={12} wrap>
+            <Typography.Title level={4} className="app-title">
+              {section.title}
+            </Typography.Title>
+            <span className={`app-section-tag is-${section.tag.color}`}>{section.tag.text}</span>
           </Flex>
-        )}
-      </header>
+          {/*
+            右侧这一段只在两个对话模式里有意义。六个诊断面板刻意不显示 conversationId 和「新会话」：
+            那两个东西属于对话状态，摆在一个纯诊断页面上只会让人以为"这个面板也有会话"，
+            而线程面板借用的其实是流式模式那个 conversationId（见 useThreadDiag 的注释）。
+            RAG 面板更是完全无会话 —— 它跑的是离线语料，跟对话没有半点关系。
+          */}
+          {!isDiagnostic && (
+            <Flex align="center" gap={12}>
+              <Typography.Text type="secondary" className="conversation-id" title={conversationId}>
+                conversationId: {conversationId.slice(0, 8)}…
+              </Typography.Text>
+              <Button
+                onClick={mode === 'stream' ? stream.newConversation : structured.newConversation}
+                disabled={busy}
+              >
+                新会话
+              </Button>
+            </Flex>
+          )}
+        </header>
 
-      {mode === 'threads' ? (
-        // 面板自己带滚动容器：诊断内容比对话长得多，而且没有"新消息贴底"这个语义
-        <ThreadBudgetPanel diag={diag} />
-      ) : mode === 'rag' ? (
-        <RagPanel diag={rag} />
-      ) : mode === 'agent' ? (
-        <AgentPanel agent={agent} />
-      ) : mode === 'cost' ? (
-        <CostPanel cost={cost} />
-      ) : mode === 'prompt' ? (
-        <PromptPanel prompt={prompt} />
-      ) : mode === 'alerts' ? (
-        <AlertPanel alerts={alerts} />
-      ) : (
-        // 诊断模式没有输入区，所以 main/footer 只在对话模式下渲染 —— 空着的 footer 会白白吃掉一块高度
-        <>
-          <main className="message-list" ref={listRef}>
-            {activeCount === 0 ? (
-              <Empty description={empty} />
-            ) : mode === 'stream' ? (
-              stream.messages.map(m => (
-                <MessageBubble
-                  key={m.id}
-                  message={m}
-                  onRetry={stream.retry}
-                  // 只有最后一条消息才允许重试：多条历史都挂着重试按钮，
-                  // 用户点哪一个是"重试哪一轮"就说不清了
-                  retryDisabled={
-                    stream.streaming || m.id !== stream.messages[stream.messages.length - 1]?.id
-                  }
+        {mode === 'appRegistry' ? (
+          <AppManagementPanel />
+        ) : mode === 'permissions' ? (
+          <PermissionPanel permissions={permissions} />
+        ) : mode === 'threads' ? (
+          // 面板自己带滚动容器：诊断内容比对话长得多，而且没有"新消息贴底"这个语义
+          <ThreadBudgetPanel diag={diag} />
+        ) : mode === 'rag' ? (
+          <RagPanel diag={rag} />
+        ) : mode === 'agent' ? (
+          <AgentPanel agent={agent} />
+        ) : mode === 'cost' ? (
+          <CostPanel cost={cost} />
+        ) : mode === 'prompt' ? (
+          <PromptPanel prompt={prompt} />
+        ) : mode === 'alerts' ? (
+          <AlertPanel alerts={alerts} />
+        ) : (
+          // 诊断模式没有输入区，所以 main/footer 只在对话模式下渲染 —— 空着的 footer 会白白吃掉一块高度
+          <>
+            <main className="message-list" ref={listRef}>
+              {activeCount === 0 ? (
+                <Empty description={empty} />
+              ) : mode === 'stream' ? (
+                stream.messages.map(m => (
+                  <MessageBubble
+                    key={m.id}
+                    message={m}
+                    onRetry={stream.retry}
+                    // 只有最后一条消息才允许重试：多条历史都挂着重试按钮，
+                    // 用户点哪一个是"重试哪一轮"就说不清了
+                    retryDisabled={
+                      stream.streaming || m.id !== stream.messages[stream.messages.length - 1]?.id
+                    }
+                  />
+                ))
+              ) : (
+                structured.turns.map(turn => <StructuredResultCard key={turn.id} turn={turn} />)
+              )}
+            </main>
+
+            <footer className="app-footer">
+              {mode === 'stream' ? (
+                <Composer streaming={stream.streaming} onSend={stream.send} onStop={stream.stop} />
+              ) : (
+                <Composer
+                  streaming={structured.loading}
+                  onSend={text => structured.ask(text)}
+                  // 刻意不传 onStop：结构化输出是全有或全无，取消拿不到半成品
+                  showTemperature={false}
+                  placeholder="提一个问题…后端会按固定 JSON 结构回答并校验（Enter 发送，Shift+Enter 换行）"
+                  hint="后端流程：请求模型 → 解析 JSON → JSR-380 校验 → 不合格则把「哪个字段错 + 你的原始输出」回灌重答（最多 3 轮）→ 仍不合格走兜底"
+                  busyHint="模型正在回答并校验，可能需要多轮回灌……"
                 />
-              ))
-            ) : (
-              structured.turns.map(turn => <StructuredResultCard key={turn.id} turn={turn} />)
-            )}
-          </main>
-
-          <footer className="app-footer">
-            {mode === 'stream' ? (
-              <Composer streaming={stream.streaming} onSend={stream.send} onStop={stream.stop} />
-            ) : (
-              <Composer
-                streaming={structured.loading}
-                onSend={text => structured.ask(text)}
-                // 刻意不传 onStop：结构化输出是全有或全无，取消拿不到半成品
-                showTemperature={false}
-                placeholder="提一个问题…后端会按固定 JSON 结构回答并校验（Enter 发送，Shift+Enter 换行）"
-                hint="后端流程：请求模型 → 解析 JSON → JSR-380 校验 → 不合格则把「哪个字段错 + 你的原始输出」回灌重答（最多 3 轮）→ 仍不合格走兜底"
-                busyHint="模型正在回答并校验，可能需要多轮回灌……"
-              />
-            )}
-          </footer>
-        </>
-      )}
+              )}
+            </footer>
+          </>
+        )}
+      </div>
     </div>
   )
 }

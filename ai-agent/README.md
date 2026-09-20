@@ -162,7 +162,7 @@ curl -X POST http://localhost:8080/api/chat/structured ^
 
 | 怎么验 | 入口 | 能看到什么 / 看不到什么 |
 |---|---|---|
-| **界面自检**（现在唯一的自动化门禁） | 仓库根目录 `node scripts/ci.mjs`（默认就是界面自检），或按 `web/README.md` 用 `pnpm check:ui` | 八种模式的页面渲染与交互。它**只覆盖界面这一层**：后端内部逻辑（重试闸门、回灌、落库语义）一条都验不到 |
+| **界面自检**（现在唯一的自动化门禁） | 仓库根目录 `node scripts/ci.mjs`（默认就是界面自检），或按 `web/README.md` 用 `pnpm check:ui` | 类后台外壳（侧边目录 / 页头 / 内容）与八个模式的页面渲染与交互。它**只覆盖界面这一层**：后端内部逻辑（重试闸门、回灌、落库语义）一条都验不到 |
 | **手工实测** | 起服务后直接打端点，例如 `POST /api/chat/stream`、`POST /api/chat/structured`、`GET /api/diag/rag/compare`、`GET /api/alerts/sweep?days=7` | 真实响应。⚠️ 没有任何东西替你比对 —— 数字变了、字段没了都不会报错 |
 
 原先这里列的是一批后端测试（超时与重试的失败路径、结构化输出的脏 JSON 注入、RAG 评测链路，

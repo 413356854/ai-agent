@@ -33,15 +33,14 @@ const EXPECT_REFLECTION = process.env.CHECK_EXPECT_REFLECTION !== '0'
 /**
  * 每条路径实际执行多少项断言（**实测出来的，不是数出来的**）。
  *
- * 脚本里一共 382 个 `expect(...)`，但两条路径执行的数量不同 ——
+ * 脚本里一共 414 个 `expect(...)`，但两条路径执行的数量不同 ——
  * 因为有几个分支各跑各的（回灌细节 / 降级标记 / Agent 的完整轨迹 / HITL 的批准与拒绝），
  * 它们的可复现性依赖假后端：
  *
- *   假后端（默认路径，实测 2026-09-18）→ **337 项，全过**
- *   真后端（`CHECK_EXPECT_REFLECTION=0`）→ 本轮**没有跑**，所以这里不写数字：
- *     要在 8080 上有真后端时跑一次并把实测值填回来（不要照抄假后端那一行）
+ *   假后端（默认路径，实测 2026-09-20）→ **369 项，全过**（同一份脚本连跑两遍，两遍都是 369）
+ *   真后端（`CHECK_EXPECT_REFLECTION=0`）→ 见下面 README 那一行；本轮跑过，数字写在 web/README.md
  *
- * 真后端路径上一次跑时唯一失败的是**流式回答**（`流式回答已渲染`）：
+ * 真后端路径上失败的是**流式回答**（`流式回答已渲染`）：
  * 本机用的是假 key，上游必然 401，与改动无关。
  *
  * ⚠️ **一个会随环境变化的数字，必须把每个环境的取值都写清**，并在每次重测后更新 ——
@@ -55,6 +54,13 @@ const EXPECT_REFLECTION = process.env.CHECK_EXPECT_REFLECTION !== '0'
  * 判断方法很简单（也在 README 里写了）：
  *     GET /api/agent/runs → `awaitingRecovery`
  *     假后端固定给 1，真后端是 0。**一个数字就能区分你在打谁。**
+ *
+ * ⚠️ 同一族的第三种形态（2026-09-20 踩到）：**假后端端口上残留的旧进程**。
+ * 假后端本身不报错，它只是"上一轮的代码 + 上一轮的状态"，于是断言会红在很怪的地方 ——
+ * 实测症状是"流式回答只渲染出 8 个字符""结构化没有回灌""钉住实验 90 秒等不到结果"。
+ * 所以怀疑自检本身有问题时，**先确认你打的那个端口上是谁**：
+ *     假后端 → `GET /api/agent/runs` 的 `awaitingRecovery` 恒为 1（旧进程与真后端都是 0）
+ *     更彻底：先确认端口没人监听（`Get-NetTCPConnection -State Listen -LocalPort 8081`）。
  */
 const SHOT_DIR = 'ui-check-out'
 mkdirSync(SHOT_DIR, { recursive: true })
@@ -93,29 +99,37 @@ const consoleErrors = []
  * 这一轮 Prompt 版本面板有一条自检要**故意提交一份坏提示词**，验证界面逐条列出判据。
  * 那次请求后端会正确地回 **400**，而浏览器控制台对任何非 2xx 的响应都会记一条
  * `Failed to load resource: ... 400 (Bad Request)` —— **这是浏览器行为，不是我们的 bug**。
+ * 权限面板同理：自检会故意制造一次**同名账号（409）**，验证界面把它说成"名字已被占用"。
  *
  * <p>所以这里不是把"控制台必须干净"这个要求降低，而是把它**写得准确**：
  * 「意料之内的失败请求」与「意料之外的报错」是两件事，前者必须被逐条命名出来
  * （命名就意味着它是有意为之，而不是被人顺手忽略掉了）。
  * 一个什么都拦的过滤器会让这条断言变成永远为真，那才是真的损失。
  *
- * <p>⚠️ 判据刻意写得很窄：只放行 **400**，并且要求它确实打在那个端点上。
- * 500、404、或任何别的路径上的 400 都仍然会让自检失败 —— 那些都不是"我们故意造的"。
+ * <p>⚠️ 判据刻意写得很窄：只放行 **400 与 409**，并且要求它确实打在那两个端点上。
+ * 500、404、或任何别的路径上的 4xx 都仍然会让自检失败 —— 那些都不是"我们故意造的"。
+ * 409 那一档**还要窄一层**：只有被记进 `expectedConflicts`（自检自己刚做过的那次重名操作）
+ * 的 URL 才算数，免得"任何 409 都被放行"。
  *
  * <p>⚠️ 实测还有一个细节：浏览器那条日志里**不一定带 URL**
  * （Chrome 只给 "Failed to load resource: the server responded with a status of 400"），
- * 所以这里同时用**请求事件**做判据 —— 只有真的看到"prompts 端点回了 400"才放行。
+ * 所以这里同时用**请求事件**做判据 —— 只有真的看到"那个端点回了 4xx"才放行。
  * 第一版只匹配文本，于是它一条都没过滤掉（断言照样红）。
  */
 const expectedRejections = []
+const expectedConflicts = []
 page.on('response', response => {
-  if (response.status() === 400 && response.url().includes('/api/prompts/')) {
-    expectedRejections.push(response.url())
-  }
+  const url = response.url()
+  const fromOurEndpoints = url.includes('/api/prompts/') || url.includes('/api/permissions/')
+  if (!fromOurEndpoints) return
+  if (response.status() === 400) expectedRejections.push(url)
+  if (response.status() === 409) expectedConflicts.push(url)
 })
 
-const isExpectedNetworkError = text =>
-  /status of 400/.test(text) && expectedRejections.length > 0
+const isExpectedNetworkError = text => {
+  if (/status of 400/.test(text) && expectedRejections.length > 0) return true
+  return /status of 409/.test(text) && expectedConflicts.length > 0
+}
 
 page.on('console', msg => {
   const text = msg.text()
@@ -161,8 +175,104 @@ async function waitFor(check, timeoutMs = 10000) {
 // antd 的 autoSize TextArea 会额外渲染一个隐藏 textarea 用来量高度，必须排除它
 const box = () => page.locator('textarea:not([name="hiddenTextarea"])')
 
+/**
+ * 切模式 —— 一律走**左侧目录**里那一项。
+ *
+ * <h2>为什么切模式这件事要单独一个函数</h2>
+ * 目录项与页头里那些按钮的标签会撞名（「新会话」「刷新」这类），
+ * 而下面每一节开头都要切一次模式（共 11 处）。散着写，改一次布局就要改 11 个选择器，
+ * 而漏改的那一处**不会报错** —— 它会点中另一个元素（或超时等 30 秒），
+ * 症状看起来像"那个面板坏了"。收在一个函数里，布局再变也只需要改这里。
+ *
+ * <h2>为什么先读一次收起态，而不是直接点</h2>
+ * 收起态（或窄窗口）下目录里没有文字，`hasText` 会一个都匹配不到，
+ * 而失败信息是"等不到那个按钮"——看起来像目录里没有这一项。
+ */
+async function navMode(label) {
+  const sidebar = page.locator('.app-sidebar')
+  if ((await sidebar.getAttribute('data-collapsed')) === '1') {
+    await page.locator('.app-collapse').click()
+  }
+  await sidebar.getByRole('button', { name: label, exact: true }).click()
+}
+
 console.log('[1] 打开页面:', URL)
 await page.goto(URL, { waitUntil: 'networkidle' })
+
+// ---------- 布局：左侧目录 / 页头 / 内容 ----------
+//
+// 这一节验的是"类后台那个壳"本身，与任何面板的功能无关：
+// 目录两段都在、当前项被标出来、页头标题跟着区走、目录能收能展、页面不横向溢出。
+// 【为什么先做这一节】下面每一节切模式都靠目录项，所以"目录能不能点"是它们的前提；
+// 它坏了的话，后面 300 多项会以"某某面板没渲染"的形式红，而根因在这一层。
+console.log('[1.5] 布局 —— 左侧目录与页头')
+{
+  const sidebar = page.locator('.app-sidebar')
+  const groups = await sidebar.locator('.app-nav-group-title').allInnerTexts()
+  expect('目录有两段：对话台 + 应用管理',
+    groups.length === 2 && /对话台/.test(groups[0]) && /应用管理/.test(groups[1]),
+    groups.join(' / '))
+  expect('对话台那段列出八个模式',
+    (await sidebar.locator('.app-nav-group').first().locator('.app-nav-item').count()) === 8)
+  expect('当前项被标出来（aria-current）', (await sidebar.locator('[aria-current="page"]').count()) === 1)
+  // 默认落在流式模式：这条同时证明"选中的那一项就是当前视图"，而不只是"有一个项被标了"
+  expect('默认进的是 SSE 流式',
+    (await sidebar.locator('.app-nav-item.is-active').innerText()).trim() === 'SSE 流式')
+  expect('页头标题是所属区的名字',
+    /AI Agent 对话台/.test(await page.locator('.app-topbar .app-title').innerText()))
+  expect('页头有分区标签', (await page.locator('.app-topbar .app-section-tag').count()) === 1)
+
+  const startCollapsed = await sidebar.getAttribute('data-collapsed')
+  // ⚠️ 这里**不能**硬断言"默认是展开的"：收起态是存在 localStorage 里的用户偏好，
+  // 上一轮自检可能把它收起来过。所以下面按"当前是什么态"各自断言，并保证结尾恢复原态
+  expect('目录的收起态有一个可读的开关值',
+    startCollapsed === '0' || startCollapsed === '1', `data-collapsed=${startCollapsed}`)
+  const collapseBtn = page.locator('.app-collapse')
+  expect('收起开关可见（它是目录从窄条变回来的唯一入口）', await collapseBtn.isVisible())
+
+  await collapseBtn.click()
+  const nextState = startCollapsed === '0' ? '1' : '0'
+  // ⚠️ 点完**要等状态渲进 DOM 再读**：`click()` 返回时 React 的这次更新未必已提交，
+  // 而"读早了"的症状是"点了没反应"——看起来像功能坏了，其实是断言抢跑。
+  const toggled = await waitFor(
+    async () => (await sidebar.getAttribute('data-collapsed')) === nextState, 3000)
+  expect('★ 点一下收起开关，收起态真的翻转了', toggled,
+    `${startCollapsed} → ${await sidebar.getAttribute('data-collapsed')}`)
+  // 收起之后当前项仍然能被读出来：靠的是那条左侧色标 + aria-current，
+  // 而不是文字（文字这时是藏起来的）—— 所以这一条与上面那条不是重复的
+  expect('收起之后仍然看得出当前在哪一项',
+    (await sidebar.locator('[aria-current="page"]').count()) === 1)
+  await collapseBtn.click()
+  // 宽度是**过渡**出来的（CSS transition），所以这里等的不是状态而是几何：
+  // 状态已经回到 0 而宽度还停在 64px 的那一瞬间是存在的，读早了就会得到
+  // "目录没占宽度"这个与事实相反的结论
+  const expandedWidth = await waitFor(async () => await page.evaluate(() => {
+    const sb = document.querySelector('.app-sidebar')
+    return sb ? Math.round(sb.getBoundingClientRect().width) > 150 : false
+  }), 3000)
+  expect('再点一下回到展开态（宽度也回来了）',
+    (await sidebar.getAttribute('data-collapsed')) === startCollapsed && expandedWidth)
+
+  const layout1 = await page.evaluate(() => {
+    const doc = document.documentElement
+    const sb = document.querySelector('.app-sidebar')
+    return {
+      horizontalOverflow: doc.scrollWidth - doc.clientWidth,
+      sidebarWidth: sb ? Math.round(sb.getBoundingClientRect().width) : null,
+    }
+  })
+  expect('无横向溢出（外壳也一样）', layout1.horizontalOverflow === 0,
+    `overflow=${layout1.horizontalOverflow}px`)
+  // 展开态目录必须"占住一块宽度"，而不是被内容挤成 0 宽 ——
+  // 挤成 0 宽时目录项仍然存在，上面那些 count 断言会全部照过
+  expect('目录在展开态占住了一块宽度', layout1.sidebarWidth > 150, `${layout1.sidebarWidth}px`)
+  expect('内容区在目录右侧（不是被目录盖住）', await page.evaluate(() => {
+    const sb = document.querySelector('.app-sidebar')
+    const main = document.querySelector('.app-main')
+    if (!sb || !main) return false
+    return main.getBoundingClientRect().left >= sb.getBoundingClientRect().right - 1
+  }))
+}
 
 // ---------- 流式模式（默认） ----------
 console.log('[2] 流式模式')
@@ -181,8 +291,11 @@ expect('流式正文非空', streamBody.trim().length > 20, `${streamBody.trim()
 
 // ---------- 结构化模式：正常（含回灌） ----------
 console.log('[3] 结构化模式 —— 正常路径（mock 会造一轮回灌）')
-await page.locator('label', { hasText: '结构化输出' }).click()
+await navMode('结构化输出')
 await page.waitForTimeout(300)
+// 页头标题是**区的名字**，不是视图的名字：同一区里换视图，它不该变（变了说明分组判据散了）
+expect('同区换视图，页头标题不变',
+  /AI Agent 对话台/.test(await page.locator('.app-topbar .app-title').innerText()))
 await box().fill('SSE 是什么？')
 await box().press('Enter')
 await page.locator('.structured-card').first().waitFor({ state: 'visible', timeout: 30000 })
@@ -274,7 +387,7 @@ if (EXPECT_REFLECTION) {
 //     只显示其中一个就等于没做对照）；
 //   - 非流式对话能不能真的打通（说明虚拟线程那条链路是活的）。
 console.log('[5] 线程与预算面板')
-await page.locator('label', { hasText: '线程与预算' }).click()
+await navMode('线程与预算')
 await page.waitForTimeout(500)
 
 // 当前线程：虚拟/平台必须长得不一样
@@ -369,7 +482,7 @@ expect('预算切分已显示输入上限', /106752|输入/.test(budgetText))
 //   - **对照表的两个策略都必须出现在页面上**，且差值区同时可见 ——
 //     只显示一个策略就等于没做对照，而这正是阶段二验收口径的核心。
 console.log('[6] RAG 分块评测面板')
-await page.locator('label', { hasText: 'RAG 分块评测' }).click()
+await navMode('RAG 分块评测')
 await page.waitForTimeout(800)
 
 // —— 语料解析 ——
@@ -654,7 +767,7 @@ console.log('[6.6] Agent 工具调用面板')
  * <p>教训一句话：**一段自检代码里往往混着"动作"与"断言"两类语句，
  * 搬动时只盯着断言，就会把动作一起搬走** —— 而症状是"看起来这个功能没渲染"。
  */
-await page.locator('label', { hasText: 'Agent 工具调用' }).click()
+await navMode('Agent 工具调用')
 await page.waitForTimeout(900)
 
 // 【原「跑一个任务 + 验证四步轨迹」那一段被移到了 HITL 那一节之后】
@@ -683,8 +796,8 @@ if ((await runsCard.count()) > 0) {
 
     第一版在这里写的是"等到 tbody 里有行（最多等 20 秒）"，跑真后端时红了：
         ✗ 历史运行列表里至少有 1 行 — 实际 0 行
-    而**那是环境，不是缺陷**：真后端用的是内存库（`ai.jdbc:h2:mem:`），
-    一个刚起来的进程里一条运行都没有是**完全正常**的。
+    而**那是环境，不是缺陷**：真后端这次自检里 `/ask` 必然 401（假 key），
+    于是没有任何运行被落库，列表为空是**完全正常**的。
     列表为空时页面显示空状态，那也是对的。
 
     这与本节下面那条"刚刚跑过的任务"是同一个毛病（「断言越界去测了别人的职责」，
@@ -700,8 +813,8 @@ if ((await runsCard.count()) > 0) {
   */
   const hasRows = await waitFor(async () => (await runsCard.locator('.ant-table-tbody tr').count()) > 0, 5000)
   if (!hasRows) {
-    console.log('    （历史运行列表是空的 —— 真后端的内存库重启后本来就没有数据，' +
-      '所以本节只验证"卡片渲染出来了"，不验证行内容。这**不是**跳过一条断言，' +
+    console.log('    （历史运行列表是空的 —— 真后端的假 key 让 `/ask` 必然 401，' +
+      '于是没有任何运行被落库；所以本节只验证"卡片渲染出来了"，不验证行内容。这**不是**跳过一条断言，' +
       '而是这一节对"库里有数据"这件事本来就没有主张）')
   }
   const runsText = (await runsCard.innerText()).trim()
@@ -710,7 +823,7 @@ if ((await runsCard.count()) > 0) {
   // ⚠️ 注意判据是 `hasRows && !EXPECT_REFLECTION` —— **`hasRows` 这一半不能省**。
   // 实测踩到（第十六轮）：原来的写法是 `if (hasRows && EXPECT_REFLECTION) {...} else {...}`，
   // 而那个 `else` 分支的注释写的是「真后端（假 key）：历史里只有那条失败运行」——
-  // 它**假设了列表非空**。真后端这次是内存库重启后的空库，于是 `else` 照样进，
+  // 它**假设了列表非空**。真后端这次列表是空的（假 key ⇒ `/ask` 401 ⇒ 没有运行落库），于是 `else` 照样进，
   // 两条断言（"显示了失败细分" / "显示了失败状态"）在一个**完全正常**的空列表上红了，
   // 而失败信息看起来像"界面没渲染失败细分"。
   // 这是"断言越界去测了别人的职责"的第 N 次（同族问题反复出现过），
@@ -761,7 +874,7 @@ if ((await runsCard.count()) > 0) {
   }
   else {
     // 【列表为空 + 真后端】空状态本身也要有一句话说清"为什么空"
-    // （内存库重启即清空是预期行为 —— 一个只有表头、没有解释的空列表会被读成"功能坏了"）
+    // （一个只有表头、没有解释的空列表会被读成"功能坏了"）
     expect('空的历史列表也给出了说明（不是一片空白）',
       /一次运行|还没有|空|没.*运行/.test(runsText), `—— 正文：${runsText.slice(0, 80)}`)
   }
@@ -1522,7 +1635,7 @@ if (EXPECT_REFLECTION) {
 // 真路径反而把那条纪律验得更彻底 —— 因为那里连一条能算出钱的记录都没有。
 console.log('[6.8] 成本看板')
 
-await page.locator('label', { hasText: '成本看板' }).click()
+await navMode('成本看板')
 const costHead = page.locator('.cost-head', { hasText: '成本看板' })
 // 进面板会自动拉一次（只读、零外部代价），但要等它回来
 const costLoaded = await waitFor(async () => (await page.locator('.cost-headline').count()) > 0, 15000)
@@ -1712,7 +1825,7 @@ if (EXPECT_REFLECTION) {
 
   const notesText = await notesCard.innerText()
   expect('写明了 token 不是估算的', /不是估算/.test(notesText))
-  expect('写明了默认库是内存库（多天走势需要改 url）', /内存库/.test(notesText))
+  expect('写明了库是 MySQL、记录跨重启保留', /MySQL/.test(notesText))
 
   // ---- 时间窗切换会真的换数据 ----
   const beforeSwitch = dayRows
@@ -1758,7 +1871,7 @@ if (EXPECT_REFLECTION) {
   // 两种都是**正确**的文案，所以断言任何一个都不该写死 ——
   // 真正该被钉住的是"金额不许变成 0"（上面那两条），而不是备注里挑了哪句措辞。
   expect('边界说明随数字一起交付（不是只有数字）', (await notesCard.locator('.cost-notes li').count()) >= 3)
-  expect('边界说明里有"默认库是内存库"这条提醒', /内存库/.test(notesText))
+  expect('边界说明里有"库是 MySQL"这条提醒', /MySQL/.test(notesText))
   expect('价格表卡在真后端也渲染了（空表也要有说明）', (await priceCard.count()) > 0)
 }
 
@@ -1793,7 +1906,7 @@ await page.screenshot({ path: `${SHOT_DIR}/cost-dashboard.png`, fullPage: true }
 //      旁边还写着一句像是用户操作错了的提示（"选了两个相同的版本"），而他什么都没做。
 console.log('[7] Prompt 版本管理面板')
 
-await page.locator('label', { hasText: 'Prompt 版本' }).click()
+await navMode('Prompt 版本')
 const promptHead = page.locator('.prompt-head')
 const promptLoaded = await waitFor(async () => (await page.locator('.prompt-current').count()) > 0, 15000)
 expect('进面板自动加载了当前生效版本', promptLoaded)
@@ -2118,7 +2231,7 @@ if (EXPECT_REFLECTION) {
   expect('进面板前把假后端的告警状态复位（让这一节可重复跑）', resetBeforePanel.ok === true)
 }
 
-await page.locator('label', { hasText: '告警与灰度' }).click()
+await navMode('告警与灰度')
 
 const alertPanelReady = await waitFor(
   async () => (await page.locator('.alert-events-card').count()) > 0, 10000)
@@ -2441,19 +2554,208 @@ else {
 }
 
 
+// ---------- AI Agent 应用管理（目录区，暂无功能） ----------
+//
+// 这一区**没有后端接口**（见 AppManagementPanel 的文件头），所以能验的只有两件事：
+// 入口在目录里、点开之后出现的是那张聚合清单而不是一张应用表。
+// ⚠️ 刻意**不**断言任何"应用数据"：断言它等于把假数据当成了契约。
+console.log('[8.5] AI Agent 应用管理（目录区）')
+await navMode('应用清单')
+await page.waitForTimeout(300)
+expect('页头标题换成了应用管理那一区',
+  /AI Agent 应用管理/.test(await page.locator('.app-topbar .app-title').innerText()))
+expect('没有把规划清单渲染成应用列表（页面上没有表格数据区）',
+  (await page.locator('.diag-panel .ant-table').count()) === 0)
+const planText = await page.locator('.diag-panel').innerText()
+expect('页面如实写明这一区还没有后端接口',
+  /没有后端接口|还是空的/.test(planText))
+expect('聚合清单列出来了（每一行都有"还差什么"）',
+  (await page.locator('.app-plan-table tbody tr').count()) === 7
+  && (await page.locator('.app-plan-gap').count()) === 7)
+expect('写明了这一页不做什么（不调后端、不做增删改）', /不做增删改/.test(planText))
+await page.screenshot({ path: `${SHOT_DIR}/app-management.png`, fullPage: true })
+
+// ---------- 应用管理 · 权限管理 ----------
+//
+// 这一节验的是**三件事**，每一件都对应这一页最容易出错的形态：
+//   ① 边界说明必须在场 —— 这一族端点没有登录、口令只存散列；
+//   ② 两条"空权限"的话必须显示出来（"没有角色 → 没有任何权限"）——
+//      读者对"新账号"的默认预期恰好相反；
+//   ③ 核对卡要能对同一份数据给出**两种结论**（允许 / 不允许），
+//      否则"判定到底有没有在工作"在界面上看不出来（一个恒返回 allowed 的接口
+//      画出来与真判定一模一样）。
+//
+// ⚠️ 真后端那条路径上**一个字节都不写库**：这一页的写端点会真的建账号、建角色，
+// 而 `db_ai_agent` 是用户自己的库（与 Prompt 面板那条"真路径不往库里塞版本"同一条纪律）。
+// 所以下面凡是要"造一份数据"的断言都只在假后端上跑。
+console.log('[8.6] 应用管理 · 权限管理')
+await navMode('权限管理')
+await waitFor(async () => (await page.locator('.permission-panel .ant-table').count()) > 0, 8000)
+const permText = await page.locator('.permission-panel').innerText()
+
+expect('页头标题换成了应用管理那一区',
+  /AI Agent 应用管理/.test(await page.locator('.app-topbar .app-title').innerText()))
+expect('写明了这一族端点没有登录（能访问端口的人可以给自己开全部工具）',
+  /没有登录/.test(permText) && /全部工具/.test(permText))
+expect('写明了口令只存散列、响应里没有这一列',
+  /只以散列保存|散列/.test(permText))
+expect('两条"空权限"都如实说了出来（没有角色 / 清单为空）',
+  /没有角色/.test(permText) && /清单为空|一把工具都调不到/.test(permText))
+expect('账号表与角色表都渲染出来了',
+  (await page.locator('.permission-panel .ant-table').count()) >= 2)
+expect('说明了权限是角色的并集（不是逐条配在账号上）',
+  /并集/.test(permText))
+
+// ---- 核对卡：同一个人，两种结论 ----
+const verifyRow = page.locator('.permission-panel .diag-card', { hasText: '核对：这个人能不能' })
+expect('核对卡在场', (await verifyRow.count()) === 1)
+await verifyRow.locator('.permission-pick').first().click()
+await page.locator('.ant-select-item-option', { hasText: 'zhou' }).first().click()
+// 工具也选一把：这个账号一个角色都没有，所以**两半都该拒**。
+// 只填目录的话看到的会是"目录不在前缀里"（那是 admin 也有的现象），
+// 而这一条要证的恰恰是"没有角色 = 一把工具都调不到"
+await verifyRow.locator('.permission-pick').nth(1).click()
+await page.locator('.ant-select-item-option', { hasText: 'search_docs' }).first().click()
+// ⚠️ 用 `input.permission-dir` 而不是 `.permission-dir input`：那几个类是**控件自己**的，
+// 不是包裹它的容器 —— 写成后代选择器时它永远匹配不到，而失败信息只是"超时"
+await verifyRow.locator('input.permission-dir').fill('D:\\work\\demo')
+// ⚠️ 核对按钮同样**不能用 getByRole('button', {name:'核对'})**：那张卡的标题里也有"核对"两个字，
+// 而这个 locator 链是从整张卡往下找的 → 严格模式命中两个 → 超时（第一版就是这么红的）。
+// 一个专属类名比"再想一个不会撞的 accessible name"可靠得多
+await verifyRow.locator('.permission-verify-go').click()
+const deniedShown = await waitFor(async () =>
+  /不允许/.test(await verifyRow.innerText()), 6000)
+const deniedText = await verifyRow.innerText()
+expect('没有角色的账号在核对里被判「不允许」', deniedShown, deniedText.slice(0, 90).replace(/\n/g, ' '))
+expect('并且说清了为什么（不在工具白名单里、且列出能调的是哪些）',
+  /不在任何角色的工具白名单里/.test(deniedText) && /能调的是/.test(deniedText))
+
+await verifyRow.locator('.permission-pick').first().click()
+await page.locator('.ant-select-item-option', { hasText: 'admin' }).first().click()
+await verifyRow.locator('input.permission-dir').fill('D:\\work\\demo-other')
+await verifyRow.locator('.permission-verify-go').click()
+const pathTrap = await waitFor(async () =>
+  /不允许/.test(await verifyRow.innerText()), 6000)
+const pathTrapText = await verifyRow.innerText()
+expect('目录按路径分段比：D:\\work\\demo 不命中 D:\\work\\demo-other',
+  pathTrap && /不在任何角色的目录前缀里/.test(pathTrapText),
+  pathTrapText.slice(0, 120).replace(/\n/g, ' '))
+await page.screenshot({ path: `${SHOT_DIR}/permissions.png`, fullPage: true })
+
+if (EXPECT_REFLECTION) {
+  // ---- 写路径：只有假后端能安全地跑（真后端这一跑会往用户的库里塞账号与角色） ----
+  // 这一节必须从复位开始：自检会跑两遍，第二遍继承第一遍造出来的账号/角色，
+  // 而"建完之后列表 +1"这种断言第二遍必红 —— 与 prompt / alerts 的 __reset 同一条经验
+  const reset = await page.request.post(`${URL}/api/permissions/__reset`)
+  expect('假后端复位成功', reset.ok(), `HTTP ${reset.status()}`)
+  // ⚠️ 复位之后**不要 `page.reload()`**：reload 会把 App 整个重挂，
+  // 于是前面几节攒下的结果（结构化输出、RAG 对照、Agent 轨迹）全部丢掉 ——
+  // 而脚本最后那节「模式往返」正是在断言它们还在。第一版就是这么把三条断言弄红的。
+  // 正确做法是**切走再切回来**：面板按模式条件渲染，切回来就是一次重新挂载、重新拉数据
+  await navMode('应用清单')
+  await page.waitForTimeout(200)
+  await navMode('权限管理')
+  await waitFor(async () => (await page.locator('.permission-panel .ant-table').count()) > 0, 8000)
+
+  // ① 界面上建一个账号：它必须一个角色都没有，而且页面要把这件事说出来
+  //
+  // ⚠️ 两个坑（都踩过）：
+  //   ① 弹窗必须**按可见的那个**定位。antd 把关闭过的 Modal 留在 DOM 里（只是隐藏），
+  //      所以 `.ant-modal` 会命中多个 —— 用 `.ant-modal:visible` 才不会点到旧的；
+  //   ② **不能用"输入框回车"提交**：这里没有 `<form>`，回车什么都不会发生
+  //      （第一版就是这么红的：弹窗一直开着，而失败信息看起来像"创建没生效"）。
+  const newUserDialog = page.locator('.ant-modal:visible', { hasText: '新建账号' })
+  await page.locator('.permission-panel').getByRole('button', { name: '新建账号' }).click()
+  await newUserDialog.locator('input[placeholder^="登录名"]').fill('selfcheck-user')
+  await newUserDialog.locator('input[placeholder^="初始口令"]').fill('p@ss-1234')
+  // ⚠️ 用**类名**点主按钮，不用 `getByRole('button', {name:'创建'})`：
+  // antd 6 的按钮里有没有可算作无障碍名的文字，取决于它内部的 span 结构，
+  // 而那一层结构不该成为这条断言的前提（实测 getByRole 找不到它，超时信息只是"没有这个按钮"）。
+  // 主按钮在弹窗里只有一个（.ant-btn-primary），而"弹窗里的主按钮 = 提交"是这个组件的约定
+  await newUserDialog.locator('.ant-btn-primary').click()
+  const userCreated = await waitFor(async () =>
+    (await page.locator('.permission-panel').innerText()).includes('selfcheck-user'), 8000)
+  expect('界面上新建账号之后列表里出现它（前端 ↔ 后端这条线通了）', userCreated)
+  expect('新建账号的反馈说清了"一个角色都没有，因此没有任何权限"',
+    /已建账号「selfcheck-user」/.test(await page.locator('.permission-panel').innerText())
+    && /没有任何权限/.test(await page.locator('.permission-panel').innerText()))
+
+  // ② 同名再建一次 → 必须显示成 409 那句，而不是静默成功、也不是 500
+  await page.locator('.permission-panel').getByRole('button', { name: '新建账号' }).click()
+  await newUserDialog.locator('input[placeholder^="登录名"]').fill('selfcheck-user')
+  await newUserDialog.locator('input[placeholder^="初始口令"]').fill('p@ss-1234')
+  await newUserDialog.locator('.ant-btn-primary').click()
+  const conflictShown = await waitFor(async () =>
+    /名字已被占用/.test(await page.locator('.permission-panel').innerText()), 8000)
+  expect('同名账号被拒时界面说成「名字已被占用」（409 与 400 分开处理）', conflictShown)
+  // 取消 = 弹窗里那个非主按钮
+  await newUserDialog.locator('.ant-btn:not(.ant-btn-primary)').last().click()
+
+  // ③ 剩下的写路径直接打接口 —— 它们要验的是**后端判据**，不是界面控件，
+  // 而界面上的复选框给不出"写错一个字母的工具名"这种输入
+  const created = await page.request.post(`${URL}/api/permissions/roles`, {
+    data: { name: '自检-只读', description: '自检用', access: 'LISTED' },
+  })
+  const roleId = (await created.json()).role?.id
+  expect('建角色成功', created.ok() && !!roleId, `HTTP ${created.status()} id=${roleId}`)
+
+  const typo = await page.request.put(`${URL}/api/permissions/roles/${roleId}/tools`, {
+    data: { tools: [{ toolName: 'search_doc' }] },
+  })
+  const typoBody = await typo.text()
+  expect('写错一个字母的工具名 → 400，且报错里带可用清单',
+    typo.status() === 400 && /search_docs/.test(typoBody) && /可用的是/.test(typoBody),
+    `HTTP ${typo.status()}`)
+
+  const good = await page.request.put(`${URL}/api/permissions/roles/${roleId}/tools`, {
+    data: { tools: [{ toolName: 'search_docs' }, { toolName: 'read_section' }] },
+  })
+  expect('正确配工具成功', good.ok(), `HTTP ${good.status()}`)
+
+  // 目录前缀也要给：**权限是"工具 ∩ 目录"两半都要过**，
+  // 只挂工具时核对仍会拒（理由是"不在任何角色的目录前缀里"）——
+  // 这一点正是刚建出来的角色与管理员角色的区别
+  const dirs = await page.request.put(`${URL}/api/permissions/roles/${roleId}/directories`, {
+    data: { directories: [{ prefix: 'D:\\work\\demo' }] },
+  })
+  expect('正确配目录前缀成功', dirs.ok(), `HTTP ${dirs.status()}`)
+
+  const userSnapshot = await (await page.request.get(`${URL}/api/permissions`)).json()
+  const selfUser = userSnapshot.users.find(u => u.name === 'selfcheck-user')
+  const granted = await page.request.put(`${URL}/api/permissions/users/${selfUser.id}/roles`, {
+    data: { roleIds: [roleId] },
+  })
+  expect('给账号挂角色成功', granted.ok(), `HTTP ${granted.status()}`)
+
+  const allowed = await (await page.request.get(
+    `${URL}/api/permissions/verify?account=selfcheck-user&tool=search_docs&dir=${encodeURIComponent('D:\\work\\demo')}`,
+  )).json()
+  expect('挂上角色之后核对变成「允许」（同一份数据，两种结论）',
+    allowed.allowed === true, allowed.reason)
+
+  const del = await page.request.delete(`${URL}/api/permissions/roles/${roleId}`)
+  const delBody = await del.json()
+  expect('删角色时报告影响面（在删除之前数出来的那个数字）',
+    del.ok() && delBody.affectedAccounts === 1, `affected=${delBody.affectedAccounts}`)
+
+  // ④ 恢复初始状态：自检跑完之后这一页应该还是它一开始的样子
+  const resetAgain = await page.request.post(`${URL}/api/permissions/__reset`)
+  expect('自检收尾把假后端复位（不留状态给下一次）', resetAgain.ok())
+}
+
 // ---------- 切回流式：历史不能被清掉 ----------
 console.log('[9] 模式往返')
-await page.locator('label', { hasText: 'SSE 流式' }).click()
+await navMode('SSE 流式')
 await page.waitForTimeout(300)
 const streamStillThere = (await page.locator('.message-list').innerText()).trim().length > 20
 expect('切回流式后原有对话仍在', streamStillThere)
-await page.locator('label', { hasText: '结构化输出' }).click()
+await navMode('结构化输出')
 await page.waitForTimeout(300)
 // 至少 1 张卡就说明记录没丢（假后端那条路径会留下 2 张，真后端只有 1 张 —— 别写死数量）
 expect('切回结构化后结果仍在', (await page.locator('.structured-card').count()) >= 1)
 
 // 切回 RAG：对照结果必须还在（它是这张页面上最贵的一次计算，丢了就要重跑）
-await page.locator('label', { hasText: 'RAG 分块评测' }).click()
+await navMode('RAG 分块评测')
 await page.waitForTimeout(400)
 const ragStillThere = (await page.locator('.rag-metric-table').count()) > 0
 expect('切回 RAG 后对照结果仍在（没有重跑）', ragStillThere)
@@ -2472,7 +2774,7 @@ expect('切回 RAG 后对照结果仍在（没有重跑）', ragStillThere)
 // **等待时长与它要等的东西没有关系**，而失败信息看起来像"结果丢了"。
 // 改成"轮询它出现"之后，两条路径都稳定 ——
 // 这与本轮 HITL 断言里用的 `waitFor` 是同一套做法（理由见那个函数的注释）。
-await page.locator('label', { hasText: 'Agent 工具调用' }).click()
+await navMode('Agent 工具调用')
 const timelineNow =
   timelineWasThere && (await waitFor(async () => (await page.locator('.agent-timeline').count()) > 0, 3000))
 expect(

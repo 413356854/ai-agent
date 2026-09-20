@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS agent_run (
   created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id)
-);
+) COMMENT='运行记录';
 
 -- 每一步：一次模型往返（可能附带若干工具调用）
 --
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS agent_step (
   transcript        TEXT        NOT NULL,            -- 这一步之后的完整消息列表（JSON）
   created_at        TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (run_id, step_index)
-);
+) COMMENT='运行步骤';
 
 -- 每一次工具调用意图的落库（含被拒绝的）
 --
@@ -165,27 +165,21 @@ CREATE TABLE IF NOT EXISTS agent_tool_invocation (
   elapsed_ms   BIGINT      NOT NULL DEFAULT 0,
   created_at   TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (run_id, step_index, call_index)
-);
+) COMMENT='工具调用';
 
 -- 恢复时最常见的查询是"这个实例上还有哪些没跑完的运行"
-CREATE INDEX IF NOT EXISTS idx_agent_run_status ON agent_run (status, updated_at);
 
--- 【阶段四 Agent trace】按会话把多次运行串起来读（trace 的第一层）。
--- 没有它，"这段对话里一共跑了几次、各自花了多少"只能全表扫 ——
--- 而那个查询恰恰是排查"用户说这个功能今天一直不对"时的第一个动作。
-CREATE INDEX IF NOT EXISTS idx_agent_run_conversation ON agent_run (conversation_id, created_at);
-
--- 【阶段四第 6 件 · 成本归因】按租户看钱是看板最长的那条查询（多一个 GROUP BY 维度，
--- 而它的分组基数由**租户数**决定 —— 那是唯一会随业务增长而增长的维度）。
--- 索引列顺序刻意是 (tenant_id, created_at) 而不是反过来：查询形如
--- 「窗口内按租户分组」，所以先按租户收敛、再在组内按时间过滤，
--- 与 conversation 那条索引同一个形状。
-CREATE INDEX IF NOT EXISTS idx_agent_run_tenant ON agent_run (tenant_id, created_at);
-
--- 【阶段四成本看板】看板的每一次查询都带一个时间窗（默认最近 7 天），
--- 且按天分桶。所以这个索引是"看板能不能在数据量上来之后还跑得动"的落点 ——
--- 没有它，看板会随运行数线性变慢，而现象是"这个页面越来越慢"，看不出是缺索引。
-CREATE INDEX IF NOT EXISTS idx_agent_run_created ON agent_run (created_at);
+-- 【索引不在本文件里，在 ai.agent.config.SchemaIndexInitializer】
+-- 为了让这几份脚本同时被 MySQL 与 H2 接受、而且每次启动都能重跑
+-- （spring.sql.init.mode=always），索引不写成这里的一条 CREATE INDEX：
+-- MySQL 8.0 不认 `CREATE INDEX IF NOT EXISTS`（实测 8.0.17 报 1064），
+-- 而没有 IF NOT EXISTS 的话第二次启动就会因索引已存在而失败。
+-- 索引由代码建：先问元数据"这个索引在不在"，不在才建。加了表要一起加索引时，
+-- 改那个类里的 DEFINITIONS 清单，别写回本文件。
+--   四条在 agent_run 上：(status, updated_at) / (conversation_id, created_at)
+--                        / (tenant_id, created_at) / (created_at)
+--   两条在 agent_tool_approval 上：(status, requested_at) / (run_id, requested_at)
+--   一条在 retrieval_hit 上：(document_id)
 
 -- ============================================================================
 --  人工审批记录（阶段三第 9 件：HITL）
@@ -228,13 +222,10 @@ CREATE TABLE IF NOT EXISTS agent_tool_approval (
   decided_by    VARCHAR(128) NULL,                   -- 谁做的决定（超时/作废时为空）
   decision_note TEXT         NULL,                   -- 决定说明（拒绝理由会回填给模型）
   PRIMARY KEY (id)
-);
+) COMMENT='人工审批';
 
--- 待办列表的查询是"所有还没处理的，先来的在前"
-CREATE INDEX IF NOT EXISTS idx_agent_tool_approval_status ON agent_tool_approval (status, requested_at);
-
--- 运行详情里要按 run 取全部审批记录
-CREATE INDEX IF NOT EXISTS idx_agent_tool_approval_run ON agent_tool_approval (run_id, requested_at);
+-- 待办列表的查询是"所有还没处理的，先来的在前"；运行详情里要按 run 取全部审批记录
+-- 【索引：两条都在 (status, requested_at) / (run_id, requested_at)，见 SchemaIndexInitializer】
 
 -- ============================================================================
 --  检索明细（阶段四第 2 件：调用日志 + Agent trace 五层里的**「检索」那一层**）
@@ -278,7 +269,7 @@ CREATE TABLE IF NOT EXISTS retrieval_hit (
   excerpt      VARCHAR(512) NULL,                   -- 片段开头（截断）—— 让人不下钻也能认出召回对不对
   created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (run_id, step_index, call_index, hit_rank)
-);
+) COMMENT='检索命中';
 
 -- 【检索调用的参数与汇总单独一行，因为它不是"命中"的属性】
 -- query（查的是什么词）与 topK（要了几条）属于**调用**，不属于任何一条命中 ——
@@ -300,7 +291,7 @@ CREATE TABLE IF NOT EXISTS retrieval_call (
   elapsed_ms   BIGINT       NOT NULL DEFAULT 0,
   created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (run_id, step_index, call_index)
-);
+) COMMENT='检索调用';
 
 -- 按会话/运行读检索明细时，永远先按 run_id 过滤 —— 与另两张表明细表同一个形状
-CREATE INDEX IF NOT EXISTS idx_retrieval_hit_document ON retrieval_hit (document_id);
+-- 【索引：idx_retrieval_hit_document (document_id)，见 SchemaIndexInitializer】

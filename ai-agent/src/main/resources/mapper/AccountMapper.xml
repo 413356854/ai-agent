@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  agent_user 表的 SQL。
+
+  ⚠️ 按名字查（findByName）与库里的唯一约束是**两种**判据，两者都要：
+  唯一约束保证不会有两行同名；这里的比较条件保证"大小写 / 前后空格不同"的写法
+  也指向同一行 —— MySQL 的默认排序规则本来就不区分大小写，H2 不是，
+  而"同一条 SQL 在两种库上行为不同"属于本项目反复列过的一类风险。
+
+  ⚠️ 口令列只出现在 select 列表与 insert/updatePassword 里。
+  没有"顺手把它读出来显示"的查询：界面拿到的账号对象由服务层装配，不含这一列。
+-->
+<mapper namespace="ai.agent.mapper.AccountMapper">
+
+	<resultMap id="accountRow" type="ai.agent.mapper.MapperRows$AccountRow">
+		<constructor>
+			<idArg column="id" javaType="java.lang.Long"/>
+			<arg column="name" javaType="java.lang.String"/>
+			<arg column="password_hash" javaType="java.lang.String"/>
+			<arg column="display_name" javaType="java.lang.String"/>
+			<!-- status 保持字符串：宽松解析（认不出落 DISABLED）在 AccountRow.toDomain() 里 -->
+			<arg column="status" javaType="java.lang.String"/>
+			<!-- created_at / updated_at 现在没有读侧用它，仍然老老实实映射：
+			     少一列的后果是"新增一行忘写这两列"要等到别人去查库才发现 -->
+			<arg column="created_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="updated_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+		</constructor>
+	</resultMap>
+
+	<sql id="accountColumns">
+		id, name, password_hash, display_name, status, created_at, updated_at
+	</sql>
+
+	<!--
+	  插入与取键是**两条语句、两次调用**，中间不能夹任何别的写操作：
+	  LAST_INSERT_ID() 是连接级的，取的是"这条连接上最后一次插入"的自增主键。
+	  为什么不用 useGeneratedKeys / @SelectKey 的原因写在 AccountMapper 的类注释里（三条实测的弯路）。
+	-->
+	<insert id="insert">
+		INSERT INTO agent_user (name, password_hash, display_name, status)
+		VALUES (#{name}, #{passwordHash}, #{displayName}, #{status})
+	</insert>
+
+	<select id="lastInsertId" resultType="java.lang.Long">
+		SELECT LAST_INSERT_ID()
+	</select>
+
+	<select id="findById" resultMap="accountRow">
+		SELECT <include refid="accountColumns"/> FROM agent_user WHERE id = #{id}
+	</select>
+
+	<select id="findByName" resultMap="accountRow">
+		SELECT <include refid="accountColumns"/>
+		  FROM agent_user
+		 WHERE LOWER(TRIM(name)) = LOWER(TRIM(#{name}))
+	</select>
+
+	<select id="list" resultMap="accountRow">
+		SELECT <include refid="accountColumns"/> FROM agent_user ORDER BY name
+	</select>
+
+	<update id="update">
+		UPDATE agent_user SET display_name = #{displayName}, status = #{status} WHERE id = #{id}
+	</update>
+
+	<update id="updatePassword">
+		UPDATE agent_user SET password_hash = #{passwordHash} WHERE id = #{id}
+	</update>
+
+	<select id="idsByRole" resultType="java.lang.Long">
+		SELECT user_id FROM agent_user_role WHERE role_id = #{roleId} ORDER BY user_id
+	</select>
+
+</mapper>

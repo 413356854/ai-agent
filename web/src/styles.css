@@ -14,13 +14,254 @@ body {
   background: #f5f6f8;
 }
 
+/* ===========================================================================
+   外壳：左侧目录 / 右侧内容（类后台）
+
+   三条约束，改布局时不要动：
+   1. **只有内容区滚动** —— 目录与页头都在视口内固定，`height: 100%` 一路传下去；
+   2. **每一层 flex 都要写 `min-height: 0`** —— 少了它，子项的最小高度等于内容高度，
+      `overflow` 永远不会生效，整页会被卡片撑成一条长页面（`.diag-panel` 那条注释是同一个坑）；
+   3. **页面本身不许横向溢出** —— 自检在 documentElement 上断言
+      `scrollWidth - clientWidth === 0`，所以窄屏只能由目录自己变窄（见 @media 那两段）。
+   =========================================================================== */
+
 .app-shell {
+  height: 100%;
+  display: flex;
+  /* 窄屏兜底：低于这个宽度时目录已经收成 64px 的窄条，再窄下去内容区就没法用了 */
+  min-width: 720px;
+}
+
+/* ---------- 左侧目录 ---------- */
+
+.app-sidebar {
+  flex: none;
+  width: 232px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-right: 1px solid #eceef1;
+  padding: 14px 10px;
+  /* 宽度要跟着收起一起过渡，否则收起时内容区会"跳"一下 */
+  transition: width 0.2s;
+}
+
+.app-sidebar.is-collapsed {
+  width: 64px;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+/* 品牌区。收起态只留那个缩写方块 —— 名字藏起来，但方块留着：
+   它是"这块窄条是导航"的唯一线索，全藏了会变成一条空白竖线 */
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 6px 12px;
+  min-width: 0;
+}
+
+.app-brand-mark {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #1677ff;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.app-brand-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* 目录本体自己能滚：窄屏（高度不够）时收起开关必须仍然可见 ——
+   开关滚出视口等于目录收起来之后再也展不开 */
+.app-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.app-nav-group + .app-nav-group {
+  margin-top: 10px;
+  border-top: 1px solid #f0f0f0;
+  padding-top: 8px;
+}
+
+/* 一级目录名。它**不是**可点的：可点的是它下面那些项，
+   把分组名做成可折叠会把"这一段里有哪几项"藏起来 */
+.app-nav-group-title {
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8c8c8c;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-nav-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  /* 收起态里项内没有文字，8px 的上下留白会让这一行塌成一条细缝、点不中 */
+  min-height: 34px;
+  padding: 0 10px;
+  margin-bottom: 2px;
+  border: none;
+  /* 左侧那条 3px 留给选中态：它收起后仍在，是"当前在哪一项"的唯一可见标记 */
+  border-left: 3px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.app-nav-item:hover {
+  background: #f5f6f8;
+}
+
+/* 选中态：底色 + 左侧色标 + 加粗。**不靠颜色单独表达** ——
+   "现在在哪一项"是这一页最要紧的信息，色觉障碍与黑白打印下也得读得出来 */
+.app-nav-item.is-active {
+  background: #f0f7ff;
+  border-left-color: #1677ff;
+  color: #0958d9;
+  font-weight: 600;
+}
+
+.app-nav-item-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 收起态：文字全部藏起来。留 min-height 是为了保留可点区域 */
+.is-collapsed .app-brand {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.is-collapsed .app-brand-name,
+.is-collapsed .app-nav-group-title,
+.is-collapsed .app-nav-item-text,
+.is-collapsed .app-collapse-text {
+  display: none;
+}
+
+/* 分组名藏掉之后，靠这条线表示"上面那几个和下面那几个是两段" */
+.is-collapsed .app-nav-group + .app-nav-group {
+  padding-top: 8px;
+}
+
+.app-sidebar-foot {
+  flex: none;
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.app-collapse {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #8c8c8c;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.app-collapse:hover:not(:disabled) {
+  background: #f5f6f8;
+  color: #1677ff;
+}
+
+.app-collapse:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* 三条横线（没有图标依赖，见 AppSidebar 的文件头） */
+.app-collapse-bars {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 16px;
+}
+
+.app-collapse-bars i {
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+}
+
+.is-collapsed .app-collapse {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* 窄屏：目录只留那条窄轨。第二个断点（640px）再窄也没有意义 ——
+   外壳已经设了 min-width: 720px，那时横向滚动条才是对的（而不是把内容挤成一列） */
+@media (max-width: 900px) {
+  .app-sidebar {
+    width: 64px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .app-sidebar .app-brand {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .app-sidebar .app-brand-name,
+  .app-sidebar .app-nav-group-title,
+  .app-sidebar .app-nav-item-text,
+  .app-sidebar .app-collapse-text {
+    display: none;
+  }
+
+  .app-sidebar .app-collapse {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
+}
+
+/* ---------- 右侧内容列 ---------- */
+
+.app-main {
+  flex: 1;
+  min-width: 0;
   height: 100%;
   display: flex;
   flex-direction: column;
 }
 
-.app-header {
+.app-topbar {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -28,11 +269,35 @@ body {
   padding: 12px 24px;
   background: #fff;
   border-bottom: 1px solid #eceef1;
-  flex: none;
 }
 
 .app-title {
   margin: 0 !important;
+}
+
+/*
+  分区标签。刻意**不用 antd 的 Tag**：它在页头这一行里自带 margin 与固定行高，
+  与标题的基线很难对齐（旧版那排 Tag 就是这样）；这里只需要一小块带底色的说明文字。
+*/
+.app-section-tag {
+  padding: 1px 8px;
+  border-radius: 4px;
+  border: 1px solid;
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.app-section-tag.is-blue {
+  color: #0958d9;
+  background: #f0f7ff;
+  border-color: #bae0ff;
+}
+
+.app-section-tag.is-geekblue {
+  color: #391085;
+  background: #f7f4ff;
+  border-color: #d3c7ff;
 }
 
 .conversation-id {
@@ -1637,3 +1902,92 @@ body {
 
 /* 灰度：没有候选版本可选时的解释块（真后端第一次打开这一页就是它） */
 .canary-no-candidate { margin: 0; }
+
+/* ===========================================================================
+   AI Agent 应用管理（目录区，暂无功能）
+   ===========================================================================
+   这一页只有一张规划清单表。样式上唯一的要点：**它不能看起来像一份数据表**。
+   表格数值区的视觉语言（右对齐的等宽数字、彩色差值的那些类）一个都不往这里套，
+   否则"7 行规划"会被读成"7 个应用"。
+   =========================================================================== */
+
+.app-plan-table th,
+.app-plan-table td {
+  /* 覆盖 .rag-metric-table 的 nowrap：这里的单元格是一整句话，必须能换行 */
+  white-space: normal;
+}
+
+.app-plan-field {
+  font-weight: 600;
+}
+
+.app-plan-gap {
+  color: #d46b08;
+  max-width: 380px;
+}
+
+.app-plan-summary {
+  display: block;
+  margin-top: 10px;
+}
+
+/* ===========================================================================
+   权限管理（应用管理 · 用户 / 角色 / 工具白名单 / 目录前缀）
+   ===========================================================================
+   四条与这一页的判断绑在一起的选择：
+
+   1. **工具名与目录前缀一律等宽字体**（`.is-mono` 已经在别处定义，这里只管布局）：
+      它们是"必须逐字对上"的字符串（工具名对不上注册表就被拒、目录按段比），
+      成比例的字体里 `l` 与 `1`、`rn` 与 `m` 长得太像；
+   2. **`.permission-pick` 给固定宽度**：三个下拉排成一行时，
+      "账号"那一栏的宽度会随最长账号名跳动，而每次选中都会让整行重新排一次；
+   3. **`.permission-verdict` 与上方表单留出间隔**：结论块与输入区贴在一起时，
+      会把上一次的结论读成这一次的；
+   4. ⚠️ **不给这一页做"权限矩阵"那种彩色格子**：格子的颜色需要一套"有权限 / 没权限"的
+      视觉语言，而这一页的真相是"权限是若干角色的并集" —— 用格子表达会让人
+      以为权限是逐条直接配在账号上的（那正是这张表刻意不做的设计）。
+   =========================================================================== */
+
+.permission-pick {
+  min-width: 200px;
+}
+
+.permission-dir {
+  min-width: 320px;
+  flex: 0 1 380px;
+}
+
+.permission-verdict {
+  margin-top: 12px;
+}
+
+.permission-spin {
+  display: block;
+  margin-top: 12px;
+}
+
+.permission-meta {
+  font-size: 12px;
+}
+
+/* 角色名与账号名不许被拆行：antd 的表格在列宽不够时会把中文按字断行，
+   结果是"只读检索"竖着排成四行 —— 那看起来像布局坏了，而数据是对的 */
+.permission-role-name,
+.permission-user-name {
+  white-space: nowrap;
+}
+
+.permission-dir-list {
+  display: flex;
+  margin-top: 6px;
+}
+
+.permission-dir-add {
+  margin-top: 10px;
+}
+
+/* 表里那一列"工具 / 目录"是若干短字符串，逐行排会比挤在一行里好读 */
+.permission-panel .ant-table-cell .is-mono {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}

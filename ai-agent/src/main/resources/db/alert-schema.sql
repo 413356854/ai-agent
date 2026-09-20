@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS alert_event (
   created_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (fingerprint)
-);
+) COMMENT='告警状态';
 
 -- ============================================================================
 --  灰度发布（提示词新版的按比例放量）
@@ -84,4 +84,4 @@ CREATE TABLE IF NOT EXISTS prompt_canary (
   ended_by          VARCHAR(128) NULL,
   end_reason        VARCHAR(512) NULL,               -- 为什么停（推全 / 回滚 / 实验结束）
   PRIMARY KEY (kind)
-);
+) COMMENT='灰度配置';
