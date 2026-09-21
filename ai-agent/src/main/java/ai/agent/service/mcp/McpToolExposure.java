@@ -56,9 +56,19 @@ public class McpToolExposure {
 
 	private final ToolCallExecutor executor;
 
+	/**
+	 * <b>这一次交给 MCP 的工具</b> —— 构造期算一次，之后三处读的都是它：
+	 * 装 MCP Server 的那份 spec、启动日志、启动自检的预期清单。
+	 */
+	private final List<ExposedTool> exposedTools;
+
 	public McpToolExposure(ToolRegistry registry, ToolCallExecutor executor) {
 		this.registry = registry;
 		this.executor = executor;
+		// 暴露面在构造期定一次：注册表在整个进程生命周期里不再变（ToolRegistry 的 all() 是常量），
+		// 而"这次暴露了哪些"要被三处读（装 MCP 的那份 spec、启动日志、启动自检），
+		// 每次现算一遍会让"挡在门外的那些"日志重复打印，也会让三处有机会各算出一个结果
+		this.exposedTools = decideExposure();
 	}
 
 	/**
@@ -118,6 +128,15 @@ public class McpToolExposure {
 	 * 忘了实现的后果是"它被暴露出去"，而那种错不报错 —— 所以这里认的就是那个接口。
 	 */
 	public List<ExposedTool> exposeReadOnlyTools() {
+		return exposedTools;
+	}
+
+	/**
+	 * 按每把工具自己的声明路由一次：需要工作区的、写操作的都挡在门外，各记一条日志说明为什么。
+	 *
+	 * <p>这是"对外到底暴露什么"<b>唯一</b>一次计算 —— 见 {@link #exposedToolNames()} 里那条判据。
+	 */
+	private List<ExposedTool> decideExposure() {
 		List<ExposedTool> exposed = new ArrayList<>();
 		for (AgentTool<?> tool : registry.all()) {
 			if (tool instanceof WorkspaceBoundTool) {
@@ -147,9 +166,19 @@ public class McpToolExposure {
 
 	}
 
-	/** 对外暴露的工具名（启动日志与自检断言用）。 */
+	/**
+	 * 对外暴露的工具名 —— <b>它就是"交给 MCP 的那一份"</b>（由 {@link #decideExposure()} 派生）。
+	 *
+	 * <h2>为什么不在这里另写一遍过滤</h2>
+	 * 那会变成第二份判据，而两份判据一旦分叉，启动自检的"预期"里就会出现
+	 * <b>我们其实没有交出去的工具</b> —— 现象是默认配置下应用起不来
+	 * （预期 7 把、实际注册 4 把，差的正是那三把需要工作区的文件工具），
+	 * 而它真正要拦的那件事（别的自动配置又往 MCP 里塞了工具）反而被这堆噪声淹没。
+	 * 判据只有一份时，这个断言拦的仍然是原本那两件事：
+	 * 容器里多出来的原始 {@code AgentTool} 被注册成了 MCP 工具、以及这份清单压根没被注册。
+	 */
 	public List<String> exposedToolNames() {
-		return registry.all().stream().filter(t -> t.description().hints().readOnlyHint()).map(AgentTool::name).toList();
+		return exposedTools.stream().map(ExposedTool::name).toList();
 	}
 
 	/** 被<b>刻意挡在门外</b>的工具名（写操作）—— 同样要说出来，否则"少了什么"没人知道。 */

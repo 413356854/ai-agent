@@ -134,10 +134,10 @@ public class McpExposureConfig {
 			List<String> registered = server.listTools().stream().map(McpSchema.Tool::name).sorted().toList();
 			List<String> expected = exposure.exposedToolNames().stream().sorted().toList();
 
-			// ① 注册进去的必须是"包过的"那些 —— 一把不多、一把不少
+			// ① 服务器里装着的，必须正好是"我们交给它的那一份" —— 一把不多、一把不少
 			if (!registered.equals(expected)) {
 				throw new IllegalStateException(("MCP Server 注册的工具与预期不符 —— 拒绝启动。"
-						+ "预期（只读工具）：%s；实际：%s。"
+						+ "预期（我们交给 MCP 的那一份）：%s；实际：%s。"
 						+ "多出来的那些多半来自 ToolCallbackConverterAutoConfiguration："
 						+ "它会收集容器里全部 ToolCallback bean，而本项目的 AgentTool "
 						+ "故意让 call(String) 抛异常 —— 那样的工具列得出来但一调就炸。"
