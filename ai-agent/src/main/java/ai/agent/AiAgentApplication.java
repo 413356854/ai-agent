@@ -3,6 +3,7 @@ package ai.agent;
 import ai.agent.config.AgentApprovalProperties;
 import ai.agent.config.ChatCallProperties;
 import ai.agent.config.ReviewProperties;
+import ai.agent.config.WorkspaceFileProperties;
 import ai.agent.config.WorkspaceProperties;
 import ai.agent.config.rag.RagProperties;
 import org.mybatis.spring.annotation.MapperScan;
@@ -35,6 +36,10 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
  * 我们只在 {@code application.properties} 里写值。包一层自己的 properties
  * 会多出一处"这个字段到底谁说了算"的歧义。
  *
+ * <p>文件类工具的边界单独一个 {@link WorkspaceFileProperties}（前缀
+ * {@code ai.agent.workspace.file}）：它管的是"读进来多少、写出去多大"，
+ * 与 {@link WorkspaceProperties}（工作区在哪、必填校验）的读者不是同一批人。
+ *
  * <p>{@code @MapperScan} 指向 {@code ai.agent.mapper} —— <b>SQL 与 Java 的边界包</b>：
  * 每个接口对应一张表（或一组相关查询），语句在同名 XML 里。
  * 放在这里而不是各 mapper 上逐个标 {@code @Mapper}，是为了让"这一层有哪些 mapper"
@@ -44,7 +49,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 @SpringBootApplication
 @MapperScan("ai.agent.mapper")
 @EnableConfigurationProperties({ ChatCallProperties.class, RagProperties.class, AgentApprovalProperties.class,
-		ReviewProperties.class, WorkspaceProperties.class })
+		ReviewProperties.class, WorkspaceProperties.class, WorkspaceFileProperties.class })
 public class AiAgentApplication {
 
 	public static void main(String[] args) {

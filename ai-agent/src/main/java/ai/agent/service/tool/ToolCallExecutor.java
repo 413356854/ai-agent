@@ -179,11 +179,19 @@ public class ToolCallExecutor {
 	 * </ol>
 	 *
 	 * @param invocation 工具调用意图（不可信）
-	 * @param context 执行上下文（哪次运行、第几步、哪条链路）—— 审计与 HITL 记账用
+	 * @param context 执行上下文（哪次运行、第几步、哪条链路）—— 审计、HITL 记账、
+	 *            以及文件工具的工作区边界判定用。方法内部会把本次参数（{@code invocation.arguments()}）
+	 *            补进上下文，所以传进来的那个不需要自己带参数
 	 * @return 走到哪一步、结果、以及要回填给模型的文本
 	 */
 	public ToolCallOutcome execute(ToolInvocation invocation, ToolCallContext context) {
 		long startedAt = System.nanoTime();
+
+		// 【参数进上下文】文件工具要判"这次改的东西在不在工作区内"，而那个判断只能从
+		// 参数里的路径算出来。把原始 JSON 放进上下文（而不是让工具自己去别处找），
+		// 是为了让闸门读到的结论与工具实际执行的**是同一份参数**。
+		// 位置在门禁 1 之前：白名单失败时它也用不上，但放这里"上下文一定是完整的"更容易读
+		context = context.withArguments(invocation.arguments());
 
 		// ---- 门禁 1：白名单 ----
 		// 回填里必须带**可用工具列表**：只说"工具不存在"，模型的下一个反应往往是再编一个。
@@ -258,6 +266,12 @@ public class ToolCallExecutor {
 
 			// ---- 门禁 5：人工确认（HITL）----
 			// 参数到这里已经"可信"了，于是人看到的就是真正会被执行的那份
+			//
+			// 【工作区边界必须在这一步之前定下来】文件工具判"这次改的东西在不在工作区内"
+			// 靠的是参数里的路径，而闸门（WorkspaceApprovalGate）按那个结论决定
+			// 「工作区内修改」这一档能不能直接放行。两处各算一遍必然漂移 ——
+			// 所以路径由工具自己在 onContext 里解析一次（下面这一行），闸门复核的是同一个访问对象
+			tool.onContext(context);
 			ToolApprovalGate.Authorization authorization = approvalGate.authorize(invocation, tool, context);
 			switch (authorization) {
 				case ToolApprovalGate.Authorization.Pending pending -> {
@@ -449,15 +463,16 @@ public class ToolCallExecutor {
 		return issues;
 	}
 
-	/** 真正调用工具。异常在这里被兜住 —— 目标是"工具炸了不等于会话炸了"。 */
+	/**
+	 * 真正调用工具。异常在这里被兜住 —— 目标是"工具炸了不等于会话炸了"。
+	 */
 	private ToolCallOutcome invoke(AgentTool<?> tool, Object parameters, ToolInvocation invocation, long startedAt,
 			ToolApprovalRef approval, ToolCallContext context) {
 		try {
-			// 在调用之前的最后一刻把上下文交给工具（可选钩子，默认实现什么都不做）。
-			// 位置：放在 try 里面 —— 钩子是工具自己的代码，它抛异常同样该被兜住并归类，
-			// 而不是变成一个"没被任何分类接住"的异常
-			tool.onContext(approval.present() ? context.withApproval(approval.approvalId()) : context);
-
+			// 【上下文已经在门禁 ⑤ 之前交给工具了】那一步不能挪到这里：
+			// 文件工具是在 onContext 里解析本次路径的，而闸门必须在那之前读到结论。
+			// 本方法不再重复调用它 —— 重复调用会让"闸门按 A 放行、工具按 B 执行"这种
+			// 不一致重新变得可能（同一个 onContext 被赋两次值，中间隔着一次审批等待）。
 			AgentToolResult result = invokeUnchecked(tool, parameters);
 
 			// 注意：工具自己返回 Failure 时 stage 仍是 OK ——

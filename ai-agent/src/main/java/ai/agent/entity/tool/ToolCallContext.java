@@ -58,9 +58,16 @@ import java.time.Duration;
  *              与 {@code runId} / {@code stepIndex} 完全同一类事实。
  *              <p>⚠️ 缺失时一律按<b>最严的一档</b>处理（见 {@code WorkspaceApprovalGate}）——
  *              把"没有档位"当成完全权限，会让一条没人审计的链路成为绕过审批的入口。
+ * @param arguments <b>这一次调用的原始参数 JSON</b>（模型给的那份，未经校验）。
+ *              <p>它为什么必须出现在上下文里：文件工具要判"这次改的东西在不在工作区内"，
+ *              而那个判断只能从参数里的路径算出来 —— 而闸门读到的必须是
+ *              "真正会执行的那份参数"的结论（见 {@code WorkspaceApprovalGate}）。
+ *              让工具自己去别处找参数，就会多出第二条路径判据，两条迟早漂移。
+ *              <p>形状是"原始字符串"而不是解析后的对象：上下文是<b>门禁与审计</b>的输入，
+ *              它不该依赖每把工具各不相同的参数类型。工具自己按需解析（骨架只读一个字段）。
  */
 public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin origin, ApprovalGrant grant,
-		String approvalId, Duration decisionTimeout, RunPermission runPermission) {
+		String approvalId, Duration decisionTimeout, RunPermission runPermission, String arguments) {
 
 	public ToolCallContext {
 		origin = origin == null ? ToolCallOrigin.AGENT_LOOP : origin;
@@ -68,12 +75,12 @@ public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin or
 
 	/** Agent 循环里的一步（没有通行证 —— 首次提出调用时必定没有）。 */
 	public static ToolCallContext ofStep(String runId, int stepIndex) {
-		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, null, null, null, null);
+		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, null, null, null, null, null);
 	}
 
 	/** Agent 循环里的一步，且这一次调用带着人工批准的通行证（恢复路径用）。 */
 	public static ToolCallContext ofStep(String runId, int stepIndex, ApprovalGrant grant) {
-		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, grant, null, null, null);
+		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, grant, null, null, null, null);
 	}
 
 	/**
@@ -83,7 +90,7 @@ public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin or
 	 * 而测试需要在不删掉逻辑的前提下把时间刻度改小。
 	 */
 	public static ToolCallContext ofStep(String runId, int stepIndex, Duration decisionTimeout) {
-		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, null, null, decisionTimeout, null);
+		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, null, null, decisionTimeout, null, null);
 	}
 
 	/**
@@ -97,7 +104,21 @@ public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin or
 	 *                   （执行器被单独调用、外部链路）—— 那时按最严的一档处理
 	 */
 	public ToolCallContext withRunPermission(RunPermission permission) {
-		return new ToolCallContext(runId, stepIndex, origin, grant, approvalId, decisionTimeout, permission);
+		return new ToolCallContext(runId, stepIndex, origin, grant, approvalId, decisionTimeout, permission, arguments);
+	}
+
+	/**
+	 * 把<b>这一次调用的原始参数</b>补上 —— 执行器在解析之前调用它。
+	 *
+	 * <p>与另外两个 {@code withXxx} 同一条做法（派生一个新对象）。它必须在这里，
+	 * 而不是让工具自己去哪找参数：文件工具判边界用的路径来自本次参数，
+	 * 而闸门读的必须是<b>同一份</b>参数的结论（见 {@link #arguments}）。
+	 *
+	 * @param rawArguments 模型给的原始参数 JSON；{@code null} 表示没有参数（无参工具）
+	 */
+	public ToolCallContext withArguments(String rawArguments) {
+		return new ToolCallContext(runId, stepIndex, origin, grant, approvalId, decisionTimeout, runPermission,
+				rawArguments);
 	}
 
 	/**
@@ -108,7 +129,8 @@ public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin or
 	 * 一个可变对象传进去，工具就能顺手改掉"我是谁批的"。<b>审计字段不该由被审计方改写。</b>
 	 */
 	public ToolCallContext withApproval(String approvalId) {
-		return new ToolCallContext(runId, stepIndex, origin, grant, approvalId, decisionTimeout, runPermission);
+		return new ToolCallContext(runId, stepIndex, origin, grant, approvalId, decisionTimeout, runPermission,
+				arguments);
 	}
 
 	/**
@@ -123,12 +145,12 @@ public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin or
 	 * 放宽必须有一个能被审计的主体，而这里没有。
 	 */
 	public static ToolCallContext mcpClient() {
-		return new ToolCallContext(null, null, ToolCallOrigin.MCP_CLIENT, null, null, null, null);
+		return new ToolCallContext(null, null, ToolCallOrigin.MCP_CLIENT, null, null, null, null, null);
 	}
 
 	/** 没有上下文（执行器被单独调用时用）。 */
 	public static ToolCallContext none() {
-		return new ToolCallContext(null, null, ToolCallOrigin.AGENT_LOOP, null, null, null, null);
+		return new ToolCallContext(null, null, ToolCallOrigin.AGENT_LOOP, null, null, null, null, null);
 	}
 
 	public boolean hasRun() {

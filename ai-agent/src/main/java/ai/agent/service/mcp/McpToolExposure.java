@@ -7,6 +7,7 @@ import ai.agent.service.tool.ToolCallOrigin;
 import ai.agent.entity.tool.ToolCallOutcome;
 import ai.agent.service.tool.ToolRegistry;
 import ai.agent.entity.model.tool.ToolHints;
+import ai.agent.service.tool.workspace.WorkspaceBoundTool;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 
@@ -99,17 +100,32 @@ public class McpToolExposure {
 	 * 两者的分工是刻意的：
 	 * <ul>
 	 *   <li>本方法回答<b>"实际上暴露什么"</b> —— 对混合集合（生产就是混合的：
-	 *       三把只读 + 一把有审批要求的写）它正常工作，非只读的那些被挡在门外<b>并记一条日志</b>；</li>
+	 *       只读的检索工具、只读但需要工作区的文件工具、有审批要求的写工具）它正常工作，
+	 *       挡在门外的那些各自记一条日志说明为什么；</li>
 	 *   <li>{@link #exposedCallbacks()} 回答<b>"我要一个纯只读的集合"</b> ——
 	 *       混合集合上它会抛。它现在是给测试与将来的"只读网关"用的。</li>
 	 * </ul>
 	 * 这么拆之后，"挡住写工具"这件事不再依赖"调用方恰好用了哪个入口"：
 	 * 装配层记日志说明它挡了什么，而任何在混合集合上要求"全是只读"的调用都会当场失败。
 	 * 两者都比"安静地少一个工具"好。
+	 *
+	 * <h2>为什么文件工具即使只读也不能暴露</h2>
+	 * 外部 MCP 客户端的上下文是 {@code ToolCallContext.mcpClient()}，它<b>没有工作区</b>
+	 * （那是"一次运行"的属性，而这条路没有运行）。于是这些工具在 MCP 这条链路上
+	 * 没有可解析路径的根 —— 暴露出去的结果只会是"每次都回一句没有工作区"，
+	 * 而那种现象在客户端看来像"这个工具坏了"。判据由工具自己声明
+	 * （{@link WorkspaceBoundTool}，一个纯粹的标记接口）：将来再加文件工具时，
+	 * 忘了实现的后果是"它被暴露出去"，而那种错不报错 —— 所以这里认的就是那个接口。
 	 */
 	public List<ExposedTool> exposeReadOnlyTools() {
 		List<ExposedTool> exposed = new ArrayList<>();
 		for (AgentTool<?> tool : registry.all()) {
+			if (tool instanceof WorkspaceBoundTool) {
+				log.info("工具「{}」不通过 MCP 暴露（它需要工作区）—— "
+						+ "外部 MCP 链路没有「一次运行」这个对象，ToolCallContext 里没有工作区目录，"
+						+ "这些工具在那条链路上没有可解析路径的根", tool.name());
+				continue;
+			}
 			ToolHints hints = tool.description().hints();
 			if (!hints.readOnlyHint()) {
 				log.info("工具「{}」不通过 MCP 暴露（风险声明：{}）—— "

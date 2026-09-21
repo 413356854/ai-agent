@@ -167,6 +167,14 @@ pwsh -File scripts/verify-mcp.ps1 -BaseUrl http://127.0.0.1:8080
 | `read_section` | 读出指定文档里某一节的完整正文 |
 | `query_sql` | 对**应用自己的库**执行一条读语句（表名自己查 `INFORMATION_SCHEMA`） |
 
+⚠️ **五把文件工具（`read_file` / `glob` / `grep` / `write_file` / `edit_file`）都不在对外列表里，
+连只读那三把也不在**。它们不是"写操作"才被挡，而是**需要工作区**：
+工作区是"一次运行"的属性，而外部 MCP 链路没有运行这个对象 ——
+`ToolCallContext.mcpClient()` 里没有任何目录，这些工具在那条链路上没有可解析路径的根，
+暴露出去只会"每次都回一句没有工作区"（对客户端就是"这个工具坏了"）。
+判据是标记接口 `WorkspaceBoundTool`，不是一份写死的名单；
+挡掉时 `McpToolExposure` 会记一条日志写明理由。
+
 ⚠️ **`query_sql` 让这条边界的含义变了，必须看清**：前三把只能看到**项目语料**，
 而这一把能看到**整个运行库** —— `agent_run` / `agent_step`（含每步的完整对话检查点！）/
 `agent_tool_invocation` / `agent_tool_approval` / `prompt_version` / `retrieval_hit`。
