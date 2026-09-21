@@ -34,6 +34,32 @@ export interface PermissionUser {
   roles: string[]
 }
 
+/**
+ * 搜索结果里的一个人（`GET /api/permissions/users/search`）。
+ *
+ * <p>它比 {@link PermissionUser} 少了 `roles`：那个字段在下拉里不显示，
+ * 而照搬 `account(...)` 装配的话响应里会写着 `roles: []` —— 那是"这个人没有任何角色"，
+ * 与"这次没查"是两件事，而它们在 JSON 里长得一样（后端为此单开了一个 `userBrief`）。
+ */
+export interface PermissionUserOption {
+  id: number
+  name: string
+  /** 可能为空串（没填显示名时后端给空串而不是 null）。 */
+  displayName: string
+  /** ENABLED / DISABLED。停用的人**仍会出现**在候选里（要能看见"他现在是停用状态"）。 */
+  status: string
+  statusLabel: string
+  usable: boolean
+}
+
+/** `GET /api/permissions/users/search` 的响应。`limit` 是**实际生效**的条数（超限时被后端夹住）。 */
+export interface PermissionUserSearch {
+  keyword: string
+  limit: number
+  count: number
+  users: PermissionUserOption[]
+}
+
 /** 一个角色。 */
 export interface PermissionRole {
   id: number
@@ -126,6 +152,18 @@ async function send<T>(method: string, path: string, payload?: unknown): Promise
 
 export const permissionApi = {
   snapshot: () => send<PermissionSnapshot>('GET', ''),
+
+  /**
+   * 按搜索词查用户（按登录名子串匹配，最多 `limit` 条，后端默认 5、上限 20）。
+   *
+   * <p>空搜索词是 **400**（后端刻意不让它退化成"把前几个账号给你"），
+   * 所以调用方要先判空 —— 这里的做法是"没输入就不发请求"。
+   */
+  searchUsers: (keyword: string, limit?: number) => {
+    const query = new URLSearchParams({ keyword })
+    if (limit !== undefined) query.set('limit', String(limit))
+    return send<PermissionUserSearch>('GET', `/users/search?${query.toString()}`)
+  },
 
   verify: (account: string, tool?: string, dir?: string) => {
     const query = new URLSearchParams({ account })

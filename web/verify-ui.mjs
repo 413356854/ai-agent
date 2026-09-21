@@ -2967,7 +2967,7 @@ if (EXPECT_REFLECTION) {
 
   const boardText = await page.locator('.task-board').innerText()
   expect('卡片写出「发布人 → 任务人」与当前执行人',
-    /张三 → 李四/.test(boardText) && /当前执行人/.test(boardText))
+    /admin → zhou/.test(boardText) && /当前执行人/.test(boardText))
   expect('待验收那条带着执行结果', /已补上说明段落/.test(boardText))
 
   // ---- 「执行中」那一列收**四个**状态：已确认需求 / 已确认计划 / 已授权 / 执行中 ----
@@ -3099,13 +3099,50 @@ if (EXPECT_REFLECTION) {
   await waitFor(async () => (await page.locator('.ant-modal:visible').count()) === 0, 5000)
 
   // ---- 发布一条新任务（界面走一遍表单） ----
+  //
+  // 这一版的两处行为变化都在这个弹窗里，所以三条断言都长在它上面：
+  //   ① 发布人 / 任务人是**搜索选择器**（候选来自 /api/permissions/users/search，最多 5 条），
+  //      不再是能随便打字的输入框 —— 名字在库里是快照，打错一个字没有约束拦得下；
+  //   ② 表单里**没有 agentId 这一格**；
+  //   ③ 发布出来的任务 agentId 是空的，平台第一次接手（__run-agent）时才写进去。
   await page.locator('.task-panel').getByRole('button', { name: '发布任务', exact: true }).click()
   // ⚠️ 弹窗要按**标题**过滤，不能按 placeholder 过滤：placeholder 是属性、不进 innerText，
   // 而 `hasText` 匹配的是渲染出来的文字 —— 按 placeholder 过滤会一直等不到，
   // 而失败信息（"waiting for locator …" 超时）看起来像"弹窗没打开"
   const createDialog = page.locator('.ant-modal:visible', { hasText: '发布任务' })
-  await createDialog.locator('input[placeholder^="发布人"]').fill('自检发布人')
-  await createDialog.locator('input[placeholder^="任务人"]').fill('自检任务人')
+
+  expect('★ 发布表单里没有 agentId 这一格（它由平台在接手任务时写，不由发布人填）',
+    (await createDialog.locator('input[placeholder*="agentId"]').count()) === 0
+    && (await createDialog.getByText('agent-id').count()) >= 1,
+    '（表单里只有那两格选择器 + 一段说明文字，说明文字里写着 agentId 由平台写入）')
+
+  /**
+   * 在某一格搜索选择器里搜一个词、点中候选。
+   *
+   * 候选由后端的 `/api/permissions/users/search` 给（`filterOption={false}`），
+   * 所以这里必须先输入搜索词、再等下拉出现 —— 直接点开是一个空下拉（那是刻意的：
+   * 空搜索词在后端是 400，界面因此"没输入就不发请求"）。
+   */
+  const pickUser = async (index, keyword, expected) => {
+    const picker = createDialog.locator('.ant-select').nth(index)
+    await picker.click()
+    await picker.locator('input').fill(keyword)
+    const option = page.locator('.ant-select-dropdown:visible .ant-select-item-option',
+      { hasText: expected }).first()
+    await option.waitFor({ state: 'visible', timeout: 8000 })
+    await option.click()
+  }
+
+  await pickUser(0, 'adm', 'admin')
+  // 任务人刻意选**停用**的 li：候选里要看得见"他现在是停用的"，
+  // 而"当时派给谁"与"他现在能不能登录"是两件事 —— 所以它仍然可选
+  await pickUser(1, 'li', 'li')
+  expect('★ 两格都是搜索选择器：搜索词进后端，候选里带得出来账号的显示名与停用标记',
+    /初始管理员（admin）/.test(await createDialog.innerText())
+    && /李工（li）/.test(await createDialog.innerText())
+    && /已停用/.test(await createDialog.innerText()),
+    (await createDialog.innerText()).replace(/\n/g, ' ').slice(0, 120))
+
   await createDialog.locator('textarea[placeholder^="任务描述"]').fill('自检造的一条任务')
   await createDialog.locator('.ant-btn-primary').click()
   const createdOk = await waitFor(async () =>
@@ -3115,9 +3152,25 @@ if (EXPECT_REFLECTION) {
     createdOk && afterCreate.new === afterPlan.new + 1,
     `new ${afterPlan.new}→${afterCreate.new}`)
 
+  const createdCard = page.locator('.task-column[data-column="new"] .task-card', { hasText: '自检造的一条任务' })
+  const createdId = Number(await createdCard.getAttribute('data-task-id'))
+  expect('★ 发布时没有 agent：卡片上还不出现 agent#…（那一列由平台接手时写入）',
+    !/agent#/.test(await createdCard.innerText()),
+    (await createdCard.innerText()).replace(/\n/g, ' '))
+
+  // agent 第一次接手这条任务 → 平台把 agentId 写进去（假后端用 AGENT_ID = 1，
+  // 与真后端的 ai.agent.task.agent-id 同一个键）
+  await runAgent(`?id=${createdId}&steps=1`)
+  const stampedCard = page.locator(`.task-column[data-column="executing"] .task-card[data-task-id="${createdId}"]`)
+  const stamped = await waitFor(async () => /agent#1/.test(await stampedCard.innerText()), 8000)
+  expect('★ 平台第一次接手这条任务时写入 agentId（卡片上出现 agent#1）',
+    stamped, (await stampedCard.innerText()).replace(/\n/g, ' '))
+
   // ---- 取消：原因必填，取消后卡片进「已完成」列（与已完成同列）且原因显示在卡片上 ----
-  await page.locator('.task-column[data-column="new"] .task-card', { hasText: '自检造的一条任务' }).click()
+  // 这条任务现在停在「执行中」那一列（刚被 agent 接手过一格），从那里取消它
+  await stampedCard.click()
   const cancelDetail = page.locator('.ant-modal:visible', { hasText: '确认项' })
+  await waitFor(async () => (await cancelDetail.innerText()).includes('确认项'), 5000)
   await cancelDetail.getByRole('button', { name: '取消任务', exact: true }).click()
   const cancelDialog = page.locator('.ant-modal:visible', { hasText: '取消原因必填' })
   await cancelDialog.locator('textarea').fill('自检：这条不需要了')

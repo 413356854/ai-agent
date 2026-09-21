@@ -32,6 +32,18 @@ public interface PermissionService {
 
 	Optional<Account> findAccount(String name);
 
+	/**
+	 * 按登录名搜索（子串匹配、大小写不敏感），最多 {@code limit} 条。
+	 *
+	 * <p>它服务的是"选一个真实的人"这类下拉（发布任务时的发布人 / 任务人），
+	 * 所以返回的是<b>所有</b>匹配的账号（含停用的）：挑人的人要看得到"这个人现在是停用状态"，
+	 * 而"记录里当时是谁"与"他现在能不能登录"是两件事。
+	 *
+	 * @param keyword 搜索词（按字面匹配，不做通配符解释）
+	 * @param limit 最多返回几条
+	 */
+	List<Account> searchAccounts(String keyword, int limit);
+
 	/** 按 id 找账号（界面改完之后要用新状态回话，而界面上拿的是 id）。 */
 	Optional<Account> findAccountById(Long id);
 

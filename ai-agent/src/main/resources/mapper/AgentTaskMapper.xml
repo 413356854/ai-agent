@@ -37,9 +37,13 @@
 		cancel_reason, created_at, updated_at
 	</sql>
 
+	<!--
+	  发布时不写 agent_id：那一列由平台在第一次接手这条任务时用 updateAgentId 写入。
+	  于是"这条任务交给哪个 Agent 应用"只有一个来源，发布人给不了它。
+	-->
 	<insert id="insert">
-		INSERT INTO agent_task (publisher, assignee, description, status, current_executor, current_step, agent_id)
-		VALUES (#{publisher}, #{assignee}, #{description}, #{status}, #{currentExecutor}, #{currentStep}, #{agentId})
+		INSERT INTO agent_task (publisher, assignee, description, status, current_executor, current_step)
+		VALUES (#{publisher}, #{assignee}, #{description}, #{status}, #{currentExecutor}, #{currentStep})
 	</insert>
 
 	<select id="lastInsertId" resultType="java.lang.Long">
@@ -83,6 +87,10 @@
 
 	<update id="updateResult">
 		UPDATE agent_task SET result = #{result} WHERE id = #{id}
+	</update>
+
+	<update id="updateAgentId">
+		UPDATE agent_task SET agent_id = #{agentId} WHERE id = #{id}
 	</update>
 
 	<update id="updateCancel">

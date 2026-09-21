@@ -145,6 +145,21 @@ public class AgentTaskTransitions {
 		tasks.updateResult(task.id(), result.strip());
 	}
 
+	/**
+	 * 写入"这条任务交给哪个 Agent 应用"。
+	 *
+	 * <p>发布人不填这一列（发布请求体里没有它），值由平台在第一次接手这条任务时给出
+	 * （见 {@code DefaultAgentTaskExecution#stampAgent}）。它不并进 {@link #move}：
+	 * 那一条每次状态推进都跑，而调用点手上那份任务记录可能是几步之前读的。
+	 */
+	@Transactional
+	public void setAgentId(AgentTask task, long agentId) {
+		if (tasks.updateAgentId(task.id(), agentId) != 1) {
+			throw new TaskInvalidException("任务不存在：#" + task.id());
+		}
+		log.info("任务 #{} 交给 Agent 应用 #{}（由平台在接手这条任务时写入）", task.id(), agentId);
+	}
+
 	// ------------------------------------------------------------------
 	//  共用判据
 	// ------------------------------------------------------------------

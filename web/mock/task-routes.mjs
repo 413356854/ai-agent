@@ -39,7 +39,17 @@
  * 只放一张就看不出这件事。「已完成」那一列放**两条**：一条验收通过的、一条已取消的
  * （这一列也收两个状态），已取消那条带着取消原因，自检要断言"原因显示在卡片上"
  * （它是两者唯一的区别）。
+ *
+ * ---------------------------------------------------------------------------
+ * 发布任务：两个名字都要在账号表里，agentId 不由发布人给
+ * ---------------------------------------------------------------------------
+ * `publisher` 与 `assignee` **都必填**，且都要能在 permission-routes 那份账号表里找到
+ * （`realUser`，与真后端 `DefaultAgentTaskService#realUser` 是同一句话）——
+ * 账号表只有一份，两份会让"假后端说这个人是真的、真端点说不存在"只表现为自检里一句 400。
+ * 请求体里的 `agentId` **不被采纳**：它是平台第一次接手这条任务时写进去的（`AGENT_ID`）。
  */
+
+import { findMockAccount, mockAccountNames } from './permission-routes.mjs'
 
 const STATUS_LABELS = {
   NEW: '新发布',
@@ -83,6 +93,14 @@ const COLUMNS = [
 /** 等 agent 处理的那几格（与真后端 `AgentTaskStatus.awaitingAgent()` 一致）。 */
 const AGENT_STATUSES = ['NEW', 'CONFIRMED_REQUIREMENT', 'CONFIRMED_PLAN', 'AUTHORIZED']
 
+/**
+ * 本应用在 Agent 应用注册表里的 id —— 与真后端的 `ai.agent.task.agent-id` 同一个键。
+ *
+ * <p>平台第一次接手一条任务时把它写进 `agent_id`（真后端是
+ * `DefaultAgentTaskExecution#stampAgent`），发布人不填这一列。
+ */
+const AGENT_ID = 1
+
 /** 三种确认各自默认的选项集（与真后端的缺省按钮同源，见 AgentTaskTransitions#defaultOptions）。 */
 const DEFAULT_OPTIONS = {
   REQUIREMENT: ['确认', '需要补充'],
@@ -96,6 +114,30 @@ const DEFAULT_OPTIONS = {
 
 function isAmbiguous(description) {
   return description.includes('需要补充')
+}
+
+/**
+ * 发布人 / 任务人必须是从账号表里选出来的真实用户 —— 与真后端
+ * `DefaultAgentTaskService#realUser` 同一条判据（含同一句话）。
+ *
+ * <p>名字取账号表里那一行自己的写法：界面把 "Admin" 打进来时，卡片上显示的是 "admin"。
+ *
+ * @returns {{name: string}|{error: string}}
+ */
+function realUser(raw, what) {
+  const wanted = raw == null ? '' : String(raw).trim()
+  if (!wanted) {
+    return { error: `${what}必填 —— 发布人与任务人都要从用户列表里选一个真实用户`
+      + '（搜索：GET /api/permissions/users/search?keyword=…）' }
+  }
+  const account = findMockAccount(wanted)
+  if (!account) {
+    return { error: `账号表里没有「${wanted}」这个人，不能当${what} —— 发布人与任务人都是真实用户；`
+      + `名字要从用户列表里搜出来选（GET /api/permissions/users/search?keyword=…），`
+      + `打错一个字不会有任何约束拦下这条任务，它只会挂在一个不存在的人名下。`
+      + `假后端现有账号：${mockAccountNames().join('、')}` }
+  }
+  return { name: account.name }
 }
 
 function breakdownOf(description) {
@@ -114,74 +156,83 @@ function authorizationText(actions) {
     + `\n\n这次要做的事：\n${actions.map((a, i) => `${i + 1}. ${a}`).join('\n')}`
 }
 
-/** 初始状态。每次 __reset 都从这里重建（深拷贝，避免被就地改坏）。 */
+/**
+ * 初始状态。每次 __reset 都从这里重建（深拷贝，避免被就地改坏）。
+ *
+ * ⚠️ 卡片上的发布人 / 任务人**用的是账号表里真实存在的名字**（admin / zhou / li，见
+ * permission-routes 的初始数据）：发布一条任务时那两个名字要过一遍账号表，
+ * 而看板上摆着一批"不是账号的人"会让这份假数据自相矛盾 ——
+ * 自检也就验不出"下拉里选的人与卡片上显示的是同一个"。
+ * li 是**停用**账号，它出现在一条已取消的任务上：停用与"当时是谁派的、派给谁"是两件事。
+ */
 function initialState() {
   return {
     tasks: [
       // 新发布：还没有确认项，等 agent 判需求（真后端由定时任务调度）
       {
-        id: 1, publisher: '张三', assignee: '李四', description: '整理 9 月项目周报：按周汇总进展与风险',
-        status: 'NEW', currentExecutor: '李四', currentStep: 1, agentId: 7, result: null, cancelReason: null,
+        id: 1, publisher: 'admin', assignee: 'zhou', description: '整理 9 月项目周报：按周汇总进展与风险',
+        status: 'NEW', currentExecutor: 'zhou', currentStep: 1, agentId: AGENT_ID, result: null, cancelReason: null,
       },
       // 待确认需求：需求确认项还没答
       {
-        id: 2, publisher: '王五', assignee: '赵六', description: '把检索评测的对比数据整理成一页结论',
-        status: 'PENDING_REQUIREMENT', currentExecutor: '王五', currentStep: 1, agentId: 3, result: null,
+        id: 2, publisher: 'zhou', assignee: 'admin', description: '把检索评测的对比数据整理成一页结论',
+        status: 'PENDING_REQUIREMENT', currentExecutor: 'zhou', currentStep: 1, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
       // 待确认计划：第 1 步已答、agent 拆出 5 个任务点，第 3 步在等
       {
-        id: 3, publisher: '张三', assignee: '李四', description: '给工具调用那一页补一份失败分类的说明',
-        status: 'PENDING_PLAN', currentExecutor: '张三', currentStep: 3, agentId: null, result: null,
+        id: 3, publisher: 'admin', assignee: 'zhou', description: '给工具调用那一页补一份失败分类的说明',
+        status: 'PENDING_PLAN', currentExecutor: 'admin', currentStep: 3, agentId: null, result: null,
         cancelReason: null,
       },
       // 待授权：计划已答、agent 问到了授权这一格，第 5 步在等
       {
-        id: 4, publisher: '王五', assignee: '赵六', description: '把成本看板的单价表换成新合同价',
-        status: 'PENDING_AUTHORIZATION', currentExecutor: '王五', currentStep: 5, agentId: 7, result: null,
+        id: 4, publisher: 'zhou', assignee: 'admin', description: '把成本看板的单价表换成新合同价',
+        status: 'PENDING_AUTHORIZATION', currentExecutor: 'zhou', currentStep: 5, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
       // 已确认需求：需求答完了，球在 agent 手上（等它拆任务点）
       {
-        id: 5, publisher: '张三', assignee: '李四', description: '清理 dev 分支上过期的实验脚本',
-        status: 'CONFIRMED_REQUIREMENT', currentExecutor: 'agent#7', currentStep: 2, agentId: 7, result: null,
+        id: 5, publisher: 'admin', assignee: 'zhou', description: '清理 dev 分支上过期的实验脚本',
+        status: 'CONFIRMED_REQUIREMENT', currentExecutor: 'agent#1', currentStep: 2, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
       // 已确认计划：计划批了，等 agent 问授权
       {
-        id: 6, publisher: '王五', assignee: '赵六', description: '给告警规则那一页补三条自检断言',
-        status: 'CONFIRMED_PLAN', currentExecutor: 'agent#3', currentStep: 4, agentId: 3, result: null,
+        id: 6, publisher: 'zhou', assignee: 'admin', description: '给告警规则那一页补三条自检断言',
+        status: 'CONFIRMED_PLAN', currentExecutor: 'agent#1', currentStep: 4, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
       // 已授权：可以开跑了，等 agent 动
       {
-        id: 7, publisher: '张三', assignee: '李四', description: '把 README 里的端口说明改成环境变量法',
-        status: 'AUTHORIZED', currentExecutor: 'agent#7', currentStep: 6, agentId: 7, result: null,
+        id: 7, publisher: 'admin', assignee: 'zhou', description: '把 README 里的端口说明改成环境变量法',
+        status: 'AUTHORIZED', currentExecutor: 'agent#1', currentStep: 6, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
       // 执行中：agent 正在跑
       {
-        id: 8, publisher: '王五', assignee: '赵六', description: '把语料快照脚本的输出目录改成可配置',
-        status: 'EXECUTING', currentExecutor: 'agent#3', currentStep: 7, agentId: 3, result: null,
+        id: 8, publisher: 'zhou', assignee: 'admin', description: '把语料快照脚本的输出目录改成可配置',
+        status: 'EXECUTING', currentExecutor: 'agent#1', currentStep: 7, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
       // 待验收：执行结果已经写回来了，等发布人点头
       {
-        id: 9, publisher: '张三', assignee: '李四', description: '给成本看板补一条"算不出来"的说明',
-        status: 'PENDING_ACCEPTANCE', currentExecutor: '张三', currentStep: 8, agentId: 7,
+        id: 9, publisher: 'admin', assignee: 'zhou', description: '给成本看板补一条"算不出来"的说明',
+        status: 'PENDING_ACCEPTANCE', currentExecutor: 'admin', currentStep: 8, agentId: AGENT_ID,
         result: '【产出】已补上说明段落。\n\n【改动】成功的才算数：\n- edit_file {"path":"web/src/components/CostPanel.tsx"}',
         cancelReason: null,
       },
       // 已完成
       {
-        id: 10, publisher: '王五', assignee: '赵六', description: '把 CI 的端口说明改成环境变量法',
-        status: 'COMPLETED', currentExecutor: '', currentStep: 9, agentId: 7,
+        id: 10, publisher: 'zhou', assignee: 'admin', description: '把 CI 的端口说明改成环境变量法',
+        status: 'COMPLETED', currentExecutor: '', currentStep: 9, agentId: AGENT_ID,
         result: '【产出】已改成 CI_MOCK_PORT / CI_UI_PORT 两行说明。', cancelReason: null,
       },
-      // 已取消：这一列只在有卡片时出现，所以假数据里必须有一条
+      // 已取消：这一列只在有卡片时出现，所以假数据里必须有一条。
+      // 任务人是停用账号 li：停用与"当时派给谁"是两件事（与真后端 realUser 的注释同一条）
       {
-        id: 11, publisher: '张三', assignee: '李四', description: '调研换一个向量库（先搁置）',
-        status: 'CANCELLED', currentExecutor: '李四', currentStep: 1, agentId: null, result: null,
+        id: 11, publisher: 'admin', assignee: 'li', description: '调研换一个向量库（先搁置）',
+        status: 'CANCELLED', currentExecutor: 'li', currentStep: 1, agentId: null, result: null,
         cancelReason: '需求方撤回了这条调研，等定下来再重新发布',
       },
     ],
@@ -368,6 +419,9 @@ function answer(task, confirmId, text) {
  * 一格一格推，每格做的事与真后端逐个对应；判定用上面那两条可判定的规则代替模型调用。
  */
 function runAgentStep(task) {
+  // 平台第一次接手这条任务：写入"交给哪个 Agent 应用"（真后端见 DefaultAgentTaskExecution#stampAgent）。
+  // 发布人不填这一列，所以这里补上 —— 只在为空时写，与真后端一致
+  if (task.agentId == null) task.agentId = AGENT_ID
   if (task.status === 'NEW') {
     if (isAmbiguous(task.description)) {
       // 第 1 步不递增：新发布与待确认需求都停在第 1 步
@@ -495,23 +549,25 @@ export function handleTaskRoutes(req, res, url, json) {
 
   if (req.method === 'POST' && pathname === '/api/agent-tasks') {
     readBody(req, res, json, b => {
-      if (!b.publisher || !String(b.publisher).trim()) {
-        return json(res, { ok: false, error: '缺少 publisher（发布人）' }, 400)
-      }
+      const publisher = realUser(b.publisher, '发布人')
+      if (publisher.error) return json(res, { ok: false, error: publisher.error }, 400)
+      const assignee = realUser(b.assignee, '任务人')
+      if (assignee.error) return json(res, { ok: false, error: assignee.error }, 400)
       if (!b.description || !String(b.description).trim()) {
         return json(res, { ok: false, error: '缺少 description（任务描述）' }, 400)
       }
-      const assignee = b.assignee && String(b.assignee).trim() ? String(b.assignee).trim() : null
       const task = {
         id: state.nextTaskId++,
-        publisher: String(b.publisher).trim(),
-        assignee,
+        publisher: publisher.name,
+        assignee: assignee.name,
         description: String(b.description).trim(),
         status: 'NEW',
         // 与真后端 AgentTask.draft 一致：当前执行人就是任务人（球在他手上）
-        currentExecutor: assignee,
+        currentExecutor: assignee.name,
         currentStep: 1,
-        agentId: typeof b.agentId === 'number' ? b.agentId : null,
+        // 发布人不填 agentId（真后端的请求体里没有这个字段）：平台接手时才写，
+        // 见 runAgentStep 的第一行
+        agentId: null,
         result: null,
         cancelReason: null,
       }

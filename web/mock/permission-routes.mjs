@@ -35,6 +35,10 @@
 
 const AVAILABLE_TOOLS = ['query_sql', 'execute_sql', 'list_documents', 'read_section', 'propose_review', 'search_docs']
 
+/** 用户搜索的默认条数与上限（与真后端 `PermissionController` 的 SEARCH_DEFAULT_LIMIT / SEARCH_MAX_LIMIT 一致）。 */
+const SEARCH_DEFAULT_LIMIT = 5
+const SEARCH_MAX_LIMIT = 20
+
 /** 初始状态。每次 __reset 都从这里重建（深拷贝，避免被就地改坏）。 */
 function initialState() {
   return {
@@ -86,6 +90,50 @@ function userView(u) {
     usable: u.status === 'ENABLED',
     roles: u.roles,
   }
+}
+
+/**
+ * 搜索结果里的一个人 —— **没有 roles**，与真后端的 `userBrief` 逐条一致
+ * （照搬 userView 的话响应里会写着 `roles: []`，那是"这个人没有任何角色"，
+ * 与"这次没查"是两件事，而它们在 JSON 里长得一样）。
+ */
+function userBrief(u) {
+  return {
+    id: u.id,
+    name: u.name,
+    displayName: u.displayName ?? '',
+    status: u.status,
+    statusLabel: u.status === 'ENABLED' ? '启用' : '停用',
+    usable: u.status === 'ENABLED',
+  }
+}
+
+/**
+ * 按登录名搜索账号（大小写不敏感的子串匹配），最多 limit 条 —— 与真后端
+ * `AccountMapper.searchByName` 同一套判据：**只匹配登录名**（显示名不参与）、按名字排序、
+ * 停用账号也在结果里、搜索词里的 % 与 _ 按字面处理（`includes` 本来就没有通配符语义）。
+ *
+ * <p>导出给 task-routes 用：发布任务时"发布人 / 任务人必须是真实用户"这条判据要读同一份账号表，
+ * 两边各写一份的话，"假后端说这个人是真的、真端点说不存在"只会表现为自检里一句看不懂的 400。
+ */
+export function searchMockAccounts(keyword, limit) {
+  const wanted = String(keyword ?? '').trim().toLowerCase()
+  if (!wanted) return []
+  return state.users
+    .filter(u => u.name.toLowerCase().includes(wanted))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, limit)
+}
+
+/** 按登录名取一个账号（大小写与前后空格不敏感，与真后端 `findAccount` 一致）；没有则 undefined。 */
+export function findMockAccount(name) {
+  const wanted = String(name ?? '').trim().toLowerCase()
+  return state.users.find(u => u.name.toLowerCase() === wanted)
+}
+
+/** 现有全部登录名（400 的报错里要能说清"可用的是谁"）。 */
+export function mockAccountNames() {
+  return state.users.map(u => u.name)
 }
 
 function roleView(r) {
@@ -220,6 +268,30 @@ export function handlePermissionRoutes(req, res, url, json) {
 
   if (req.method === 'GET' && pathname === '/api/permissions/tools') {
     json(res, { tools: AVAILABLE_TOOLS, count: AVAILABLE_TOOLS.length })
+    return true
+  }
+
+  // 按搜索词查用户（发布任务的发布人 / 任务人下拉用）—— 与真后端同一条判据：
+  // 空搜索词是 400（它不退化成"把前几个账号给你"），limit 超上限时**夹住并回显实际值**
+  //
+  // ⚠️ 这里必须 `json(...)` 之后**显式 return true**：本函数返回假值时，sse-server 会接着往下试
+  // 别的路由、最后走到 404 那一支再写一次响应头 —— 现象是进程直接崩在
+  // `ERR_HTTP_HEADERS_SENT`，而它看起来像"假后端自己挂了"
+  if (req.method === 'GET' && pathname === '/api/permissions/users/search') {
+    const keyword = (url.searchParams.get('keyword') ?? '').trim()
+    if (!keyword) {
+      json(res, {
+        ok: false,
+        error: '缺少 keyword（搜索词）—— 这个端点按登录名做子串匹配；要一次取回全部账号请用 GET /api/permissions',
+      }, 400)
+      return true
+    }
+    const raw = Number(url.searchParams.get('limit'))
+    const limit = Number.isFinite(raw) && raw > 0
+      ? Math.min(Math.trunc(raw), SEARCH_MAX_LIMIT)
+      : SEARCH_DEFAULT_LIMIT
+    const users = searchMockAccounts(keyword, limit)
+    json(res, { keyword, limit, count: users.length, users: users.map(userBrief) })
     return true
   }
 

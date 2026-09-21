@@ -111,7 +111,7 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 
 	@Override
 	public AgentTaskStatus execute(Long taskId) {
-		AgentTask task = transitions.require(taskId);
+		AgentTask task = stampAgent(transitions.require(taskId));
 		return switch (task.status()) {
 			case NEW -> reviewFirst(task);
 			case CONFIRMED_REQUIREMENT -> reviewConfirmed(task);
@@ -124,6 +124,37 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 				yield task.status();
 			}
 		};
+	}
+
+	// ------------------------------------------------------------------
+	//  平台接手：写入"交给哪个 Agent 应用"
+	// ------------------------------------------------------------------
+
+	/**
+	 * 平台第一次接手这条任务时，把"交给哪个 Agent 应用"写进 {@code agent_task.agent_id}。
+	 *
+	 * <p>发布人填不了这一列（发布请求体里没有它），值来自配置
+	 * {@code ai.agent.task.agent-id} —— 它是本应用在 Agent 应用注册表里的 id
+	 * （那张表在另一个业务域里，见 {@code db/task-schema.sql} 的注释）。
+	 *
+	 * <h2>为什么写在这一刻，而不是"跑到执行那一格"</h2>
+	 * 时机由两件事夹出来：写早了（发布那一刻）就需要一个发布人知道的值，而那个 id 是部署方
+	 * 才有的东西（它回答的是"这条任务交给哪个 Agent 应用"）；写晚了（{@code 已授权 → 执行中}）
+	 * 会让「已确认需求 / 已确认计划 / 已授权」三格的当前执行人显示成不带 id 的 {@code agent}，
+	 * 而那三格与执行中在库里是同一件事（球在 agent 手上，见 {@link AgentTaskTransitions#executorFor}）。
+	 *
+	 * <p>只在为空时写：判定失败后重跑、或恢复之后再接手，都不覆盖已经写下的那个值 ——
+	 * 一条任务先后换过两个执行方的话，卡片上只会剩最后一个，而"当时是谁跑的"就查不到了。
+	 *
+	 * <p>写完<b>重新读一遍</b>：当前执行人由 {@code AgentTask.agentRef(agentId)} 算出来，
+	 * 手里这份还是写之前的那一份（它的 agentId 是 null，会拼出不带 id 的 {@code agent}）。
+	 */
+	private AgentTask stampAgent(AgentTask task) {
+		if (task.agentId() != null) {
+			return task;
+		}
+		transitions.setAgentId(task, properties.agentId());
+		return transitions.require(task.id());
 	}
 
 	// ------------------------------------------------------------------

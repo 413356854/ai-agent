@@ -99,15 +99,17 @@ public class AgentTaskController {
 	@PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
 	public ResponseEntity<Map<String, Object>> create(@RequestBody CreateRequest request) {
 		if (request == null || request.publisher() == null || request.publisher().isBlank()) {
-			return badRequest("缺少 publisher（发布人）");
+			return badRequest("缺少 publisher（发布人）—— 发布人与任务人都要从用户列表里选一个真实用户");
+		}
+		if (request.assignee() == null || request.assignee().isBlank()) {
+			return badRequest("缺少 assignee（任务人）—— 发布人与任务人都要从用户列表里选一个真实用户");
 		}
 		if (request.description() == null || request.description().isBlank()) {
 			return badRequest("缺少 description（任务描述）");
 		}
 		Map<String, Object> body = new LinkedHashMap<>();
 		body.put("ok", true);
-		body.put("task", task(tasks.create(request.publisher(), request.assignee(), request.description(),
-				request.agentId()).task()));
+		body.put("task", task(tasks.create(request.publisher(), request.assignee(), request.description()).task()));
 		return ResponseEntity.ok(body);
 	}
 
@@ -208,8 +210,19 @@ public class AgentTaskController {
 	//  请求体
 	// ------------------------------------------------------------------
 
-	/** 发布任务的请求体。{@code assignee} 与 {@code agentId} 可空（先建任务、后指派）。 */
-	public record CreateRequest(String publisher, String assignee, String description, Long agentId) {
+	/**
+	 * 发布任务的请求体：三个字段<b>都必填</b>。
+	 *
+	 * <p>{@code publisher} / {@code assignee} 是人的名字，而它们必须是账号表里存在的真实用户 ——
+	 * 判据在服务层（{@code DefaultAgentTaskService#realUser}），它读得到账号表；
+	 * 这里只拦"根本没传"。{@code assignee} 不再是可空的"先建任务、后指派"：
+	 * 一条没有任务人的任务，第一步（需求确认）就不知道该问谁。
+	 *
+	 * <p><b>没有 agentId</b>：那一列由平台在第一次接手这条任务时写入
+	 * （见 {@code AgentTaskProperties#agentId}）。请求体里给一个 agentId 不会被采纳 ——
+	 * Jackson 忽略认不出的字段，于是"它由平台定"这件事在这一层就成立，不靠调用方自觉。
+	 */
+	public record CreateRequest(String publisher, String assignee, String description) {
 	}
 
 	/** 推进请求体。{@code result} 只在「执行中 → 待验收」那一步有意义（可空）。 */

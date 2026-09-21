@@ -67,6 +67,13 @@ public class JdbcPermissionStore implements PermissionStore {
 	}
 
 	@Override
+	public List<Account> searchAccounts(String keyword, int limit) {
+		return read(() -> accounts.searchByName(keyword, limit), "搜索账号失败 keyword=" + keyword).stream()
+				.map(MapperRows.AccountRow::toDomain)
+				.toList();
+	}
+
+	@Override
 	public List<Account> findAccounts(List<Long> ids) {
 		if (ids == null || ids.isEmpty()) {
 			// `IN ()` 在两种库上都是语法错，而它只在"这次一个账号都没勾"时出现

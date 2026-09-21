@@ -27,11 +27,15 @@ import java.util.List;
 @Mapper
 public interface AgentTaskMapper {
 
-	/** 建任务。返回受影响行数；新 id 用 {@link #lastInsertId()} 取。 */
+	/**
+	 * 建任务。返回受影响行数；新 id 用 {@link #lastInsertId()} 取。
+	 *
+	 * <p><b>不写 {@code agent_id}</b>：发布人不填那一列，它由平台在第一次接手这条任务时
+	 * 用 {@link #updateAgentId} 写入（见 {@code AgentTaskProperties#agentId}）。
+	 */
 	int insert(@Param("publisher") String publisher, @Param("assignee") String assignee,
 			@Param("description") String description, @Param("status") String status,
-			@Param("currentExecutor") String currentExecutor, @Param("currentStep") int currentStep,
-			@Param("agentId") Long agentId);
+			@Param("currentExecutor") String currentExecutor, @Param("currentStep") int currentStep);
 
 	/**
 	 * 刚插入那一行的自增主键。
@@ -89,6 +93,15 @@ public interface AgentTaskMapper {
 
 	/** 登记执行结果（{@code EXECUTING → 待验收} 那一步）。 */
 	int updateResult(@Param("id") Long id, @Param("result") String result);
+
+	/**
+	 * 写入"这条任务交给哪个 Agent 应用"（发布时不写，由平台在第一次接手时写）。
+	 *
+	 * <p>单独一条 SQL，不并进 {@link #updateProgress}：那一条每次状态推进都要跑，
+	 * 把 agent_id 一起写进去就意味着每次推进都要带上它 ——
+	 * 而调用点手上那份任务记录可能是几步之前读的，一次推进就会把这一列写回旧值。
+	 */
+	int updateAgentId(@Param("id") Long id, @Param("agentId") long agentId);
 
 	/** 取消：状态与取消原因同一次写入（写原因单独一条 SQL 会留下"取消了但没写原因"的窗口）。 */
 	int updateCancel(@Param("id") Long id, @Param("cancelReason") String cancelReason);

@@ -27,6 +27,9 @@ public interface PermissionStore {
 
 	List<Account> accounts();
 
+	/** 按登录名搜索（子串匹配、大小写不敏感），最多 {@code limit} 条。 */
+	List<Account> searchAccounts(String keyword, int limit);
+
 	/** 按 id 列表取（角色侧"设成员"前确认这些账号都存在）。 */
 	List<Account> findAccounts(List<Long> ids);
 

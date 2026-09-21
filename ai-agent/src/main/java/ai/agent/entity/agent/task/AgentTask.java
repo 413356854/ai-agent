@@ -18,14 +18,21 @@ import java.time.Instant;
  * 与 {@code Account} 同一条做法：非空、长度、步骤下界都在这里一次写完，
  * 于是所有构造点（HTTP 写入口、从库里读回、将来的导入）共用同一份判据。
  *
+ * <h2>发布人 / 任务人：写入路径要求两个都是真实账号，读侧只要求发布人非空</h2>
+ * "是不是账号表里真实存在的名字"这条判据不在这里 —— 它要读账号表，所以落在服务层的唯一写入口
+ * （{@code DefaultAgentTaskService#realUser}）。读侧<b>不</b>要求任务人非空：库里允许
+ * 任务人为空的行（列可为 NULL），而"读到一行就抛"的后果是整张看板打不开，
+ * 比把那一格显示成「未指定任务人」坏得多。
+ *
  * @param id 主键；未落库时为 {@code null}
  * @param publisher 发布人（非空；姓名快照，不是账号外键，理由见 DDL）
- * @param assignee 任务人，可为空
+ * @param assignee 任务人（新发布必填，且必须是账号表里存在的名字；库里可能有早期留下的空行）
  * @param description 任务描述（非空）
  * @param status 状态（链见 {@link AgentTaskStatus}）
  * @param currentExecutor 当前执行人；没人接手时为空
  * @param currentStep 任务当前步骤，从 1 开始
- * @param agentId 交给哪个 Agent 应用，可为空
+ * @param agentId 交给哪个 Agent 应用；<b>发布时为空</b>，由平台在第一次接手这条任务时写入
+ *        （见 {@code AgentTaskProperties#agentId}）
  * @param result 执行结果；还没执行完时为空
  * @param cancelReason 取消原因；未取消时为空（取消时必填，判据在服务层的唯一写入口）
  * @param createdAt 落库时间（未落库时为 {@code null}）
@@ -67,15 +74,21 @@ public record AgentTask(Long id, String publisher, String assignee, String descr
 	 *
 	 * <p>它固定了三个字段，于是"新任务长什么样"只有这一处定义：
 	 * 状态 {@link AgentTaskStatus#NEW}、步骤 1、当前执行人是任务人（球在他手上，
-	 * 由他发起第一条需求确认）。调用方没有机会把它们拼错。
+	 * 由他发起第一条需求确认）；{@code agentId} 也在这里定成 {@code null} ——
+	 * 发布人不填它，值由平台在第一次接手这条任务时写入。
+	 * 调用方没有机会把它们拼错，也没有机会把 agentId 塞进来。
+	 *
+	 * <p>发布人与任务人都<b>必填</b>（空字符串在这里就被拒）：
+	 * "这两个名字在账号表里存不存在"是服务层的事（它才拿得到账号表），
+	 * 而"有没有填"是这一层就能拦下的。
 	 */
-	public static AgentTask draft(String publisher, String assignee, String description, Long agentId) {
-		String normalizedAssignee = assignee == null || assignee.isBlank() ? null : assignee.strip();
+	public static AgentTask draft(String publisher, String assignee, String description) {
+		String normalizedAssignee = required(assignee, "任务人", MAX_NAME_CHARS);
 		return new AgentTask(null, publisher, normalizedAssignee, description, AgentTaskStatus.NEW,
-				normalizedAssignee, 1, agentId, null, null, null, null);
+				normalizedAssignee, 1, null, null, null, null, null);
 	}
 
-	/** 执行中时的当前执行人写法（形如 {@code agent#3}；没配 agent 时是 {@code agent}）。 */
+	/** 执行中时的当前执行人写法（形如 {@code agent#3}；这条任务还没被平台接手时是 {@code agent}）。 */
 	public static String agentRef(Long agentId) {
 		return agentId == null ? "agent" : "agent#" + agentId;
 	}

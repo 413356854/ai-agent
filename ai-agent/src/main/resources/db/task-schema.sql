@@ -59,7 +59,10 @@ CREATE TABLE IF NOT EXISTS agent_task (
   -- 而账号是可以改显示名、可以停用的 —— 外键会让这条任务在账号改名后显示成新名字，
   -- 于是"当时"这个语义丢了。与 agent_run.decided_by / granted_by 同一条规矩。
   publisher        VARCHAR(128) NOT NULL,
-  -- 任务人：交付任务的人
+  -- 任务人：交付任务的人。**写入路径必填**（发布人 / 任务人都必须是 agent_user 里真实存在的名字，
+  -- 判据在 DefaultAgentTaskService#realUser —— 它要读账号表，所以不在实体里）。
+  -- 列本身允许 NULL：库里可能有任务人为空的行，而读侧把它显示成「未指定任务人」，
+  -- 比"这一行读不出来，整张看板打不开"好得多
   assignee         VARCHAR(128) NULL,
   -- 任务描述：这次要做什么。它同时也是生成第一条确认项的输入
   description      TEXT         NOT NULL,
@@ -76,6 +79,11 @@ CREATE TABLE IF NOT EXISTS agent_task (
   -- 任务交给哪个 Agent 应用。**不做外键**：Agent 应用表在另一个业务域里，
   -- 而这里只需要一个引用键（与 agent_run.intent / tenant_id 同一条规矩：
   -- 归因键的取值由业务侧定义，数据库管不了它有多少个）
+  --
+  -- 【谁写它】发布时不写（发布请求体里没有 agentId）；平台第一次接手这条任务时
+  -- 用 ai.agent.task.agent-id 写入（见 DefaultAgentTaskExecution#stampAgent）。
+  -- 于是"交给哪个 Agent 应用"只有一个来源 —— 那个 id 是部署方才知道的东西，
+  -- 让发布人打一个数字等于把"它对不对"变成一个人的记忆
   agent_id         BIGINT       NULL,
   -- 执行结果：执行那一步走完时登记（EXECUTING → 待验收）
   result           TEXT         NULL,

@@ -46,8 +46,17 @@ public interface AgentTaskService {
 	/** 一条任务的详情：任务 + 它的全部确认项 + 当前可做的动作。 */
 	Detail detail(Long id);
 
-	/** 发布一条任务。落库时状态是 {@link AgentTaskStatus#NEW}、步骤 1、当前执行人是任务人。 */
-	Detail create(String publisher, String assignee, String description, Long agentId);
+	/**
+	 * 发布一条任务。落库时状态是 {@link AgentTaskStatus#NEW}、步骤 1、当前执行人是任务人。
+	 *
+	 * <p>发布人与任务人<b>都是必填的真实用户</b>：两个名字都要在账号表里存在
+	 * （界面上的做法是搜索后从下拉里选，见 {@code PermissionController#searchUsers}）——
+	 * 任务记录存的是姓名快照，错字不会被任何数据库约束拦下。
+	 *
+	 * <p><b>没有 agentId 这个入参</b>：它由平台在第一次接手这条任务时写入
+	 * （见 {@code AgentTaskProperties#agentId}）。
+	 */
+	Detail create(String publisher, String assignee, String description);
 
 	/** 推进当前事件（允许的状态与落点见类注释的表格）。 */
 	Detail advance(Long id, String result);

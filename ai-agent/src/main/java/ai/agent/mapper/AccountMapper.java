@@ -60,6 +60,20 @@ public interface AccountMapper {
 	MapperRows.AccountRow findByName(@Param("name") String name);
 
 	/**
+	 * 按登录名搜索（子串匹配、大小写不敏感），最多 {@code limit} 条。
+	 *
+	 * <p>用 {@code LOCATE} 而不是 {@code LIKE '%…%'}：{@code LIKE} 把搜索词里的
+	 * {@code %} 与 {@code _} 当通配符 —— 搜「a_b」会命中「axb」，而界面上看起来
+	 * 只是"搜出来的东西不对"。{@code LOCATE} 没有通配符语义，搜索词按字面处理。
+	 *
+	 * <p>两侧都套 {@code LOWER}：MySQL 的默认排序规则不区分大小写、H2 区分，
+	 * 与 {@link #findByName} 同一条理由（不套的话"搜 bob 搜不到 Bob"只在其中一种库上出现）。
+	 *
+	 * <p>排序按登录名：结果是给人挑的，而"每次搜同一个词顺序都不一样"会让下拉在脚下换位置。
+	 */
+	List<MapperRows.AccountRow> searchByName(@Param("keyword") String keyword, @Param("limit") int limit);
+
+	/**
 	 * 按 id 列表取（角色侧"设成员"时逐个确认账号存在，报错里要能说清缺的是哪几个）。
 	 *
 	 * <p>空列表时调用方不发这条查询 —— {@code IN ()} 在两种库上都是语法错，

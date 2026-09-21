@@ -1,5 +1,7 @@
-import { Alert, Button, Card, Empty, Flex, Input, Modal, Space, Spin, Tag, Typography } from 'antd'
-import { useState } from 'react'
+import { Alert, Button, Card, Empty, Flex, Input, Modal, Select, Space, Spin, Tag, Typography } from 'antd'
+import { useEffect, useRef, useState } from 'react'
+import { permissionApi } from '../api/permissions'
+import type { PermissionUserOption } from '../api/permissions'
 import type { AgentTaskCard, AgentTaskConfirm } from '../api/tasks'
 import type { UseTasksResult } from '../hooks/useTasks'
 
@@ -13,14 +15,17 @@ const { Text, Paragraph } = Typography
  * 状态与列的归属**由后端算**（`AgentTaskService.Column`），前端只按 key 画 ——
  * 前端再定一份"哪个状态进哪一列"就是第二份判据，而两份不一致时卡片会出现在错误的列上。
  *
- * <h2>★ 三条不能省的说法</h2>
+ * <h2>★ 四条不能省的说法</h2>
  * <ol>
  *   <li><b>卡片停在哪一列 = 现在等谁</b>：看板不解释这一点，"待处理"就只是一个堆着东西的筐；
  *       所以列头写出这一列收的是哪几种状态，卡片上写出当前执行人；</li>
  *   <li><b>"新发布"不等于"待确认需求"</b>：前者还没有确认项可答（它等 agent 判需求有没有歧义），
  *       后者有一条在等他答 —— 两个状态挨着，说反了会让用户去找一个不存在的按钮；</li>
  *   <li><b>取消原因要显示出来</b>：取消是这一页唯一"没有下文"的结局，
- *       原因不显示的话，那条卡片与"被误操作取消的"看起来完全一样。</li>
+ *       原因不显示的话，那条卡片与"被误操作取消的"看起来完全一样；</li>
+ *   <li><b>发布人 / 任务人只能从用户列表里选</b>：库里存的是姓名快照，打错一个字不会有任何约束
+ *       拦下那条任务 —— 所以那两格是搜索选择器（`UserPicker`），而 <b>agentId 根本不在表单里</b>：
+ *       它由平台在第一次接手这条任务时写入（配置项 `ai.agent.task.agent-id`）。</li>
  * </ol>
  *
  * <h2>为什么按钮来自后端的 actions，而不是这里 if 状态</h2>
@@ -224,7 +229,9 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
             <Text type="secondary">发布人：{task.publisher}</Text>
             <Text type="secondary">任务人：{task.assignee || '（未指派）'}</Text>
             <Text type="secondary">当前执行人：{task.currentExecutor || '（无）'}</Text>
-            <Text type="secondary">agent：{task.agentId != null ? `#${task.agentId}` : '（未指定）'}</Text>
+            {/* 为空只表示"还没有 agent 接手过它"（发布时为空、平台第一次接手时才写）。
+                刻意不写「未指定」：这一列没有人能填，那句话会让人以为是自己漏填了 */}
+            <Text type="secondary">agent：{task.agentId != null ? `#${task.agentId}` : '（还没有 agent 接手）'}</Text>
           </Flex>
           {task.result && <Alert type="success" showIcon title="执行结果" description={task.result} />}
           {task.cancelReason && <Alert type="warning" showIcon title="取消原因" description={task.cancelReason} />}
@@ -338,21 +345,14 @@ function NewTaskModal({ open, onClose, tasks }: {
   const [publisher, setPublisher] = useState('')
   const [assignee, setAssignee] = useState('')
   const [description, setDescription] = useState('')
-  const [agentId, setAgentId] = useState('')
 
   const reset = () => {
-    setPublisher(''); setAssignee(''); setDescription(''); setAgentId('')
+    setPublisher(''); setAssignee(''); setDescription('')
   }
   const close = () => { reset(); onClose() }
 
   const submit = async () => {
-    const parsedAgent = agentId.trim() === '' ? null : Number(agentId.trim())
-    const ok = await tasks.create({
-      publisher,
-      assignee,
-      description,
-      agentId: parsedAgent !== null && Number.isFinite(parsedAgent) ? parsedAgent : null,
-    })
+    const ok = await tasks.create({ publisher, assignee, description })
     // 成功才关：失败时关掉会把用户填的内容丢掉，而他正需要照着报错改一改
     if (ok) close()
   }
@@ -366,24 +366,118 @@ function NewTaskModal({ open, onClose, tasks }: {
       confirmLoading={tasks.busy}
       onOk={() => void submit()}
       onCancel={close}
-      okButtonProps={{ disabled: !publisher.trim() || !description.trim() }}
+      okButtonProps={{ disabled: !publisher || !assignee || !description.trim() }}
     >
       <Flex vertical gap={10}>
-        <Input placeholder="发布人（必填）—— 指派出任务的人" value={publisher}
-          onChange={e => setPublisher(e.target.value)} />
-        <Input placeholder="任务人（可留空）—— 交付任务的人" value={assignee}
-          onChange={e => setAssignee(e.target.value)} />
+        {/* 发布人 / 任务人两格都是**搜索选择器**，不是能打字的输入框：
+            名字在库里存的是快照，打错一个字不会有任何约束拦下那条任务 */}
+        <UserPicker value={publisher} onChange={setPublisher}
+          placeholder="发布人（必填）—— 搜索登录名，从候选里选一个真实用户" />
+        <UserPicker value={assignee} onChange={setAssignee}
+          placeholder="任务人（必填）—— 搜索登录名，从候选里选一个真实用户" />
         <Input.TextArea rows={3} placeholder="任务描述（必填）—— 要做什么；判定需求有没有歧义、拆任务点都以它为准"
           value={description} onChange={e => setDescription(e.target.value)} />
-        <Input placeholder="agentId（可留空）—— 这条任务交给哪个 Agent 应用" value={agentId}
-          onChange={e => setAgentId(e.target.value)} />
         <Text type="secondary">
           发布后任务落在<strong>「新任务」</strong>列、步骤 1、当前执行人是任务人 ——
           随后由 <strong>agent 任务执行</strong>判断需求：有歧义就生成一条需求确认项（进「待处理」等你答），没有就直接进「执行中」。
+          交给哪个 Agent 应用不由发布人填：平台在第一次接手这条任务时写入（配置项 <Text code>ai.agent.task.agent-id</Text>）。
         </Text>
       </Flex>
     </Modal>
   )
+}
+
+/**
+ * 「从账号表里选一个人」—— 发布人与任务人两格共用。
+ *
+ * <h2>为什么是搜索选择器，而不是一个能打字的输入框</h2>
+ * 任务表存的是姓名快照，打错一个字不会被任何数据库约束拦下 —— 那条任务会挂在
+ * 一个不存在的人名下，而它在看板上与正常任务长得完全一样。所以这两格的值只能来自
+ * `GET /api/permissions/users/search` 给出的候选（后端 create 时还会再核一遍账号表）。
+ *
+ * <h2>为什么是服务端搜索（`filterOption={false}`）</h2>
+ * 候选是整张账号表：一次全取回来在账号多时就是"为了填一个名字下载一张表"；
+ * 而 antd 自带的前端过滤只过滤已经取回来的那几条 —— 那会让"搜不到"看起来像
+ * "系统里没有这个人"（真相是它不在前 5 条里）。所以搜索词一变就重新问后端，
+ * 条数与上限由后端定（默认 5、最多 20）。
+ *
+ * <h2>为什么选中的那一条要留在候选里</h2>
+ * 候选列表每次搜索都会被替换，而 antd 的选中项显示的是**候选里那一条的 label**：
+ * 不把它留住的话，选完再搜下一个词，之前那一格会退化成裸的登录名（看起来像没选中）。
+ */
+function UserPicker({ value, onChange, placeholder }: {
+  value: string
+  onChange: (value: string) => void
+  placeholder: string
+}) {
+  const [options, setOptions] = useState<PermissionUserOption[]>([])
+  const [searching, setSearching] = useState(false)
+  /** 搜索本身的失败（例如后端没起）要显示出来：静默的空下拉看起来像"没有这个人"。 */
+  const [error, setError] = useState('')
+  /** 选中的那一条（见上面第三条理由：它要一直留在候选里）。 */
+  const picked = useRef<PermissionUserOption | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
+
+  // 外面把值清空时（发布成功之后弹窗复位）也要丢掉"选中的那一条"：
+  // 留着的话，下一次点开下拉会看到上一条任务选的人还挂在候选里
+  useEffect(() => { if (!value) picked.current = null }, [value])
+
+  const search = (keyword: string) => {
+    if (timer.current) clearTimeout(timer.current)
+    const wanted = keyword.trim()
+    if (!wanted) {
+      setOptions(picked.current ? [picked.current] : [])
+      setError('')
+      return
+    }
+    // 防抖：每敲一个字都发一次请求的话，一次输入就是五次往返，而结果只可能用最后一次
+    timer.current = setTimeout(() => {
+      setSearching(true)
+      permissionApi.searchUsers(wanted)
+        .then(result => {
+          setOptions(result.users)
+          setError('')
+        })
+        .catch((e: unknown) => {
+          setOptions([])
+          setError(e instanceof Error ? e.message : String(e))
+        })
+        .finally(() => setSearching(false))
+    }, 250)
+  }
+
+  const choose = (name: string) => {
+    picked.current = options.find(option => option.name === name) ?? null
+    onChange(name)
+  }
+
+  return (
+    <Flex vertical gap={4}>
+      <Select
+        showSearch
+        // 候选由后端按搜索词给（见组件注释第二条）：交给 antd 再过滤一遍就会把
+        // "后端说匹配的那几条"又筛一次，而筛掉的正是它刚匹配上的
+        filterOption={false}
+        value={value || undefined}
+        placeholder={placeholder}
+        onSearch={search}
+        onChange={choose}
+        loading={searching}
+        options={options.map(option => ({ value: option.name, label: userOptionLabel(option) }))}
+        notFoundContent={searching ? '正在搜索…' : '没有匹配的用户 —— 换个搜索词试试'}
+        style={{ width: '100%' }}
+      />
+      {error && <Text type="danger">搜索用户失败：{error}</Text>}
+    </Flex>
+  )
+}
+
+/** 候选上那一行字：显示名（登录名），停用的在后面加一个标记 —— 但它仍然可以选（见后端注释）。 */
+function userOptionLabel(option: PermissionUserOption): string {
+  const base = option.displayName ? `${option.displayName}（${option.name}）` : option.name
+  return option.usable ? base : `${base} · 已停用`
 }
 
 function CancelModal({ open, taskId, onClose, tasks }: {

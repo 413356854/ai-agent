@@ -42,6 +42,7 @@ import java.util.Optional;
  *   <tr><td>{@code POST/PUT/DELETE /api/permissions/users…}</td><td>"加个人 / 停用他 / 给他角色 / 改他的口令"</td></tr>
  *   <tr><td>{@code POST/PUT/DELETE /api/permissions/roles…}</td><td>"建个角色 / 它能有哪几把工具、哪几个目录、它有哪些成员"</td></tr>
  *   <tr><td>{@code GET /api/permissions/verify}</td><td>"这个人到底能不能在这把工具上、在这个目录里干活"</td></tr>
+ *   <tr><td>{@code GET /api/permissions/users/search}</td><td>"名字里有这几个字的人是谁"（选一个真实的人，最多 limit 条）</td></tr>
  * </table>
  *
  * <h2>★ 这个类的返回体里永远没有口令</h2>
@@ -64,6 +65,12 @@ import java.util.Optional;
 public class PermissionController {
 
 	private static final Logger log = LoggerFactory.getLogger(PermissionController.class);
+
+	/** 用户搜索的默认条数。5 的依据是"下拉里一眼扫得完"：再多就得滚动，而下拉是给人挑的。 */
+	static final int SEARCH_DEFAULT_LIMIT = 5;
+
+	/** 用户搜索的条数上限。它是请求方能拿到的最大一页（超过时夹住，见 {@code searchUsers}）。 */
+	static final int SEARCH_MAX_LIMIT = 20;
 
 	private final PermissionService permissions;
 
@@ -154,6 +161,40 @@ public class PermissionController {
 	public Map<String, Object> tools() {
 		List<String> names = permissions.snapshot().availableTools();
 		return Map.of("tools", names, "count", names.size());
+	}
+
+	/**
+	 * <b>按搜索词查用户</b>（按登录名子串匹配，最多 {@code limit} 条）。
+	 *
+	 * <p>它是"选一个真实的人"那个下拉的数据源（发布任务的发布人 / 任务人）：
+	 * 任务记录存的是姓名快照，所以那个名字必须先在账号表里存在，
+	 * 而界面不能把人名做成一个可以随便打字的输入框（打错一个字不会被任何约束拦下，
+	 * 那条任务就挂在一个不存在的人名下）。
+	 *
+	 * <h2>为什么空搜索词是 400，而不是"把前 5 个账号给你"</h2>
+	 * 空搜索词返回全表的前几条，看起来友好，实际是"这个端点在没有搜索词时回答的是另一个问题"——
+	 * 而那个问题（这一层一共有哪些账号）已经有 {@code GET /api/permissions} 在回答。
+	 * 一个端点两种含义时，调用方拿到的"匹配结果"里混着"默认列表"，而两者在响应里长得一样。
+	 *
+	 * <h2>为什么 {@code limit} 是夹住的，不是报错</h2>
+	 * 它是分页口味，不是内容：超限时**按上限截断并在响应里回显实际生效的那个数**
+	 * （{@code limit} 字段）—— 与"内容被静默截断"是两件事，后者库里从不做（见 {@code AgentTask} 的注释）。
+	 */
+	@GetMapping("/users/search")
+	public ResponseEntity<Map<String, Object>> searchUsers(@RequestParam(required = false) String keyword,
+			@RequestParam(required = false) Integer limit) {
+		if (keyword == null || keyword.isBlank()) {
+			return badRequest("缺少 keyword（搜索词）—— 这个端点按登录名做子串匹配；"
+					+ "要一次取回全部账号请用 GET /api/permissions");
+		}
+		int effective = limit == null ? SEARCH_DEFAULT_LIMIT : Math.max(1, Math.min(limit, SEARCH_MAX_LIMIT));
+		List<Account> found = permissions.searchAccounts(keyword.strip(), effective);
+		Map<String, Object> body = new LinkedHashMap<>();
+		body.put("keyword", keyword.strip());
+		body.put("limit", effective);
+		body.put("count", found.size());
+		body.put("users", found.stream().map(PermissionController::userBrief).toList());
+		return ResponseEntity.ok(body);
 	}
 
 	// ------------------------------------------------------------------
@@ -331,6 +372,25 @@ public class PermissionController {
 	// ------------------------------------------------------------------
 	//  装配
 	// ------------------------------------------------------------------
+
+	/**
+	 * 搜索结果里的一个人：<b>只有"挑一个人"需要的那几列</b>。
+	 *
+	 * <p>它与 {@link #account} 的差别只有一处：**没有 roles**。那个字段要按账号逐个数关系，
+	 * 而下拉里不显示角色；照搬 {@code account(account, List.of())} 的话响应里会写着
+	 * "roles": [] —— 那是"这个人没有任何角色"，与"这次没查"是两件事，而它们在 JSON 里长得一样。
+	 */
+	private static Map<String, Object> userBrief(Account account) {
+		Map<String, Object> row = new LinkedHashMap<>();
+		row.put("id", account.id());
+		row.put("name", account.name());
+		row.put("displayName", account.displayName() == null ? "" : account.displayName());
+		row.put("status", account.status().name());
+		row.put("statusLabel", account.status().label());
+		row.put("usable", account.usable());
+		// 同样刻意没有 passwordHash
+		return row;
+	}
 
 	private Map<String, Object> account(Account account, List<String> roleNames) {
 		Map<String, Object> row = new LinkedHashMap<>();

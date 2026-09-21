@@ -27,7 +27,7 @@
 export interface AgentTaskCard {
   id: number
   publisher: string
-  /** 可能为空串（还没指派任务人）。 */
+  /** 任务人。发布时必填（一个真实账号的登录名）—— 这条链的第一步就是问他的。 */
   assignee: string
   description: string
   /**
@@ -43,6 +43,11 @@ export interface AgentTaskCard {
    * 唯一不递增的是「新发布 → 待确认需求」（那表示第 1 步开始了）。
    */
   currentStep: number
+  /**
+   * 交给哪个 Agent 应用。**发布时是 `null`**（发布请求体里没有这个字段）——
+   * 它由平台在第一次接手这条任务时写入（后端 `ai.agent.task.agent-id`）。
+   * 为 `null` 只表示"还没有 agent 接手过它"。
+   */
   agentId: number | null
   /** 执行结果；还没执行完时为 null。 */
   result: string | null
@@ -155,7 +160,12 @@ export const taskApi = {
 
   detail: (id: number) => send<AgentTaskDetail>('GET', `/${id}`),
 
-  create: (payload: { publisher: string; assignee?: string; description: string; agentId?: number | null }) =>
+  /**
+   * 发布任务。`publisher` 与 `assignee` 都是**必填的真实账号名**（后端会核一遍账号表，
+   * 不存在 → 400）—— 它们只能来自 `permissionApi.searchUsers` 的候选，不是随便打的名字。
+   * **没有 agentId**：那一列由平台在第一次接手这条任务时写入。
+   */
+  create: (payload: { publisher: string; assignee: string; description: string }) =>
     send<{ ok: boolean; task: AgentTaskCard }>('POST', '', payload),
 
   /** 推进当前事件。`result` 只在「执行中 → 待验收」那一步有意义（可空）。 */

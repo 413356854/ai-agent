@@ -18,7 +18,7 @@ export interface UseTasksResult {
   busy: boolean
   reload: () => void
 
-  create: (payload: { publisher: string; assignee?: string; description: string; agentId?: number | null }) => Promise<boolean>
+  create: (payload: { publisher: string; assignee: string; description: string }) => Promise<boolean>
   advance: (id: number, result?: string) => Promise<boolean>
   answer: (id: number, confirmId: number, answer: string) => Promise<boolean>
   cancel: (id: number, reason: string) => Promise<boolean>
@@ -119,7 +119,7 @@ export function useTasks(active: boolean): UseTasksResult {
     }
   }, [loadBoard, loadDetail])
 
-  const create = useCallback(async (payload: { publisher: string; assignee?: string; description: string; agentId?: number | null }) =>
+  const create = useCallback(async (payload: { publisher: string; assignee: string; description: string }) =>
     mutate('发布任务', async () => {
       const r = await taskApi.create(payload)
       return `已发布任务 #${r.task.id}（${r.task.statusLabel}）—— 下一步由 agent 任务执行判断需求`

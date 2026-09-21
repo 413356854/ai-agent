@@ -131,6 +131,11 @@ public class DefaultPermissionService implements PermissionService {
 	}
 
 	@Override
+	public List<Account> searchAccounts(String keyword, int limit) {
+		return store.searchAccounts(keyword, limit);
+	}
+
+	@Override
 	public Optional<Account> findAccountById(Long id) {
 		return Optional.ofNullable(id == null ? null : store.findAccountById(id));
 	}

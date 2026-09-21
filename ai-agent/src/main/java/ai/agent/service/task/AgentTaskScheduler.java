@@ -98,8 +98,9 @@ public class AgentTaskScheduler implements AgentTaskDispatch {
 		// 这一行是"它到底装没装、按什么参数在跑"的唯一出处：定时任务不响的时候，
 		// 第一个要回答的问题就是"它是关着的，还是跑了但没活干"
 		log.info("agent 任务执行已装配：总开关 {}，定时触发间隔 {}，一轮最多 {} 条，"
-				+ "任务点 ≥ {} 个要人确认计划，执行权限档位 {}", properties.enabled(), properties.fixedDelay(),
-				properties.maxTasksPerRound(), properties.planConfirmThreshold(), properties.level().describe());
+				+ "任务点 ≥ {} 个要人确认计划，执行权限档位 {}，本应用在 Agent 应用注册表里的 id {}",
+				properties.enabled(), properties.fixedDelay(), properties.maxTasksPerRound(),
+				properties.planConfirmThreshold(), properties.level().describe(), properties.agentId());
 	}
 
 	/**

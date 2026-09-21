@@ -1,5 +1,6 @@
 package ai.agent.service.task;
 
+import ai.agent.entity.agent.permission.Account;
 import ai.agent.entity.agent.task.AgentTask;
 import ai.agent.entity.agent.task.AgentTaskConfirm;
 import ai.agent.entity.agent.task.AgentTaskStatus;
@@ -7,6 +8,7 @@ import ai.agent.entity.agent.task.ConfirmType;
 import ai.agent.mapper.AgentTaskConfirmMapper;
 import ai.agent.mapper.AgentTaskMapper;
 import ai.agent.mapper.MapperRows;
+import ai.agent.service.permission.PermissionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -34,6 +36,12 @@ import java.util.List;
  * 这条链上会生成确认项的现在是任务执行器（见 {@code AgentTaskExecution}），
  * 所以本类的 {@code @Transactional} 保的是"答复一次确认项"这件事的原子性。
  *
+ * <h2>发布人 / 任务人必须是真实账号</h2>
+ * 判据在 {@link #realUser}，它落在服务层而不是实体的构造器里：那条判据要读账号表，
+ * 而实体的构造点里有一个是"从库里读回一行"。它对应界面上的一处做法 ——
+ * 那两格是<b>搜索之后从下拉里选</b>的，不是可以随便打字的输入框
+ * （名字是快照，打错一个字不会有任何约束拦下这条任务）。
+ *
  * <h2>写完就调度一次任务执行</h2>
  * 每一次任务记录更新之后都调一次 {@link AgentTaskDispatch#onTaskUpdated}（已完成 / 已取消除外，
  * 那条判据在调度器里）：新发布要判断需求有没有歧义、答复完需求要拆任务点、答复完授权要开跑 ——
@@ -56,12 +64,21 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	/** 任务记录更新后的调度入口（定时任务那一侧实现）。 */
 	private final AgentTaskDispatch dispatch;
 
+	/**
+	 * 账号表（发布人 / 任务人必须是真实用户）。
+	 *
+	 * <p>读的是权限域的服务而不是 {@code AccountMapper}：账号的存取口径（名字怎么比、
+	 * 读失败怎么报）在那一层只有一份，这里再注入一个 mapper 就等于把那份口径复制一份。
+	 */
+	private final PermissionService permissions;
+
 	public DefaultAgentTaskService(AgentTaskMapper tasks, AgentTaskConfirmMapper confirms,
-			AgentTaskTransitions transitions, AgentTaskDispatch dispatch) {
+			AgentTaskTransitions transitions, AgentTaskDispatch dispatch, PermissionService permissions) {
 		this.tasks = tasks;
 		this.confirms = confirms;
 		this.transitions = transitions;
 		this.dispatch = dispatch;
+		this.permissions = permissions;
 		verifyColumnsCoverAllStatuses();
 	}
 
@@ -114,10 +131,12 @@ public class DefaultAgentTaskService implements AgentTaskService {
 
 	@Override
 	@Transactional
-	public Detail create(String publisher, String assignee, String description, Long agentId) {
-		AgentTask task = draft(publisher, assignee, description, agentId);
+	public Detail create(String publisher, String assignee, String description) {
+		// 两个名字都换成账号表里那一行自己的写法：调用方写进来的 "Admin" 落库与回执都是 "admin"
+		// （大小写与前后空格都以账号表为准）
+		AgentTask task = draft(realUser(publisher, "发布人"), realUser(assignee, "任务人"), description);
 		tasks.insert(task.publisher(), task.assignee(), task.description(), task.status().storedValue(),
-				task.currentExecutor(), task.currentStep(), task.agentId());
+				task.currentExecutor(), task.currentStep());
 		Long id = AgentTaskTransitions.requiredKey(tasks.lastInsertId(), "任务");
 		log.info("新建 agent 任务 #{}：{}", id, task.describe());
 		// 新发布也要调度：判断需求有没有歧义这一步在 agent 手上，不等下一个定时周期
@@ -283,13 +302,40 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	 * {@code ErrorResponseAdvice} 的 400 分支，于是"任务描述超长"会以 500 的形式出现，
 	 * 用户看到的是一句"服务器出错了"。这里只做翻译，判据不在这里重写。
 	 */
-	private static AgentTask draft(String publisher, String assignee, String description, Long agentId) {
+	private static AgentTask draft(String publisher, String assignee, String description) {
 		try {
-			return AgentTask.draft(publisher, assignee, description, agentId);
+			return AgentTask.draft(publisher, assignee, description);
 		}
 		catch (IllegalArgumentException e) {
 			throw new TaskInvalidException(e.getMessage());
 		}
+	}
+
+	/**
+	 * 发布人 / 任务人必须是从账号表里选出来的真实用户 —— <b>这条判据只在这里</b>。
+	 *
+	 * <p>它拦的是"随手打一个名字"：任务表存的是姓名快照（不是外键，理由见 DDL），
+	 * 所以错字不会被数据库拦下，而那样一条任务在界面上与正常任务长得一模一样，
+	 * 只是永远没有对应的人。判据落在服务层而不是实体里，是因为它要读账号表。
+	 *
+	 * <p>返回值取账号表里那一行自己的名字：写进来的 "Admin" 落库成 "admin"，
+	 * 于是"这个名字到底指谁"不需要读的人再猜一次大小写。
+	 *
+	 * <p>停用的账号<b>不算错</b>：这一列回答的是"当时是谁派的、派给谁"，
+	 * 与"他现在能不能登录"是两件事（与 {@code agent_user_role} 的成员关系同一条规矩）。
+	 */
+	private String realUser(String name, String what) {
+		if (name == null || name.isBlank()) {
+			throw new TaskInvalidException(what + "必填 —— 发布人与任务人都要从用户列表里选一个真实用户"
+					+ "（搜索：GET /api/permissions/users/search?keyword=…）");
+		}
+		String wanted = name.strip();
+		return permissions.findAccount(wanted)
+				.map(Account::name)
+				.orElseThrow(() -> new TaskInvalidException(("账号表里没有「%s」这个人，不能当%s —— 发布人与任务人"
+						+ "都是真实用户；名字要从用户列表里搜出来选（GET /api/permissions/users/search?keyword=…），"
+						+ "打错一个字不会有任何约束拦下这条任务，它只会挂在一个不存在的人名下。")
+						.formatted(wanted, what)));
 	}
 
 	/** 按 id 取确认项，并核对它属于这条任务（拿别的任务的 confirmId 来答会被这里挡下）。 */

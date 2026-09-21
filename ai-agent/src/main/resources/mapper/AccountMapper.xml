@@ -58,6 +58,18 @@
 		 WHERE LOWER(TRIM(name)) = LOWER(TRIM(#{name}))
 	</select>
 
+	<!--
+	  搜索：LOCATE 没有通配符语义（搜索词里的 % 与 _ 按字面处理），而 LIKE '%…%' 会
+	  把它们当通配符 —— 那样搜「a_b」会命中「axb」。两侧 LOWER 的理由同 findByName。
+	-->
+	<select id="searchByName" resultMap="accountRow">
+		SELECT <include refid="accountColumns"/>
+		  FROM agent_user
+		 WHERE LOCATE(LOWER(#{keyword}), LOWER(name)) &gt; 0
+		 ORDER BY name
+		 LIMIT #{limit}
+	</select>
+
 	<!-- 空列表时调用方不发这条查询（IN () 是语法错），理由见 RoleMapper.xml 的头注 -->
 	<select id="byIds" resultMap="accountRow">
 		SELECT <include refid="accountColumns"/>
