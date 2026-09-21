@@ -30,12 +30,18 @@ export interface AgentTaskCard {
   /** 可能为空串（还没指派任务人）。 */
   assignee: string
   description: string
-  /** NEW / PENDING_REQUIREMENT / PENDING_PLAN / PENDING_AUTHORIZATION / EXECUTING / PENDING_ACCEPTANCE / COMPLETED / CANCELLED。 */
+  /**
+   * NEW / PENDING_REQUIREMENT / PENDING_PLAN / PENDING_AUTHORIZATION / CONFIRMED_REQUIREMENT /
+   * CONFIRMED_PLAN / AUTHORIZED / EXECUTING / PENDING_ACCEPTANCE / COMPLETED / CANCELLED。
+   */
   status: string
   statusLabel: string
   /** 这一条现在流转到谁手里：人 或 `agent#<id>`；任务结束后为空串。 */
   currentExecutor: string
-  /** 任务当前步骤，从 1 开始（1 需求 / 2 计划 / 3 授权 / 4 执行 / 5 验收 / 6 完成）。 */
+  /**
+   * 任务当前步骤，从 1 开始 —— 它是"这条任务经过了几格"（每次落进新状态 +1），
+   * 唯一不递增的是「新发布 → 待确认需求」（那表示第 1 步开始了）。
+   */
   currentStep: number
   agentId: number | null
   /** 执行结果；还没执行完时为 null。 */

@@ -50,6 +50,26 @@
 		SELECT <include refid="taskColumns"/> FROM agent_task WHERE id = #{id}
 	</select>
 
+	<!--
+	  任务执行器取"下一条要处理的任务"：一次一条（执行是串行的），按变更时间从早到晚。
+	  ⚠️ LIMIT 1 由数据库做，不是取回来再挑：取全量的写法会让"每次调度扫一遍全表"，
+	  而这张表是按人的操作规模长的，不该在每次调度（默认 10 分钟一次、外加每次记录更新）上全扫。
+	  索引 idx_agent_task_status (status, updated_at) 覆盖 WHERE + ORDER BY。
+	-->
+	<select id="findNextPending" resultMap="agentTaskRow">
+		SELECT <include refid="taskColumns"/>
+		  FROM agent_task
+		 WHERE status IN
+		<foreach item="status" collection="statuses" open="(" separator="," close=")">#{status}</foreach>
+		<!-- 这一轮已经失败过的不再取：它没被改动过，所以下一个查询还会排在最前面 -->
+		<if test="excluded != null and !excluded.isEmpty()">
+		   AND id NOT IN
+			<foreach item="id" collection="excluded" open="(" separator="," close=")">#{id}</foreach>
+		</if>
+		 ORDER BY updated_at, id
+		 LIMIT 1
+	</select>
+
 	<!-- 看板一次取全量。排序的兜底见 AgentTaskMapper#list 的注释（updated_at 是秒精度，同秒用 id 倒序） -->
 	<select id="list" resultMap="agentTaskRow">
 		SELECT <include refid="taskColumns"/> FROM agent_task ORDER BY updated_at DESC, id DESC

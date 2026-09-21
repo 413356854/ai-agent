@@ -122,7 +122,7 @@ export function useTasks(active: boolean): UseTasksResult {
   const create = useCallback(async (payload: { publisher: string; assignee?: string; description: string; agentId?: number | null }) =>
     mutate('发布任务', async () => {
       const r = await taskApi.create(payload)
-      return `已发布任务 #${r.task.id}（${r.task.statusLabel}）—— 下一步由任务人发起需求确认`
+      return `已发布任务 #${r.task.id}（${r.task.statusLabel}）—— 下一步由 agent 任务执行判断需求`
     }), [mutate])
 
   const advance = useCallback(async (id: number, result?: string) =>

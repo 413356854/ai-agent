@@ -17,7 +17,7 @@ const { Text, Paragraph } = Typography
  * <ol>
  *   <li><b>卡片停在哪一列 = 现在等谁</b>：看板不解释这一点，"待处理"就只是一个堆着东西的筐；
  *       所以列头写出这一列收的是哪几种状态，卡片上写出当前执行人；</li>
- *   <li><b>"新发布"不等于"待确认需求"</b>：前者还没有确认项可答（要先由任务人发起），
+ *   <li><b>"新发布"不等于"待确认需求"</b>：前者还没有确认项可答（它等 agent 判需求有没有歧义），
  *       后者有一条在等他答 —— 两个状态挨着，说反了会让用户去找一个不存在的按钮；</li>
  *   <li><b>取消原因要显示出来</b>：取消是这一页唯一"没有下文"的结局，
  *       原因不显示的话，那条卡片与"被误操作取消的"看起来完全一样。</li>
@@ -77,7 +77,7 @@ export function AgentTaskPanel({ tasks }: { tasks: UseTasksResult }) {
         </Space>}
       >
         {data && data.total === 0
-          ? <Empty description="还没有任务。点「发布任务」发一条：它会先落在「新任务」，由任务人发起需求确认。" />
+          ? <Empty description="还没有任务。点「发布任务」发一条：它会先落在「新任务」，随后由 agent 任务执行判断需求。" />
           : (
             <div className="task-board">
               {columns.map(column => (
@@ -159,6 +159,9 @@ function statusColor(status: string): string {
   if (status === 'CANCELLED') return 'default'
   if (status === 'EXECUTING') return 'processing'
   if (status.startsWith('PENDING')) return 'orange'
+  // 「已确认需求 / 已确认计划 / 已授权」与「执行中」同列：球都在 agent 手上。
+  // 用同一个颜色是刻意的 —— 这四格对用户是同一件事（不必点，等它跑）
+  if (status.startsWith('CONFIRMED') || status === 'AUTHORIZED') return 'processing'
   return 'blue'
 }
 
@@ -184,6 +187,14 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
   const canCancel = actions.some(action => action.key === 'cancel')
   // 「登记执行结果」那一步要多一个输入框：结果不是选项，得让人写
   const needsResult = task?.status === 'EXECUTING'
+  /**
+   * 这一步在等 agent，人现在点不动。
+   *
+   * <p>判据是"有动作、但既不能答复也不能推进" —— **不列状态名**：
+   * 状态有哪些、哪几个由 agent 处理是后端的定义（`AgentTaskStatus.awaitingAgent()`），
+   * 前端再抄一份清单，就会在后端新增一格时漏掉它，而漏掉的表现是这一格什么都不显示。
+   */
+  const awaitingAgent = actions.length > 0 && !advanceAction && !canAnswer
 
   const close = () => {
     setResultText(''); setFreeText(''); setCancelOpen(false)
@@ -221,12 +232,21 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
           <div className="task-confirms">
             <Text strong>确认项（每一步是谁怎么答的）</Text>
             {data.confirms.length === 0
-              ? <div className="task-column-empty">还没有确认项 —— 「新发布」的任务要先发起需求确认</div>
+              ? <div className="task-column-empty">还没有确认项 —— 「新发布」的任务等 agent 判断需求有没有歧义</div>
               : data.confirms.map(confirm => <ConfirmRow key={confirm.id} confirm={confirm} />)}
           </div>
 
           {/* 动作区：按钮来自后端的 actions（见文件头），这里只负责把它们画出来并收集输入 */}
           <div className="task-actions">
+            {awaitingAgent && (
+              // 没有可点的推进按钮时要说清"为什么没有"：否则用户会以为按钮该出现却没出现
+              <Alert
+                type="info"
+                showIcon
+                title="这一步由 agent 任务执行做"
+                description="它按状态往下走：新发布判需求有没有歧义、已确认需求拆任务点、已确认计划问授权、已授权开跑。跑完会自己转到「待验收」，页面上不需要点。"
+              />
+            )}
             {canAnswer && pending && (
               <Flex vertical gap={8}>
                 <Text strong>答复这条确认项</Text>
@@ -353,13 +373,13 @@ function NewTaskModal({ open, onClose, tasks }: {
           onChange={e => setPublisher(e.target.value)} />
         <Input placeholder="任务人（可留空）—— 交付任务的人" value={assignee}
           onChange={e => setAssignee(e.target.value)} />
-        <Input.TextArea rows={3} placeholder="任务描述（必填）—— 要做什么；它同时是第 1 条需求确认的正文"
+        <Input.TextArea rows={3} placeholder="任务描述（必填）—— 要做什么；判定需求有没有歧义、拆任务点都以它为准"
           value={description} onChange={e => setDescription(e.target.value)} />
         <Input placeholder="agentId（可留空）—— 这条任务交给哪个 Agent 应用" value={agentId}
           onChange={e => setAgentId(e.target.value)} />
         <Text type="secondary">
           发布后任务落在<strong>「新任务」</strong>列、步骤 1、当前执行人是任务人 ——
-          由他点「发起需求确认」，任务才会进入「待处理」。
+          随后由 <strong>agent 任务执行</strong>判断需求：有歧义就生成一条需求确认项（进「待处理」等你答），没有就直接进「执行中」。
         </Text>
       </Flex>
     </Modal>

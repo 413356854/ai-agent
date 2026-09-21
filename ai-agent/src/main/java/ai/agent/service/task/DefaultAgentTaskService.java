@@ -3,39 +3,43 @@ package ai.agent.service.task;
 import ai.agent.entity.agent.task.AgentTask;
 import ai.agent.entity.agent.task.AgentTaskConfirm;
 import ai.agent.entity.agent.task.AgentTaskStatus;
-import ai.agent.entity.agent.task.ConfirmOptions;
 import ai.agent.entity.agent.task.ConfirmType;
 import ai.agent.mapper.AgentTaskConfirmMapper;
 import ai.agent.mapper.AgentTaskMapper;
 import ai.agent.mapper.MapperRows;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataAccessException;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * {@link AgentTaskService} 的实现 —— <b>任务状态链唯一的写入口</b>。
+ * {@link AgentTaskService} 的实现 —— <b>这条链上"人做的那些动作"的写入口</b>。
  *
  * <h2>状态机只有这一份</h2>
- * "什么状态能做什么、做完到哪、生成哪条确认项、执行人换成谁"全部落在下面这几个方法里，
- * 界面的按钮与接口返回的 {@code actions} 都是从这里算出来的（{@link #actionsOf}）。
+ * "什么状态能做什么、做完到哪、执行人换成谁"全部落在两处，而且只有两处：
+ * 人做的动作在这里（答复确认项、验收、取消），agent 做的动作在
+ * {@code DefaultAgentTaskExecution}；两边共用的写入原语在 {@link AgentTaskTransitions}。
+ * 界面的按钮与接口返回的 {@code actions} 都从 {@link #actionsOf} 算出来 ——
  * 界面上再写一遍判断的后果是两份判据迟早不一致，而它们不一致时的现象是
- * "点得下去、点完报错" —— 用户会以为是自己操作错了。
+ * "点得下去、点完报错"（用户会以为是自己操作错了）。
  *
  * <h2>每个写动作是一个事务</h2>
  * 状态推进与确认项生成必须同生共死：只改了状态没生成确认项，
  * 那条任务就卡在"待确认需求"而没有任何东西可答（界面上永远是待办、永远点不动）。
+ * 这条链上会生成确认项的现在是任务执行器（见 {@code AgentTaskExecution}），
+ * 所以本类的 {@code @Transactional} 保的是"答复一次确认项"这件事的原子性。
  *
- * <h2>脚手架缺省文案说清楚是缺省</h2>
- * 三条确认事项的正文由 {@link #defaultDescription} 生成，其中计划与授权两条是**占位**——
- * 它们将来应由 Agent 按任务生成。文案里写明这一点，是为了不让"这条确认项说的是什么"
- * 被当成系统真的想清楚了：占位文本读起来同样通顺，而这正是它危险的地方。
+ * <h2>写完就调度一次任务执行</h2>
+ * 每一次任务记录更新之后都调一次 {@link AgentTaskDispatch#onTaskUpdated}（已完成 / 已取消除外，
+ * 那条判据在调度器里）：新发布要判断需求有没有歧义、答复完需求要拆任务点、答复完授权要开跑 ——
+ * 这些"下一步"全在 agent 手上。等下一次定时触发（默认 10 分钟）才动的话，
+ * 一条本来能立刻往下走的任务会白等一个周期，而用户看到的是"页面刷新了它还在原地"。
+ * 调度是<b>异步且不阻塞</b>的：抢不到执行锁就直接返回（见 {@code AgentTaskScheduler}）。
  */
 @Service
 public class DefaultAgentTaskService implements AgentTaskService {
@@ -46,9 +50,18 @@ public class DefaultAgentTaskService implements AgentTaskService {
 
 	private final AgentTaskConfirmMapper confirms;
 
-	public DefaultAgentTaskService(AgentTaskMapper tasks, AgentTaskConfirmMapper confirms) {
+	/** 状态链的写入原语（与任务执行器共用同一份）。 */
+	private final AgentTaskTransitions transitions;
+
+	/** 任务记录更新后的调度入口（定时任务那一侧实现）。 */
+	private final AgentTaskDispatch dispatch;
+
+	public DefaultAgentTaskService(AgentTaskMapper tasks, AgentTaskConfirmMapper confirms,
+			AgentTaskTransitions transitions, AgentTaskDispatch dispatch) {
 		this.tasks = tasks;
 		this.confirms = confirms;
+		this.transitions = transitions;
+		this.dispatch = dispatch;
 		verifyColumnsCoverAllStatuses();
 	}
 
@@ -88,7 +101,7 @@ public class DefaultAgentTaskService implements AgentTaskService {
 
 	@Override
 	public Detail detail(Long id) {
-		AgentTask task = require(id);
+		AgentTask task = transitions.require(id);
 		List<AgentTaskConfirm> list = confirms.listByTask(id).stream()
 				.map(MapperRows.AgentTaskConfirmRow::toDomain)
 				.toList();
@@ -105,24 +118,27 @@ public class DefaultAgentTaskService implements AgentTaskService {
 		AgentTask task = draft(publisher, assignee, description, agentId);
 		tasks.insert(task.publisher(), task.assignee(), task.description(), task.status().storedValue(),
 				task.currentExecutor(), task.currentStep(), task.agentId());
-		Long id = requiredKey(tasks.lastInsertId(), "任务");
+		Long id = AgentTaskTransitions.requiredKey(tasks.lastInsertId(), "任务");
 		log.info("新建 agent 任务 #{}：{}", id, task.describe());
+		// 新发布也要调度：判断需求有没有歧义这一步在 agent 手上，不等下一个定时周期
+		dispatchAfterCommit(AgentTaskStatus.NEW);
 		return detail(id);
 	}
 
 	@Override
 	@Transactional
 	public Detail advance(Long id, String result) {
-		AgentTask task = require(id);
-		switch (task.status()) {
-			case NEW -> openFirstConfirmation(task);
+		AgentTask task = transitions.require(id);
+		AgentTaskStatus reached = switch (task.status()) {
 			case EXECUTING -> finishExecution(task, result);
 			case PENDING_ACCEPTANCE -> accept(task);
 			default -> throw new TaskConflictException(("当前状态「%s」没有可推进的事件 —— 能推进的只有"
-					+ "「新发布」（发起需求确认）、「执行中」（登记执行结果）与「待验收」（验收通过）；"
-					+ "三个「待确认」在等确认项的答复，终态不再流转。详情里的 actions 就是现在能做的事。")
+					+ "「执行中」（登记执行结果）与「待验收」（验收通过）；三个「待确认」在等确认项的答复，"
+					+ "「新发布」与三个「已确认」由 agent 任务执行处理（页面上没有按钮就是还没轮到人），"
+					+ "终态不再流转。详情里的 actions 就是现在能做的事。")
 					.formatted(task.status().label()));
-		}
+		};
+		dispatchAfterCommit(reached);
 		return detail(id);
 	}
 
@@ -133,11 +149,13 @@ public class DefaultAgentTaskService implements AgentTaskService {
 			throw new TaskInvalidException("答复不能为空 —— 空答复在库里与「还没答」（answer 为 NULL）"
 					+ "长得一样，而两者的处置完全不同：前者要推进状态，后者要继续等");
 		}
-		AgentTask task = require(id);
+		AgentTask task = transitions.require(id);
 		AgentTaskStatus status = task.status();
 		ConfirmType waiting = status.waitingConfirmation().orElseThrow(() -> new TaskConflictException(
 				("当前状态「%s」不在等确认项的答复 —— 能答复的只有「待确认需求」/「待确认计划」/「待授权」；"
-						+ "要推进请用 advance 那个动作。").formatted(status.label())));
+						+ "「执行中」与「待验收」要推进请用 advance 那个动作；"
+						+ "「新发布」与三个「已确认」由 agent 任务执行处理，人和 advance 都推不动它。")
+						.formatted(status.label())));
 		AgentTaskConfirm confirm = requireConfirm(id, confirmId);
 		if (confirm.type() != waiting || confirm.stepIndex() != task.currentStep()) {
 			throw new TaskConflictException(("这条确认项不属于任务当前这一步 —— 它问的是「%s」（第 %d 步），"
@@ -150,23 +168,23 @@ public class DefaultAgentTaskService implements AgentTaskService {
 					+ "而覆盖之后界面上只剩一个答案，没有任何痕迹说明它曾经是另一个。刷新后看到的就是当时的答复");
 		}
 
-		// 一步一跳的落点写成 switch 表达式，于是"到哪个状态"与"生成哪条确认项"在同一个分支里 ——
-		// 分开写的两份判据迟早会出现"等计划确认、却生成了授权确认"这种对不上的组合
+		// 一步一跳的落点写成 switch 表达式，于是"到哪个状态"与"谁接着做"在同一个分支里
+		// （三个落点都是"等 agent 动手"的状态，生成下一条确认项的是任务执行器 —— 它要按答复内容判断）
 		AgentTaskStatus nextStatus = switch (waiting) {
-			case REQUIREMENT -> enterConfirmation(task, AgentTaskStatus.PENDING_PLAN, ConfirmType.PLAN);
-			case PLAN -> enterConfirmation(task, AgentTaskStatus.PENDING_AUTHORIZATION, ConfirmType.AUTHORIZATION);
-			case AUTHORIZATION -> move(task, AgentTaskStatus.EXECUTING, task.currentStep() + 1,
-					AgentTask.agentRef(task.agentId()));
+			case REQUIREMENT -> transitions.enterAgent(task, AgentTaskStatus.CONFIRMED_REQUIREMENT);
+			case PLAN -> transitions.enterAgent(task, AgentTaskStatus.CONFIRMED_PLAN);
+			case AUTHORIZATION -> transitions.enterAgent(task, AgentTaskStatus.AUTHORIZED);
 		};
 		log.info("任务 #{} 的{}已答复（{}）：这次答复把它推到了「{}」", task.id(), waiting.label(), text.strip(),
 				nextStatus.label());
+		dispatchAfterCommit(nextStatus);
 		return detail(id);
 	}
 
 	@Override
 	@Transactional
 	public Detail cancel(Long id, String reason) {
-		AgentTask task = require(id);
+		AgentTask task = transitions.require(id);
 		if (reason == null || reason.isBlank()) {
 			throw new TaskInvalidException("取消原因必填 —— 一条没有原因的取消记录，事后只能靠回忆"
 					+ "（与「谁批的」同一条规矩：那一列空着等于没有这条记录）");
@@ -176,113 +194,77 @@ public class DefaultAgentTaskService implements AgentTaskService {
 		}
 		tasks.updateCancel(id, reason.strip());
 		// 步骤与执行人保持不动：它们回答"取消的那一刻球在谁手上"，而这是复盘时要看的东西
-		move(task, AgentTaskStatus.CANCELLED, task.currentStep(), task.currentExecutor());
+		transitions.move(task, AgentTaskStatus.CANCELLED, task.currentStep(), task.currentExecutor());
 		log.info("任务 #{} 已取消：{}", id, reason.strip());
+		dispatchAfterCommit(AgentTaskStatus.CANCELLED);
 		return detail(id);
 	}
 
-	// ------------------------------------------------------------------
-	//  状态链上的一段一段
-	// ------------------------------------------------------------------
-
-	/** 新发布 → 待确认需求：生成第 1 步的需求确认项，球交到发布人手上。 */
-	private void openFirstConfirmation(AgentTask task) {
-		// 步骤**不**递增：新发布与待确认需求都停在第 1 步，后者表示"第 1 步已经开始了"
-		move(task, AgentTaskStatus.PENDING_REQUIREMENT, task.currentStep(), task.publisher());
-		openConfirmation(task, ConfirmType.REQUIREMENT, task.currentStep());
-		log.info("任务 #{} 发起需求确认（第 {} 步）：现在等 {}", task.id(), task.currentStep(), task.publisher());
+	/**
+	 * 调度一次任务执行 —— <b>必须等这次写事务提交之后</b>。
+	 *
+	 * <h2>为什么不能就地调</h2>
+	 * 四个写动作都在事务里，而调度是<b>另一个线程</b>去查库的（见 {@code AgentTaskScheduler}）。
+	 * 就地调的话，那一刻这一行还没提交，另一个连接读不到它 ——
+	 * 实测（真后端、一次发布）：创建事务里的那次调度查到 0 条待处理任务，
+	 * 于是这次调度白跑一趟，任务要等到下一个定时周期（默认 10 分钟）才动。
+	 * <b>它的现象与"调度根本没接上"完全一样</b>，而两种原因的排查方向不同。
+	 *
+	 * <p>挂在 {@code afterCommit} 上之后，"记录更新即调度"这句话才真的成立。
+	 * 事务之外的调用方（没有活跃事务时）直接调 —— 那时没有"未提交"这回事。
+	 */
+	private void dispatchAfterCommit(AgentTaskStatus status) {
+		if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+			dispatch.onTaskUpdated(status);
+			return;
+		}
+		TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+			@Override
+			public void afterCommit() {
+				dispatch.onTaskUpdated(status);
+			}
+		});
 	}
 
+	// ------------------------------------------------------------------
+	//  状态链上"人做的那一段"
+	// ------------------------------------------------------------------
+
 	/** 执行中 → 待验收：登记执行结果（可空），球交回发布人。 */
-	private void finishExecution(AgentTask task, String result) {
-		int nextStep = task.currentStep() + 1;
-		move(task, AgentTaskStatus.PENDING_ACCEPTANCE, nextStep, task.publisher());
-		if (result != null && !result.isBlank()) {
-			tasks.updateResult(task.id(), result.strip());
-		}
+	private AgentTaskStatus finishExecution(AgentTask task, String result) {
+		AgentTaskStatus moved = transitions.move(task, AgentTaskStatus.PENDING_ACCEPTANCE,
+				task.currentStep() + 1, AgentTaskTransitions.executorFor(AgentTaskStatus.PENDING_ACCEPTANCE, task));
+		transitions.setResult(task, result);
 		// 没登记结果也能进验收：真实链路里"跑完了但没产出"是常态，
 		// 而把它挡在这里会让那条任务永远卡在执行中 —— 界面上表现为"它还在跑"，不报错
-		log.info("任务 #{} 执行结束（第 {} 步）：现在等 {} 验收{}", task.id(), nextStep, task.publisher(),
-				result == null || result.isBlank() ? "（未登记执行结果）" : "");
+		log.info("任务 #{} 执行结束（第 {} 步）：现在等 {} 验收{}", task.id(), task.currentStep() + 1,
+				task.publisher(), result == null || result.isBlank() ? "（未登记执行结果）" : "");
+		return moved;
 	}
 
 	/** 待验收 → 已完成：验收通过。完成后没有"当前执行人"—— 没有事件在谁手上了。 */
-	private void accept(AgentTask task) {
-		move(task, AgentTaskStatus.COMPLETED, task.currentStep() + 1, null);
+	private AgentTaskStatus accept(AgentTask task) {
+		AgentTaskStatus moved = transitions.move(task, AgentTaskStatus.COMPLETED, task.currentStep() + 1,
+				AgentTaskTransitions.executorFor(AgentTaskStatus.COMPLETED, task));
 		log.info("任务 #{} 验收通过：已完成", task.id());
-	}
-
-	/**
-	 * 答复之后进入下一个"待确认"：步骤 +1，生成那一步的确认项。
-	 *
-	 * <p>返回值就是 {@code next} —— 让调用点能把它写成 switch 表达式（见 {@link #answer}），
-	 * 从而"落点"只写一遍。
-	 */
-	private AgentTaskStatus enterConfirmation(AgentTask task, AgentTaskStatus next, ConfirmType type) {
-		int nextStep = task.currentStep() + 1;
-		move(task, next, nextStep, task.publisher());
-		openConfirmation(task, type, nextStep);
-		log.info("任务 #{} 进入「{}」（第 {} 步）：现在等 {}", task.id(), next.label(), nextStep, task.publisher());
-		return next;
-	}
-
-	/** 换状态、当前执行人与步骤（同一条 SQL，理由见 {@code AgentTaskMapper#updateProgress}）。返回值同 {@link #enterConfirmation}。 */
-	private AgentTaskStatus move(AgentTask task, AgentTaskStatus to, int step, String executor) {
-		if (tasks.updateProgress(task.id(), to.storedValue(), executor, step) != 1) {
-			throw new TaskInvalidException("任务不存在：#" + task.id());
-		}
-		return to;
-	}
-
-	private void openConfirmation(AgentTask task, ConfirmType type, int step) {
-		try {
-			confirms.insert(task.id(), step, type.storedValue(), defaultDescription(task, type),
-					ConfirmOptions.encode(defaultOptions(type)));
-			requiredKey(confirms.lastInsertId(), "确认项");
-		}
-		catch (DataAccessException e) {
-			// 唯一键（任务 + 步骤 + 类型）撞了：两条推进请求同时到了。
-			// 把它翻成 409 而不是 500 —— 这不是故障，是"别人刚推过同一条任务"
-			if (e instanceof DataIntegrityViolationException || hasDuplicateSqlState(e)) {
-				throw new TaskConflictException("这一步的确认项已经有人生成过了（同一条任务被同时推进了两次）——"
-						+ "刷新一次，看到的就是最新的那一条");
-			}
-			throw e;
-		}
-	}
-
-	/**
-	 * 三条确认事项的**缺省文案**（脚手架）。
-	 *
-	 * <p>需求那一条把任务描述原文带进去（它就是"要确认的那件事"）；计划与授权两条是占位，
-	 * 将来应由 Agent 按任务生成 —— 文案里写明占位，理由见类注释。
-	 */
-	private static String defaultDescription(AgentTask task, ConfirmType type) {
-		return switch (type) {
-			case REQUIREMENT -> "请确认任务需求：" + task.description();
-			case PLAN -> "请确认执行计划（脚手架缺省：计划正文待接入 Agent 按任务生成）";
-			case AUTHORIZATION -> "请确认授权范围（脚手架缺省：授权正文待接入 Agent 按任务生成）";
-		};
-	}
-
-	/** 三种确认各配一组按钮 —— 它们同时是"选项集"这一列的真实内容（JSON 数组）。 */
-	private static List<String> defaultOptions(ConfirmType type) {
-		return switch (type) {
-			case REQUIREMENT -> List.of("确认", "需要补充");
-			case PLAN -> List.of("同意", "不同意");
-			case AUTHORIZATION -> List.of("授权", "拒绝");
-		};
+		return moved;
 	}
 
 	/**
 	 * 现在能做的动作。它是"界面上该画哪些按钮"的唯一依据
 	 * （与 {@link #advance} / {@link #answer} / {@link #cancel} 允许的状态一一对应）。
+	 *
+	 * <p><b>「新发布」与三个「已确认」没有推进按钮</b>：那四格的下一步由任务执行器做，
+	 * 人点不动。给它们画一个"看起来能推进"的按钮比不画更坏 —— 用户会反复点，
+	 * 而每次都回一句"当前状态不允许"。
 	 */
 	private static List<Action> actionsOf(AgentTaskStatus status) {
 		return switch (status) {
-			case NEW -> List.of(new Action("advance", "发起需求确认"), new Action("cancel", "取消任务"));
+			case NEW -> List.of(new Action("cancel", "取消任务"));
 			case PENDING_REQUIREMENT, PENDING_PLAN, PENDING_AUTHORIZATION ->
 					List.of(new Action("answer", "答复确认项"), new Action("cancel", "取消任务"));
+			case CONFIRMED_REQUIREMENT, CONFIRMED_PLAN, AUTHORIZED ->
+					List.of(new Action("cancel", "取消任务"));
 			case EXECUTING -> List.of(new Action("advance", "登记执行结果"), new Action("cancel", "取消任务"));
 			case PENDING_ACCEPTANCE -> List.of(new Action("advance", "验收通过"), new Action("cancel", "取消任务"));
 			case COMPLETED, CANCELLED -> List.of();
@@ -310,17 +292,6 @@ public class DefaultAgentTaskService implements AgentTaskService {
 		}
 	}
 
-	private AgentTask require(Long id) {
-		if (id == null) {
-			throw new TaskInvalidException("缺少任务 id");
-		}
-		MapperRows.AgentTaskRow row = tasks.findById(id);
-		if (row == null) {
-			throw new TaskInvalidException("任务不存在：#" + id);
-		}
-		return row.toDomain();
-	}
-
 	/** 按 id 取确认项，并核对它属于这条任务（拿别的任务的 confirmId 来答会被这里挡下）。 */
 	private AgentTaskConfirm requireConfirm(Long taskId, Long confirmId) {
 		if (confirmId == null) {
@@ -331,40 +302,6 @@ public class DefaultAgentTaskService implements AgentTaskService {
 			throw new TaskInvalidException("确认项不存在或不属于这条任务：确认项 #" + confirmId + "、任务 #" + taskId);
 		}
 		return row.toDomain();
-	}
-
-	/**
-	 * 插入之后必须拿到新主键 —— 与 {@code DefaultPermissionService#requiredKey} 同一条判断
-	 * （拿不到的后果是"创建成功、返回的 id 是 null"，而不是这次失败）。
-	 */
-	private static Long requiredKey(Long id, String what) {
-		if (id == null) {
-			throw new IllegalStateException("插入" + what + "之后没有拿到自增主键 —— "
-					+ "SELECT LAST_INSERT_ID() 没有取到值（写法与实测的弯路见 AgentTaskMapper 的注释）。"
-					+ "这一行已经写进库里了，但调用方拿不到它的 id");
-		}
-		return id;
-	}
-
-	/**
-	 * 撞唯一键的判据，与 {@code DefaultPermissionService#hasDuplicateSqlState} 逐条相同：
-	 * Spring 的异常翻译接住标准 SQLState，底层 {@link SQLException} 接住 H2 的 23000 与 MySQL 的 1062
-	 * （这两个码不在 Spring 的"重复键"表里）。
-	 */
-	private static boolean hasDuplicateSqlState(Throwable root) {
-		for (Throwable t = root; t != null; t = t.getCause()) {
-			if (t instanceof SQLException sql) {
-				String state = sql.getSQLState();
-				if ("23505".equals(state) || "23000".equals(state) || sql.getErrorCode() == 23505
-						|| sql.getErrorCode() == 1062) {
-					return true;
-				}
-			}
-			if (t.getCause() == t) {
-				break;
-			}
-		}
-		return false;
 	}
 
 }

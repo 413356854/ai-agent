@@ -2968,7 +2968,20 @@ if (EXPECT_REFLECTION) {
   const boardText = await page.locator('.task-board').innerText()
   expect('卡片写出「发布人 → 任务人」与当前执行人',
     /张三 → 李四/.test(boardText) && /当前执行人/.test(boardText))
-  expect('待验收那条带着执行结果', /三条断言已补/.test(boardText))
+  expect('待验收那条带着执行结果', /已补上说明段落/.test(boardText))
+
+  // ---- 「执行中」那一列收**四个**状态：已确认需求 / 已确认计划 / 已授权 / 执行中 ----
+  //
+  // 它们对看板是同一件事：球在 agent 手上，人现在点不动。分成四列会让一眼看去
+  // 像是"有四件事在等我"，而其实一件都不在等。四个状态的差别靠各自的状态标签表达。
+  const executingColumn = page.locator('.task-column[data-column="executing"]')
+  const executingText = await executingColumn.innerText()
+  expect('★ 「执行中」列收四个状态，列头把它们都写出来',
+    ['已确认需求', '已确认计划', '已授权', '执行中'].every(label => executingText.includes(label)),
+    initialCounts.executing + ' 条')
+  expect('★ 那一列里的四张卡片各带自己的状态标签（同列靠标签区分）',
+    (await executingColumn.locator('.task-card').count()) === 4, initialCounts.executing + ' 条')
+
   // 「已取消」与「已完成」同列：那一条必须在**已完成**那一列里，且带着取消原因 ——
   // 两者唯一的区别就是状态标签与这条原因（结论与结局同列这件事的判据）
   const completedText = await page.locator('.task-column[data-column="completed"]').innerText()
@@ -2977,7 +2990,23 @@ if (EXPECT_REFLECTION) {
     // 同列另一条（验收通过的）也在：一列收两个状态，只放一条就看不出这件事
     && /已改成 CI_MOCK_PORT/.test(completedText), initialCounts.completed + ' 条')
 
-  // ---- 新发布 → 待确认需求：这一点要连起来看（卡片换列 + 确认项出现） ----
+  /**
+   * 显式推一轮 agent 那几格（真后端由定时任务驱动，见 web/mock/task-routes.mjs 文件头）。
+   *
+   * `?id=` 只推一条、`?steps=1` 每条最多推一格 —— 自检要看的正是"推到哪一格"，
+   * 一次推到底就看不出中间那几格了。
+   */
+  const runAgent = async query => {
+    const response = await page.request.post(`${URL}/api/agent-tasks/__run-agent${query ?? ''}`)
+    const body = await response.json()
+    // ⚠️ 两字按钮在 antd 6 里渲染成「刷 新」（汉字之间插一个空格）——
+    // 写成 `getByRole('button', { name: '刷新', exact: true })` 一直等不到，
+    // 而失败信息（waiting for locator … 超时）看起来像"这个按钮不存在"（同 [8.6] 的「角 色」）
+    await page.locator('.task-panel button', { hasText: /刷\s*新/ }).first().click()
+    return body
+  }
+
+  // ---- 新发布：没有推进按钮（下一步是 agent 做的）→ 推一格进「执行中」 ----
   const newColumn = page.locator('.task-column[data-column="new"]')
   await newColumn.locator('.task-card').first().click()
   const detail = page.locator('.ant-modal:visible', { hasText: '确认项' })
@@ -2986,30 +3015,69 @@ if (EXPECT_REFLECTION) {
 
   expect('打开「新发布」的任务：说清它还没有确认项（它不等于「待确认需求」）',
     /还没有确认项/.test(await detail.innerText()))
-  await detail.getByRole('button', { name: '发起需求确认', exact: true }).click()
-  await waitFor(async () => (await page.locator('.task-panel').innerText()).includes('已推进到'), 8000)
+  // ★ 这一条是这一版的行为变化：新发布那一格由 agent 判需求，人点不动 ——
+  // 画一个"看起来能推进"的按钮比不画更坏（用户会反复点，每次都回一句状态不允许）
+  expect('★ 「新发布」没有「发起需求确认」按钮，并写明这一步由 agent 任务执行做',
+    (await detail.getByRole('button', { name: '发起需求确认', exact: true }).count()) === 0
+    && /这一步由 agent 任务执行做/.test(await detail.innerText()))
+  await detail.locator('.ant-modal-footer .ant-btn').click()
+  await waitFor(async () => (await page.locator('.ant-modal:visible').count()) === 0, 5000)
 
-  const afterAdvance = await taskColumnCounts()
-  expect('★ 点「发起需求确认」之后：卡片从「新任务」移到了「待处理」',
-    afterAdvance.new === initialCounts.new - 1 && afterAdvance.pending === initialCounts.pending + 1,
-    `new ${initialCounts.new}→${afterAdvance.new} / pending ${initialCounts.pending}→${afterAdvance.pending}`)
-  expect('反馈写的是推进到哪一步（这句话来自后端）',
-    /已推进到「待确认需求」/.test(await page.locator('.task-panel').innerText()))
+  const round1 = await runAgent(`?id=${openedId}&steps=1`)
+  const afterFirstStep = await taskColumnCounts()
+  expect('★ agent 推一格：卡片从「新任务」移进「执行中」（已确认需求）',
+    afterFirstStep.new === initialCounts.new - 1 && afterFirstStep.executing === initialCounts.executing + 1,
+    `moved=${JSON.stringify(round1.moved)} / new ${initialCounts.new}→${afterFirstStep.new}`
+    + ` / executing ${initialCounts.executing}→${afterFirstStep.executing}`)
+  expect('（准备）这一次推的是「新发布 → 已确认需求」',
+    round1.moved.length === 1 && round1.moved[0].from === 'NEW'
+    && round1.moved[0].to === 'CONFIRMED_REQUIREMENT', JSON.stringify(round1.moved))
 
-  // ---- 答复确认项：答完自动推进到下一步、下一条确认项已经生成 ----
-  await waitFor(async () => /待答复/.test(await detail.innerText()), 8000)
-  expect('详情里出现第 1 条需求确认项（带着「第 1 步」与选项集）',
-    /第 1 步/.test(await detail.innerText()) && /需求确认/.test(await detail.innerText()))
-  // ⚠️ 两字按钮在 antd 6 里渲染成「确 认」（汉字之间插一个空格）——
-  // 写成 /^确认$/ 时连真的按钮也匹配不上，断言会假绿（同 [8.6] 的「角 色」）
-  await detail.locator('button', { hasText: /^确\s*认$/ }).first().click()
-  // ⚠️ 等的时候要把**两处都等上**：写操作的回执（面板上的反馈）先到，详情是紧接着重新拉的 ——
-  // 只看反馈就往下走的话，读详情时会读到回复前的那一份（实测闪断过一次）
-  const advanced = await waitFor(async () =>
-    /已答复「确认」/.test(await page.locator('.task-panel').innerText())
-    && /第 2 步/.test(await detail.innerText()), 8000)
-  expect('★ 答复第 1 步之后自动推进：第 2 步的计划确认项已经生成',
-    advanced && /计划确认/.test(await detail.innerText()))
+  // ---- 再推一格：拆出 5 个任务点（≥ 阈值）→ 待确认计划，并生成计划确认项 ----
+  await runAgent(`?id=${openedId}`)
+  const afterPlan = await taskColumnCounts()
+  expect('★ agent 再推一格：任务点 ≥ 5 就转到「待处理」等计划确认',
+    afterPlan.executing === afterFirstStep.executing - 1 && afterPlan.pending === initialCounts.pending + 1,
+    `executing ${afterFirstStep.executing}→${afterPlan.executing} / pending ${initialCounts.pending}→${afterPlan.pending}`)
+  const planned = await (await page.request.get(`${URL}/api/agent-tasks/${openedId}`)).json()
+  expect('★ 计划确认项的正文里带着拆出来的任务点（人批的就是这份清单）',
+    planned.task.status === 'PENDING_PLAN'
+    && planned.confirms.some(c => c.type === 'PLAN' && /拆出来的任务点/.test(c.description ?? '')
+      && /5\. /.test(c.description ?? '')),
+    planned.confirms.map(c => c.type).join(' / '))
+
+  // ---- 答复确认项：答完球交给 agent（答复本身不再生成下一条确认项） ----
+  await page.locator(`.task-column[data-column="pending"] .task-card[data-task-id="${openedId}"]`).click()
+  const planDetail = page.locator('.ant-modal:visible', { hasText: '确认项' })
+  await waitFor(async () => /待答复/.test(await planDetail.innerText()), 8000)
+  expect('详情里出现第 3 步的计划确认项',
+    /第 3 步/.test(await planDetail.innerText()) && /计划确认/.test(await planDetail.innerText()))
+  // ⚠️ 两字按钮在 antd 6 里渲染成「同 意」（汉字之间插一个空格）——
+  // 写成 /^同意$/ 时连真的按钮也匹配不上，断言会假绿（同 [8.6] 的「角 色」）
+  await planDetail.locator('button', { hasText: /^同\s*意$/ }).first().click()
+  const answered = await waitFor(async () =>
+    /已答复「同意」/.test(await page.locator('.task-panel').innerText())
+    && /已确认计划/.test(await planDetail.innerText()), 8000)
+  const afterAnswer = await (await page.request.get(`${URL}/api/agent-tasks/${openedId}`)).json()
+  expect('★ 答复计划之后落到「已确认计划」，且答复本身不生成下一条确认项（下一条由 agent 那一步生成）',
+    answered && afterAnswer.task.status === 'CONFIRMED_PLAN'
+    && afterAnswer.confirms.every(c => c.answered),
+    `confirms=${afterAnswer.confirms.length} 条，已答复 ${afterAnswer.confirms.filter(c => c.answered).length} 条`)
+
+  // ---- 再推一格：问授权 → 待授权，并生成授权确认项（正文带这次要做的事） ----
+  //
+  // ⚠️ 外部推完要**重开**详情：刷新按钮只重拉看板（useTasks 的 reload），
+  // 开着的详情还是推之前那一份 —— 直接点「授权」会一直等不到那个按钮
+  await planDetail.locator('.ant-modal-footer .ant-btn').click()
+  await waitFor(async () => (await page.locator('.ant-modal:visible').count()) === 0, 5000)
+  await runAgent(`?id=${openedId}`)
+  const asked = await (await page.request.get(`${URL}/api/agent-tasks/${openedId}`)).json()
+  expect('★ agent 再推一格：转到「待授权」，授权确认项的正文里带着这次要做的事',
+    asked.task.status === 'PENDING_AUTHORIZATION'
+    && asked.confirms.some(c => c.type === 'AUTHORIZATION' && /这次要做的事/.test(c.description ?? '')),
+    asked.task.statusLabel)
+  await page.locator(`.task-column[data-column="pending"] .task-card[data-task-id="${openedId}"]`).click()
+  await waitFor(async () => /待答复/.test(await planDetail.innerText()), 8000)
 
   // ---- 409：别人先答过同一条确认项（两个人在看同一张看板的常态） ----
   //
@@ -3019,15 +3087,15 @@ if (EXPECT_REFLECTION) {
   const pendingConfirm = current.confirms.find(c => !c.answered)
   const otherAnswer = await page.request.post(
     `${URL}/api/agent-tasks/${openedId}/confirms/${pendingConfirm.id}/answer`,
-    { data: { answer: '同意' } })
+    { data: { answer: '授权' } })
   expect('（准备）脚本替另一个人先答掉这条确认项', otherAnswer.ok(), `HTTP ${otherAnswer.status()}`)
 
-  await detail.locator('button', { hasText: /^同\s*意$/ }).first().click()
+  await planDetail.locator('button', { hasText: /^授\s*权$/ }).first().click()
   const conflictShown = await waitFor(async () =>
     /状态已经变了/.test(await page.locator('.task-panel').innerText()), 8000)
   expect('★ 别人已经答过之后，界面上那次点答被说成「状态已经变了」（409 与 400 分开处理）',
     conflictShown)
-  await detail.locator('.ant-modal-footer .ant-btn').click()
+  await planDetail.locator('.ant-modal-footer .ant-btn').click()
   await waitFor(async () => (await page.locator('.ant-modal:visible').count()) === 0, 5000)
 
   // ---- 发布一条新任务（界面走一遍表单） ----
@@ -3044,8 +3112,8 @@ if (EXPECT_REFLECTION) {
     /已发布任务/.test(await page.locator('.task-panel').innerText()), 8000)
   const afterCreate = await taskColumnCounts()
   expect('★ 界面上发布任务：「新任务」列 +1，反馈说明它落在哪一列',
-    createdOk && afterCreate.new === afterAdvance.new + 1,
-    `new ${afterAdvance.new}→${afterCreate.new}`)
+    createdOk && afterCreate.new === afterPlan.new + 1,
+    `new ${afterPlan.new}→${afterCreate.new}`)
 
   // ---- 取消：原因必填，取消后卡片进「已完成」列（与已完成同列）且原因显示在卡片上 ----
   await page.locator('.task-column[data-column="new"] .task-card', { hasText: '自检造的一条任务' }).click()

@@ -1,6 +1,7 @@
 package ai.agent;
 
 import ai.agent.config.AgentApprovalProperties;
+import ai.agent.config.AgentTaskProperties;
 import ai.agent.config.ChatCallProperties;
 import ai.agent.config.ReviewProperties;
 import ai.agent.config.WorkspaceFileProperties;
@@ -10,6 +11,7 @@ import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * 为什么要显式 {@code @EnableConfigurationProperties} 而不是给配置类加 {@code @Component}：
@@ -45,11 +47,23 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
  * 放在这里而不是各 mapper 上逐个标 {@code @Mapper}，是为了让"这一层有哪些 mapper"
  * 在一个地方看得全（新增一个 mapper 忘了标注，症状是启动时"找不到 bean"，
  * 而那种错看起来像包扫描没生效）。
+ *
+ * <p>{@code @EnableScheduling} 在这里而不是某个配置类上：全项目只有
+ * {@code AgentTaskScheduler} 一个定时任务，而 {@code @Scheduled} 不生效时
+ * <b>不报错</b>（只是永远不触发）—— 让"这个应用有定时任务"这件事只出现在一个地方，
+ * 排查"它为什么不响"时才有一个确定的入口。
+ *
+ * <p>{@link AgentTaskProperties}（{@code ai.agent.task}）是 agent 任务执行的配置：
+ * 触发周期、一轮处理几条、几个任务点要人确认计划、执行时拿哪一档权限。
+ * 四个值都必须写在配置里（record 没有默认值）—— 少一个会在启动时报出键名，
+ * 而不是悄悄用一个我们挑的默认值跑起来。
  */
 @SpringBootApplication
 @MapperScan("ai.agent.mapper")
+@EnableScheduling
 @EnableConfigurationProperties({ ChatCallProperties.class, RagProperties.class, AgentApprovalProperties.class,
-		ReviewProperties.class, WorkspaceProperties.class, WorkspaceFileProperties.class })
+		ReviewProperties.class, WorkspaceProperties.class, WorkspaceFileProperties.class,
+		AgentTaskProperties.class })
 public class AiAgentApplication {
 
 	public static void main(String[] args) {
