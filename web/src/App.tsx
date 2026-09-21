@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Empty, Flex, Typography } from 'antd'
 import { AgentPanel } from './components/AgentPanel'
+import { AgentTaskPanel } from './components/AgentTaskPanel'
 import { AlertPanel } from './components/AlertPanel'
-import { AppManagementPanel } from './components/AppManagementPanel'
 import { AppSidebar } from './components/AppSidebar'
 import { Composer } from './components/Composer'
 import { CostPanel } from './components/CostPanel'
@@ -12,6 +12,7 @@ import { PromptPanel } from './components/PromptPanel'
 import { RagPanel } from './components/RagPanel'
 import { StructuredResultCard } from './components/StructuredResultCard'
 import { ThreadBudgetPanel } from './components/ThreadBudgetPanel'
+import { UserPanel } from './components/UserPanel'
 import { useAgent } from './hooks/useAgent'
 import { useAlerts } from './hooks/useAlerts'
 import { useChatStream } from './hooks/useChatStream'
@@ -20,6 +21,7 @@ import { usePermissions } from './hooks/usePermissions'
 import { usePrompt } from './hooks/usePrompt'
 import { useRagDiag } from './hooks/useRagDiag'
 import { useStructuredChat } from './hooks/useStructuredChat'
+import { useTasks } from './hooks/useTasks'
 import { useThreadDiag } from './hooks/useThreadDiag'
 import { sectionOf } from './nav'
 import type { Mode } from './nav'
@@ -45,12 +47,16 @@ import type { Mode } from './nav'
  * 这一点决定了它的交互必须比别的页更谨慎：存与生效分成两次，回滚永远可见。
  * 第八个（告警与灰度）回答的是"**谁被通知**"：前面七个面板都在等人打开页面看，
  * 只有它会在没人看的时候自己出现、自己消失。
- * 第九个（应用管理 · 应用清单）换了一层：前面八个都是"跑一次看看"，它管的是"以后每次调用按什么配置走"。
- * 第十个（应用管理 · 权限管理）管的是这一层里**与人有关的那一半**：
- * 谁可以用、能用哪几把工具、能在哪些目录下干活。它是这一区唯一有写端点的一页，
- * 所以它的返回体里刻意**没有**口令（那一列只以散列存在，响应里根本没有那个键）。
+ * 第九个（应用管理 · 用户管理）与第十个（应用管理 · 权限管理）换了一层：
+ * 前面八个都是"跑一次看看"，这两页管的是"以后每次调用按什么配置走"，而且是这一层里**与人有关的那一半**：
+ * 谁可以用（账号 / 口令 / 启停）、能用哪几把工具、能在哪些目录下干活、谁属于哪个角色。
+ * 它们是应用管理区里仅有的两页写端点，而账号的返回体里刻意**没有**口令
+ * （那一列只以散列存在，响应里根本没有那个键）。
+ * 第十一个（应用管理 · agent任务）是这一区里唯一**不配东西**的一页：
+ * 它是派给 Agent 的活在人之间怎么流转（发布 / 确认 / 执行 / 验收），
+ * 所以它画的是卡片看板而不是配置表 —— 一张卡片停在哪一列，就等于现在等谁。
  *
- * 九个 hook 都挂在 App 上（而不是按视图条件挂载）：切换视图时对话记录和实验数据不会被清空，
+ * 十个 hook 都挂在 App 上（而不是按视图条件挂载）：切换视图时对话记录和实验数据不会被清空，
  * 来回切两次不会丢掉刚才的结果 —— 这也是把状态放在这一层的理由。
  * **Agent 那一页尤其需要这样**：一次任务会真的调模型花钱、要等十几秒，
  * 切走再切回来就重跑一遍（再花一次钱）的代价太大。
@@ -78,10 +84,13 @@ export default function App() {
   // 第八个：进面板只拉三样**只读**的（判据 / 当前状态 / 灰度）。
   // 「跑一轮评估」要点按钮 —— 它会写库，自动跑会让'打开这一页看看'本身改变告警状态
   const alerts = useAlerts(mode === 'alerts')
-  // 第九个（权限管理）：进面板拉一次全量（账号 + 角色 + 可分配工具）。
-  // 同样不轮询 —— 这一页的数据只被本页面自己改，而每次写完之后 hook 会自己重拉一次
-  const permissions = usePermissions(mode === 'permissions')
-  // 应用清单（appRegistry）没有 hook：那一页是静态的聚合清单，见 AppManagementPanel 的文件头
+  // 第九个（用户管理 + 权限管理）：进面板拉一次全量（账号 + 角色 + 可分配工具）。
+  // 同样不轮询 —— 这一页的数据只被这一区自己改，而每次写完之后 hook 会自己重拉一次。
+  // 两个页面共用一个 hook（账号与角色本来就是一次取回的一份快照），所以两边的 active 都要算上
+  const permissions = usePermissions(mode === 'users' || mode === 'permissions')
+  // 第十个（agent任务）：进面板拉一次看板。写操作（发布 / 推进 / 答复 / 取消）之后
+  // hook 会自己把看板与打开着的那条详情一起重拉 —— 一次写会同时改这两处的形状
+  const tasks = useTasks(mode === 'tasks')
 
   const listRef = useRef<HTMLElement>(null)
 
@@ -89,7 +98,8 @@ export default function App() {
   // 诊断/只读面板没有这两件事（面板自己滚、没有空状态），所以这里不参与，免得白白触发一次 effect；
   // 它们同时也都不显示页头那块 conversationId + 「新会话」—— 那两样属于对话状态。
   const isDiagnostic = mode === 'threads' || mode === 'rag' || mode === 'agent' || mode === 'cost'
-    || mode === 'prompt' || mode === 'alerts' || mode === 'appRegistry' || mode === 'permissions'
+    || mode === 'prompt' || mode === 'alerts' || mode === 'users' || mode === 'permissions'
+    || mode === 'tasks'
   const activeCount = mode === 'stream' ? stream.messages.length : structured.turns.length
   const busy = mode === 'stream' ? stream.streaming : structured.loading
   const conversationId = mode === 'structured' ? structured.conversationId : stream.conversationId
@@ -147,10 +157,12 @@ export default function App() {
           )}
         </header>
 
-        {mode === 'appRegistry' ? (
-          <AppManagementPanel />
+        {mode === 'users' ? (
+          <UserPanel permissions={permissions} />
         ) : mode === 'permissions' ? (
           <PermissionPanel permissions={permissions} />
+        ) : mode === 'tasks' ? (
+          <AgentTaskPanel tasks={tasks} />
         ) : mode === 'threads' ? (
           // 面板自己带滚动容器：诊断内容比对话长得多，而且没有"新消息贴底"这个语义
           <ThreadBudgetPanel diag={diag} />

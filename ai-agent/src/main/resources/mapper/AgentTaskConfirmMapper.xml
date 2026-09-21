@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  agent_task_confirm 表的 SQL。
+
+  ⚠️ option_set 这一列在库里是 TEXT 存的 JSON 数组，这里**原样进出**，
+  编解码都在 ai.agent.entity.agent.task.ConfirmOptions —— SQL 里不拼 JSON。
+  在 SQL 里拼的写法会让"数组里有个引号"变成一次解析错误，
+  而那条错误在读的时候才出现（写入时看起来一切正常）。
+
+  ⚠️ answer 的条件更新（`answer IS NULL`）是并发保护，理由见 AgentTaskConfirmMapper#answer 的注释。
+-->
+<mapper namespace="ai.agent.mapper.AgentTaskConfirmMapper">
+
+	<resultMap id="agentTaskConfirmRow" type="ai.agent.mapper.MapperRows$AgentTaskConfirmRow">
+		<constructor>
+			<idArg column="id" javaType="java.lang.Long"/>
+			<arg column="task_id" javaType="java.lang.Long"/>
+			<arg column="step_index" javaType="java.lang.Integer"/>
+			<arg column="confirm_type" javaType="java.lang.String"/>
+			<arg column="description" javaType="java.lang.String"/>
+			<!-- 选项集与答复都保持原始字符串：解析成 List / 枚举在 toDomain() 里（理由见文件头） -->
+			<arg column="option_set" javaType="java.lang.String"/>
+			<arg column="answer" javaType="java.lang.String"/>
+			<arg column="created_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="updated_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+		</constructor>
+	</resultMap>
+
+	<sql id="confirmColumns">
+		id, task_id, step_index, confirm_type, description, option_set, answer, created_at, updated_at
+	</sql>
+
+	<insert id="insert">
+		INSERT INTO agent_task_confirm (task_id, step_index, confirm_type, description, option_set)
+		VALUES (#{taskId}, #{stepIndex}, #{confirmType}, #{description}, #{optionSet})
+	</insert>
+
+	<select id="lastInsertId" resultType="java.lang.Long">
+		SELECT LAST_INSERT_ID()
+	</select>
+
+	<select id="findById" resultMap="agentTaskConfirmRow">
+		SELECT <include refid="confirmColumns"/> FROM agent_task_confirm WHERE id = #{id}
+	</select>
+
+	<!-- 详情页从上往下就是流转顺序，所以按步骤排（同一步骤理论上只有一条，id 兜底） -->
+	<select id="listByTask" resultMap="agentTaskConfirmRow">
+		SELECT <include refid="confirmColumns"/>
+		  FROM agent_task_confirm
+		 WHERE task_id = #{taskId}
+		 ORDER BY step_index, id
+	</select>
+
+	<update id="answer">
+		UPDATE agent_task_confirm SET answer = #{answer} WHERE id = #{id} AND answer IS NULL
+	</update>
+
+</mapper>

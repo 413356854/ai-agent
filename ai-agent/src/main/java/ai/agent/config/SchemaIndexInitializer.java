@@ -75,7 +75,11 @@ public class SchemaIndexInitializer implements InitializingBean {
 			new Definition("idx_agent_tool_approval_status", "agent_tool_approval (status, requested_at)"),
 			new Definition("idx_agent_tool_approval_run", "agent_tool_approval (run_id, requested_at)"),
 			// retrieval_hit：按文档回溯"这个块被哪几次检索召回过"
-			new Definition("idx_retrieval_hit_document", "retrieval_hit (document_id)"));
+			new Definition("idx_retrieval_hit_document", "retrieval_hit (document_id)"),
+			// agent_task：看板按列（状态）取全量、列内最近变更在前
+			new Definition("idx_agent_task_status", "agent_task (status, updated_at)"),
+			// agent_task_confirm：任务详情按任务取它的确认项，按步骤排
+			new Definition("idx_agent_task_confirm_task", "agent_task_confirm (task_id, step_index)"));
 
 	private final DataSource dataSource;
 

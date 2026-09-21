@@ -13,10 +13,14 @@ import java.util.Optional;
  * 权限管理的读写契约。
  *
  * <h2>为什么写操作是"整体替换"而不是逐条增删</h2>
- * {@link #setRoleTools} 与 {@link #setUserRoles} 收的是一份<b>完整的清单</b>。
+ * {@link #setRoleTools}、{@link #setUserRoles} 与 {@link #setRoleUsers} 收的是一份<b>完整的清单</b>。
  * 界面上那些复选框提交的本来就是一整份，而让调用方自己算 diff 的写法有个固定的坏法：
  * diff 少算一条时它是"没撤掉一个授权"，页面看起来与撤干净了一模一样。
  * 整体替换把这件事变成一次事务里的"先清后写"，没有中间态可看。
+ *
+ * <p>{@link #setUserRoles}（账号侧）与 {@link #setRoleUsers}（角色侧）写的是同一张
+ * {@code agent_user_role} 表的两侧，两侧都是整体替换 —— 谁先谁后没有区别，
+ * 因为两边提交的都是"这份关系最终应该是什么样"。
  *
  * <h2>为什么没有 deleteAccount</h2>
  * 账号只停用不删除（见 {@code AccountMapper} 的注释）。方法不存在，就没有"顺手删一下"的机会。
@@ -57,6 +61,9 @@ public interface PermissionService {
 	void setRoleDirectories(Long roleId, List<RoleDirectory> directories);
 
 	void setUserRoles(Long userId, List<Long> roleIds);
+
+	/** 替换角色的成员账号（整份替换，与 {@link #setUserRoles} 是同一张表的两侧）。 */
+	void setRoleUsers(Long roleId, List<Long> userIds);
 
 	/** 一次核对："这个人能不能在这把工具上、在这个目录里干活"。 */
 	Verdict verify(String accountName, String toolName, String workspaceDir);

@@ -7,6 +7,11 @@ import ai.agent.entity.agent.permission.PermissionAccess;
 import ai.agent.entity.agent.permission.Role;
 import ai.agent.entity.agent.permission.RoleDirectory;
 import ai.agent.entity.agent.permission.RoleTool;
+import ai.agent.entity.agent.task.AgentTask;
+import ai.agent.entity.agent.task.AgentTaskConfirm;
+import ai.agent.entity.agent.task.AgentTaskStatus;
+import ai.agent.entity.agent.task.ConfirmOptions;
+import ai.agent.entity.agent.task.ConfirmType;
 import ai.agent.entity.alert.AlertEvent;
 import ai.agent.entity.prompt.PromptVersion;
 import ai.agent.entity.tool.RetrievalTrace;
@@ -305,6 +310,45 @@ public final class MapperRows {
 	 * 而那些名字是唯一需要的东西 —— 按 id 逐个回查是典型的 N+1。
 	 */
 	public record AccountRoleRow(Long userId, Long roleId, String roleName) {
+	}
+
+	// ==================================================================
+	//  agent 任务（agent_task / agent_task_confirm）
+	// ==================================================================
+
+	/**
+	 * {@code agent_task} 的一行。
+	 *
+	 * <p>{@code status} 保持字符串：宽松解析（认不出落 NEW）在
+	 * {@link AgentTaskStatus#parse} 里，理由见那个方法。
+	 * {@code cancel_reason} 与 {@code result} 为 null 是**正常状态**（未取消 / 未执行完），
+	 * 不编默认值 —— 编一个会让"还没有结果"与"结果就是那个默认值"变成同一件事。
+	 */
+	public record AgentTaskRow(Long id, String publisher, String assignee, String description, String status,
+			String currentExecutor, Integer currentStep, Long agentId, String result, String cancelReason,
+			Instant createdAt, Instant updatedAt) {
+
+		public AgentTask toDomain() {
+			return new AgentTask(id, publisher, assignee, description, AgentTaskStatus.parse(status), currentExecutor,
+					nz(currentStep), agentId, result, cancelReason, createdAt, updatedAt);
+		}
+	}
+
+	/**
+	 * {@code agent_task_confirm} 的一行。
+	 *
+	 * <p>{@code option_set} 是 JSON 数组的原文、{@code confirm_type} 是库里的类型名 ——
+	 * 两者的解析都放在 {@link #toDomain()} 里，解码规则各只有一处
+	 * （{@link ConfirmOptions#decode} / {@link ConfirmType#parse}）。
+	 * {@code answer} 为 null 是**待答复**这个状态本身（不是"没记下来"），见 {@link AgentTaskConfirm}。
+	 */
+	public record AgentTaskConfirmRow(Long id, Long taskId, Integer stepIndex, String confirmType,
+			String description, String optionSet, String answer, Instant createdAt, Instant updatedAt) {
+
+		public AgentTaskConfirm toDomain() {
+			return new AgentTaskConfirm(id, taskId, nz(stepIndex), ConfirmType.parse(confirmType), description,
+					ConfirmOptions.decode(optionSet), answer, createdAt, updatedAt);
+		}
 	}
 
 	// ==================================================================

@@ -55,6 +55,15 @@ public class DefaultPermissionService implements PermissionService {
 
 	private static final Logger log = LoggerFactory.getLogger(DefaultPermissionService.class);
 
+	/**
+	 * {@code agent_user_role.granted_by} 的取值。
+	 *
+	 * <p>账号侧与角色侧写的是同一张表，而 {@code granted_by} 记的是"这次授权是谁给的" ——
+	 * 从哪个端点写进来不改变这个答案，所以两侧共用同一个值
+	 * （另一处取值在 {@code PermissionBootstrap} 的启动引导里）。
+	 */
+	private static final String GRANTED_BY = "permission-api";
+
 	private final AccountMapper accountMapper;
 
 	private final RoleMapper roleMapper;
@@ -302,9 +311,38 @@ public class DefaultPermissionService implements PermissionService {
 		}
 		userRoleMapper.deleteAllOfUser(userId);
 		for (Long roleId : wanted) {
-			userRoleMapper.insert(userId, roleId, "permission-api");
+			userRoleMapper.insert(userId, roleId, GRANTED_BY);
 		}
 		log.info("账号 #{} 的角色已替换为 {} 个：{}", userId, wanted.size(), wanted);
+	}
+
+	/**
+	 * 替换角色的成员账号 —— {@link #setUserRoles} 的另一侧，写的是同一张 {@code agent_user_role}。
+	 *
+	 * <p><b>停用的账号允许挂进角色</b>：停用即无权限那条判据只在解析期生效
+	 * （{@code UserPermissions} 那一处），写入口再判一次就是第二份判据 ——
+	 * 而它的形态是"停用期间配好的角色，重新启用之后莫名其妙没配上"。
+	 */
+	@Override
+	@Transactional
+	public void setRoleUsers(Long roleId, List<Long> userIds) {
+		requireRole(roleId);
+		List<Long> wanted = userIds == null ? List.of()
+				: userIds.stream().filter(Objects::nonNull).distinct().toList();
+		if (!wanted.isEmpty()) {
+			List<Account> found = store.findAccounts(wanted);
+			if (found.size() != wanted.size()) {
+				List<Long> missing = new ArrayList<>(wanted);
+				found.forEach(account -> missing.remove(account.id()));
+				throw new PermissionInvalidException("这些账号不存在：" + missing + "（可用的是 "
+						+ usernames() + "）");
+			}
+		}
+		userRoleMapper.deleteAllOfRole(roleId);
+		for (Long userId : wanted) {
+			userRoleMapper.insert(userId, roleId, GRANTED_BY);
+		}
+		log.info("角色 #{} 的成员已替换为 {} 个：{}", roleId, wanted.size(), wanted);
 	}
 
 	// ------------------------------------------------------------------

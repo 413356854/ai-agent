@@ -4,8 +4,8 @@
  * ---------------------------------------------------------------------------
  * 与 prompt-routes / alert-routes 同一条纪律：**有写端点，就必须有 __reset**
  * ---------------------------------------------------------------------------
- * 这一组有七个写端点（建账号 / 改账号 / 改口令 / 挂角色 / 建角色 / 改角色 / 删角色 /
- * 配工具 / 配目录），界面自检要验的正是"点一下之后状态真的变了"。
+ * 这一组有十个写端点（建账号 / 改账号 / 改口令 / 账号侧挂角色 / 建角色 / 改角色 / 删角色 /
+ * 配工具 / 配目录 / 角色侧设成员），界面自检要验的正是"点一下之后状态真的变了"。
  * 所以状态是**进程内可变**的，并且必须提供 `POST /api/permissions/__reset` ——
  * 否则自检跑第二遍时会继承第一遍改出来的账号与角色
  * （与 prompt-routes 的 `__reset`、HITL 的 `__reset-approval` 是同一条经验）。
@@ -306,7 +306,7 @@ export function handlePermissionRoutes(req, res, url, json) {
     return true
   }
 
-  const roleMatch = pathname.match(/^\/api\/permissions\/roles\/(\d+)(\/tools|\/directories)?$/)
+  const roleMatch = pathname.match(/^\/api\/permissions\/roles\/(\d+)(\/tools|\/directories|\/users)?$/)
   if (roleMatch) {
     const id = Number(roleMatch[1])
     const sub = roleMatch[2]
@@ -341,6 +341,29 @@ export function handlePermissionRoutes(req, res, url, json) {
         }
         role.tools = [...new Set(wanted)].map(toolName => ({ toolName, note: '' }))
         json(res, { ok: true, roleId: id, tools: role.tools.map(t => t.toolName) })
+      })
+      return true
+    }
+    if (req.method === 'PUT' && sub === '/users') {
+      readBody(req, res, json, b => {
+        const wanted = Array.isArray(b.userIds) ? [...new Set(b.userIds)] : []
+        // 与真后端同一条判据：认不出的账号 id 当场 400，且**报错里带可用账号清单**
+        const missing = wanted.filter(uid => !state.users.some(u => u.id === uid))
+        if (missing.length > 0) {
+          return json(res, {
+            ok: false,
+            error: `这些账号不存在：${JSON.stringify(missing)}（可用的是 ${state.users.map(u => u.name).join(', ')}）`,
+          }, 400)
+        }
+        // 整份替换：先从每个账号上摘掉这个角色，再按 ids 挂上（顺序不能反）
+        state.users.forEach(u => { u.roles = u.roles.filter(n => n !== role.name) })
+        state.users.filter(u => wanted.includes(u.id)).forEach(u => { u.roles.push(role.name) })
+        // 回执**包含停用账号**：成员关系本身与"停用即无权限"（解析期判据）是两件事
+        json(res, {
+          ok: true,
+          roleId: id,
+          accounts: state.users.filter(u => u.roles.includes(role.name)).map(u => u.name),
+        })
       })
       return true
     }

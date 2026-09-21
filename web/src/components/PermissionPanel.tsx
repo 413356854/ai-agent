@@ -1,34 +1,37 @@
 import {
-  Alert, Button, Card, Checkbox, Empty, Flex, Input, Modal, Select, Space, Spin, Switch, Table, Tag, Typography,
+  Alert, Button, Card, Checkbox, Empty, Flex, Input, Modal, Select, Space, Spin, Table, Tag, Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useState } from 'react'
 import type { PermissionRole, PermissionUser } from '../api/permissions'
 import type { UsePermissionsResult } from '../hooks/usePermissions'
+import { PermissionFeedback } from './PermissionNotice'
 
 const { Text, Paragraph } = Typography
 
 /**
- * 应用管理区 · 权限管理（用户 / 角色 / 角色能调哪些工具 / 能在哪些目录下干活）。
+ * 应用管理区 · 权限管理（角色：能调哪些工具 / 能在哪些目录下干活 / 有哪些成员）。
  *
- * <h2>这一页要回答的四个问题，四张卡各答一个</h2>
+ * <h2>这一页要回答的两个问题</h2>
  * <ol>
- *   <li><b>有谁</b> —— 账号表（角色、启用状态、改口令）；</li>
  *   <li><b>有哪些角色、各自配了什么</b> —— 角色表（工具白名单 + 目录前缀）；</li>
- *   <li><b>这个人到底能不能干这件事</b> —— 核对卡（把解析结果摆出来）；</li>
- *   <li><b>这一层的边界在哪</b> —— 顶部那两块说明（没有登录 / 口令只存散列）。</li>
+ *   <li><b>这个人到底能不能干这件事</b> —— 核对卡（把解析结果摆出来）。</li>
  * </ol>
  *
- * <h2>★ 三条不能省的说法（每一条都对应一种具体误读）</h2>
- * <ol>
- *   <li><b>"没有账号 = 没有权限"要写出来</b>：新建的账号一个角色都没有，
- *       界面必须显式说"它的权限是空的（<b>不是</b>默认全部）" ——
- *       读者对"新用户"的默认预期恰好相反，而按那个预期去用会以为已经配好了；</li>
- *   <li><b>"这一族端点没有登录"要写出来</b>：能访问这个端口的人可以给自己开全部工具。
- *       这句话不写，使用者会把这一页当成一道安全边界 —— 而它现在是一张配置表；</li>
- *   <li><b>"口令只存散列、响应里没有这一列"要写出来</b>：否则"怎么把口令找回来"
- *       会变成一个反复被问的问题，而答案是"找不回来，只能重设"。</li>
- * </ol>
+ * <h2>为什么「谁有这个角色」不在角色表里</h2>
+ * 成员是<b>点「成员」才查</b>的：那一列要随账号数增长，而且它回答的是"这个角色对谁生效"——
+ * 与"这个角色配了什么"（工具 / 目录）是不同的两个问题，摆在同表里每行就有两个主语。
+ * 弹窗里勾着的就是它的全部成员，于是"看谁有它"与"改谁有它"落在同一处，不会有两份说法。
+ *
+ * <h2>★ "空权限"那两句话不能省</h2>
+ * 角色上的工具清单为空 = 一把工具都调不到（角色表里那枚橙色标签）；
+ * 成员为空 = 这份工具与目录对谁都不生效（成员弹窗里那条警告）。
+ * 这两处在库里都只是一个空集合，而读者对空的默认预期是"没有限制"——恰好是反的。
+ *
+ * <h2>为什么角色行上四个编辑入口各开一个弹窗</h2>
+ * 工具 / 目录 / 成员 / 基本信息是四件独立的事，各对应一个写端点（各自整体替换）。
+ * 合成一个"保存"去提交全部，会让"只改目录"也去重写工具清单与成员 ——
+ * 那正是 {@code PermissionService} 特意分开的理由（见它的接口注释）。
  *
  * <h2>为什么错误信息原样显示后端那一句</h2>
  * 后端的报错本来就带够了信息（"工具「search_doc」不在注册表里……现在可用的是：[…]"）。
@@ -38,67 +41,14 @@ export function PermissionPanel({ permissions }: { permissions: UsePermissionsRe
   const { snapshot } = permissions
   const data = snapshot.status === 'ok' ? snapshot.data : null
 
-  const [userModal, setUserModal] = useState(false)
   const [roleModal, setRoleModal] = useState(false)
-  const [roleTarget, setRoleTarget] = useState<PermissionRole | null>(null)
-  const [rolesOf, setRolesOf] = useState<PermissionUser | null>(null)
-  const [passwordOf, setPasswordOf] = useState<PermissionUser | null>(null)
+  const [editing, setEditing] = useState<PermissionRole | null>(null)
+  const [toolsOf, setToolsOf] = useState<PermissionRole | null>(null)
+  const [dirsOf, setDirsOf] = useState<PermissionRole | null>(null)
+  const [membersOf, setMembersOf] = useState<PermissionRole | null>(null)
 
   const users = data?.users ?? []
   const roles = data?.roles ?? []
-
-  const userColumns: ColumnsType<PermissionUser> = [
-    {
-      title: '账号',
-      key: 'account',
-      width: 220,
-      render: (_, row) => (
-        <Flex vertical gap={2}>
-          <Space size={6}>
-            <Text strong className="permission-user-name">{row.name}</Text>
-            {!row.usable && <Tag color="red">{row.statusLabel}</Tag>}
-          </Space>
-          {/* 显示名为空是**没填**，不是"名字是空的" —— 与 Prompt 面板的（未署名）同一条规矩 */}
-          <Text type="secondary" className="permission-meta">
-            {row.displayName || '（未填显示名）'}
-          </Text>
-        </Flex>
-      ),
-    },
-    {
-      title: '角色（权限 = 这些角色的并集）',
-      key: 'roles',
-      render: (_, row) => (row.roles.length === 0
-        ? <Tag color="orange">没有角色 → 没有任何权限</Tag>
-        : <Space size={4} wrap>{row.roles.map(name => <Tag key={name} color="blue">{name}</Tag>)}</Space>),
-    },
-    {
-      title: '状态',
-      key: 'status',
-      width: 120,
-      render: (_, row) => (
-        <Switch
-          size="small"
-          checked={row.usable}
-          disabled={permissions.busy}
-          onChange={checked => void permissions.updateUser(row.id, { displayName: row.displayName, enabled: checked })}
-          checkedChildren="启用"
-          unCheckedChildren="停用"
-        />
-      ),
-    },
-    {
-      title: '操作',
-      key: 'actions',
-      width: 220,
-      render: (_, row) => (
-        <Space size={4} wrap>
-          <Button size="small" onClick={() => setRolesOf(row)}>角色</Button>
-          <Button size="small" onClick={() => setPasswordOf(row)}>改口令</Button>
-        </Space>
-      ),
-    },
-  ]
 
   const roleColumns: ColumnsType<PermissionRole> = [
     {
@@ -144,11 +94,14 @@ export function PermissionPanel({ permissions }: { permissions: UsePermissionsRe
     {
       title: '操作',
       key: 'actions',
-      width: 260,
+      // 五个按钮一行放不下，`wrap` 折行；宽度给够，免得折成"一列按钮"
+      width: 320,
       render: (_, row) => (
         <Space size={4} wrap>
-          <Button size="small" onClick={() => setRoleTarget(row)}>工具</Button>
-          <Button size="small" onClick={() => setRoleTarget(row)}>目录</Button>
+          <Button size="small" onClick={() => setEditing(row)}>编辑</Button>
+          <Button size="small" onClick={() => setToolsOf(row)}>工具</Button>
+          <Button size="small" onClick={() => setDirsOf(row)}>目录</Button>
+          <Button size="small" onClick={() => setMembersOf(row)}>成员</Button>
           <Button
             size="small"
             danger
@@ -196,59 +149,10 @@ export function PermissionPanel({ permissions }: { permissions: UsePermissionsRe
 
   return (
     <div className="diag-panel permission-panel">
-      {/* ---------------- 这一层的边界：没有登录、口令只存散列 ---------------- */}
-      <Alert
-        type="warning"
-        showIcon
-        title="这一层现在没有登录：/api/permissions/** 是匿名的"
-        description={<div className="diag-note">
-          <p>
-            能访问这个端口的人<strong>可以给自己开「全部工具」</strong>。当前它只绑 localhost 供本地开发用，
-            所以默认开着；一旦要放到别人能访问的地方，先把
-            <Text code>ai.agent.permission.management-enabled</Text> 改成 <Text code>false</Text>（整族端点 404），
-            再接登录链路。
-          </p>
-          <p>{data?.passwordNote}</p>
-          <p className="is-mono">{data?.bootstrapNote}</p>
-        </div>}
-      />
-
-      {/* ---------------- 上一次操作的反馈（原样显示后端那句话） ---------------- */}
-      {permissions.feedback.status === 'ok' && (
-        <Alert type="success" showIcon closable title={permissions.feedback.data.message}
-          onClose={permissions.clearFeedback} />
-      )}
-      {permissions.feedback.status === 'error' && (
-        <Alert type="error" showIcon closable title={permissions.feedback.error}
-          onClose={permissions.clearFeedback} />
-      )}
+      <PermissionFeedback permissions={permissions} />
 
       {/* ---------------- 核对：这个人能不能干这件事 ---------------- */}
       <VerifyCard permissions={permissions} users={users} tools={data?.availableTools ?? []} />
-
-      {/* ---------------- 账号 ---------------- */}
-      <Card
-        size="small"
-        className="diag-card diag-card-wide"
-        title={<Flex gap={8} align="center" wrap>
-          <span>账号（{users.length}）</span>
-          <Tag color="geekblue">权限 = 它所有角色的并集</Tag>
-        </Flex>}
-        extra={<Space>
-          <Button onClick={permissions.reload} disabled={permissions.busy}>刷新</Button>
-          <Button type="primary" onClick={() => setUserModal(true)}>新建账号</Button>
-        </Space>}
-      >
-        {users.length === 0
-          ? <Empty description="还没有账号。库里一个账号都没有时，启动会建一个初始管理员（见上面的启动说明）。" />
-          : <Table
-              rowKey="id"
-              size="small"
-              pagination={false}
-              columns={userColumns}
-              dataSource={users}
-            />}
-      </Card>
 
       {/* ---------------- 角色 ---------------- */}
       <Card
@@ -256,7 +160,7 @@ export function PermissionPanel({ permissions }: { permissions: UsePermissionsRe
         className="diag-card diag-card-wide"
         title={<Flex gap={8} align="center" wrap>
           <span>角色（{roles.length}）</span>
-          <Tag color="geekblue">工具白名单 + 目录前缀</Tag>
+          <Tag color="geekblue">工具白名单 + 目录前缀 + 成员</Tag>
         </Flex>}
         extra={<Button type="primary" onClick={() => setRoleModal(true)}>新建角色</Button>}
       >
@@ -271,21 +175,21 @@ export function PermissionPanel({ permissions }: { permissions: UsePermissionsRe
             />}
       </Card>
 
-      <NewUserModal open={userModal} onClose={() => setUserModal(false)} permissions={permissions} />
       <NewRoleModal open={roleModal} onClose={() => setRoleModal(false)} permissions={permissions} />
-      <RolePermissionsModal
-        role={roleTarget}
-        onClose={() => setRoleTarget(null)}
+      <RoleEditModal role={editing} onClose={() => setEditing(null)} permissions={permissions} />
+      <RoleToolsModal
+        role={toolsOf}
+        onClose={() => setToolsOf(null)}
         permissions={permissions}
         availableTools={data?.availableTools ?? []}
       />
-      <UserRolesModal
-        user={rolesOf}
-        onClose={() => setRolesOf(null)}
+      <RoleDirectoriesModal role={dirsOf} onClose={() => setDirsOf(null)} permissions={permissions} />
+      <RoleUsersModal
+        role={membersOf}
+        onClose={() => setMembersOf(null)}
         permissions={permissions}
-        roles={roles}
+        users={users}
       />
-      <PasswordModal user={passwordOf} onClose={() => setPasswordOf(null)} permissions={permissions} />
     </div>
   )
 }
@@ -374,55 +278,6 @@ function VerifyCard({ permissions, users, tools }: {
 /*  弹窗                                                                */
 /* ------------------------------------------------------------------ */
 
-function NewUserModal({ open, onClose, permissions }: {
-  open: boolean
-  onClose: () => void
-  permissions: UsePermissionsResult
-}) {
-  const [name, setName] = useState('')
-  const [password, setPassword] = useState('')
-  const [displayName, setDisplayName] = useState('')
-  const [enabled, setEnabled] = useState(true)
-
-  const submit = async () => {
-    const ok = await permissions.createUser({ name, password, displayName, enabled })
-    // 成功才关：失败时关掉会把用户填的内容丢掉，而他正需要照着报错改一改
-    if (ok) {
-      setName(''); setPassword(''); setDisplayName(''); setEnabled(true)
-      onClose()
-    }
-  }
-
-  return (
-    <Modal
-      open={open}
-      title="新建账号"
-      okText="创建"
-      cancelText="取消"
-      confirmLoading={permissions.busy}
-      onOk={() => void submit()}
-      onCancel={onClose}
-    >
-      <Flex vertical gap={10}>
-        <Input placeholder="登录名（唯一）" value={name} onChange={e => setName(e.target.value)} />
-        <Input.Password
-          placeholder="初始口令（必填）—— 只以散列保存，之后找不回来，只能重设"
-          value={password}
-          onChange={e => setPassword(e.target.value)}
-        />
-        <Input placeholder="显示名（可留空）" value={displayName} onChange={e => setDisplayName(e.target.value)} />
-        <Space>
-          <Switch checked={enabled} onChange={setEnabled} size="small" />
-          <Text>启用</Text>
-        </Space>
-        <Text type="secondary">
-          新建的账号<strong>一个角色都没有</strong>，因此没有任何权限 —— 建完还要在「角色」那一栏给它挂上角色。
-        </Text>
-      </Flex>
-    </Modal>
-  )
-}
-
 function NewRoleModal({ open, onClose, permissions }: {
   open: boolean
   onClose: () => void
@@ -432,12 +287,14 @@ function NewRoleModal({ open, onClose, permissions }: {
   const [description, setDescription] = useState('')
   const [access, setAccess] = useState<'LISTED' | 'ALL'>('LISTED')
 
+  const close = () => {
+    setName(''); setDescription(''); setAccess('LISTED')
+    onClose()
+  }
+
   const submit = async () => {
     const ok = await permissions.createRole({ name, description, access })
-    if (ok) {
-      setName(''); setDescription(''); setAccess('LISTED')
-      onClose()
-    }
+    if (ok) close()
   }
 
   return (
@@ -448,7 +305,7 @@ function NewRoleModal({ open, onClose, permissions }: {
       cancelText="取消"
       confirmLoading={permissions.busy}
       onOk={() => void submit()}
-      onCancel={onClose}
+      onCancel={close}
     >
       <Flex vertical gap={10}>
         <Input placeholder="角色名（唯一）" value={name} onChange={e => setName(e.target.value)} />
@@ -470,190 +327,245 @@ function NewRoleModal({ open, onClose, permissions }: {
   )
 }
 
-function RolePermissionsModal({ role, onClose, permissions, availableTools }: {
+function RoleEditModal({ role, onClose, permissions }: {
+  role: PermissionRole | null
+  onClose: () => void
+  permissions: UsePermissionsResult
+}) {
+  // 草稿：null = "还没动过"，显示的是这个角色当前的值。
+  // 关弹窗（无论保存还是取消）都清回 null —— 于是下次打开读的是新状态，而不是上一次的草稿
+  const [name, setName] = useState<string | null>(null)
+  const [description, setDescription] = useState<string | null>(null)
+  const [access, setAccess] = useState<string | null>(null)
+
+  const currentName = name ?? role?.name ?? ''
+  const currentDescription = description ?? role?.description ?? ''
+  const currentAccess = access ?? role?.access ?? 'LISTED'
+
+  const close = () => {
+    setName(null); setDescription(null); setAccess(null)
+    onClose()
+  }
+
+  const submit = async () => {
+    if (!role) return
+    const ok = await permissions.updateRole(role.id, {
+      name: currentName, description: currentDescription, access: currentAccess,
+    })
+    if (ok) close()
+  }
+
+  return (
+    <Modal
+      open={role !== null}
+      title={role ? `编辑角色：${role.name}` : ''}
+      okText="保存"
+      cancelText="取消"
+      confirmLoading={permissions.busy}
+      onOk={() => void submit()}
+      onCancel={close}
+    >
+      <Flex vertical gap={10}>
+        <Input placeholder="角色名（唯一）" value={currentName} onChange={e => setName(e.target.value)} />
+        <Input
+          placeholder="这个角色是干什么的（可留空）"
+          value={currentDescription}
+          onChange={e => setDescription(e.target.value)}
+        />
+        <Select
+          value={currentAccess}
+          onChange={value => setAccess(value)}
+          options={[
+            { value: 'LISTED', label: '清单白名单 —— 只能调清单里那几把工具（清单为空时一把都调不到）' },
+            { value: 'ALL', label: '全部工具 —— 包括将来新增的' },
+          ]}
+        />
+        <Text type="secondary">
+          工具与目录不在这里改：它们各有各的入口（角色行上的「工具」「目录」），
+          因为它们是<strong>各自整体替换</strong>的两份清单 —— 顺手一起提交会让"只改个名字"也去重写它们。
+        </Text>
+      </Flex>
+    </Modal>
+  )
+}
+
+function RoleToolsModal({ role, onClose, permissions, availableTools }: {
   role: PermissionRole | null
   onClose: () => void
   permissions: UsePermissionsResult
   availableTools: string[]
 }) {
   const [tools, setTools] = useState<string[] | null>(null)
-  const [dirs, setDirs] = useState<string[] | null>(null)
-  const [newDir, setNewDir] = useState('')
-
-  // 打开时把当前值灌进草稿（role 变了就重灌）。
-  // 【为什么用 key 而不是 useEffect】见下面 <Modal> 的 key：每次打开都是新实例，
-  // 于是"草稿"天然不会留到下一次
   const currentTools = tools ?? role?.toolNames ?? []
-  const currentDirs = dirs ?? role?.dirPrefixes ?? []
+
+  const close = () => {
+    setTools(null)
+    onClose()
+  }
 
   const submit = async () => {
     if (!role) return
-    // 两个写端点分别提交：工具与目录是两件事，合成一次提交会让"只改目录"也去重写工具清单
-    const okTools = await permissions.setRoleTools(role.id, currentTools)
-    const okDirs = await permissions.setRoleDirectories(role.id, currentDirs)
-    if (okTools && okDirs) {
-      setTools(null); setDirs(null); setNewDir('')
-      onClose()
-    }
+    const ok = await permissions.setRoleTools(role.id, currentTools)
+    if (ok) close()
   }
 
   return (
     <Modal
-      key={role?.id ?? 'none'}
       open={role !== null}
-      title={role ? `角色「${role.name}」的工具与目录` : ''}
+      title={role ? `角色「${role.name}」能调的工具` : ''}
       width={640}
       okText="保存"
       cancelText="取消"
       confirmLoading={permissions.busy}
       onOk={() => void submit()}
-      onCancel={onClose}
-    >
-      <Flex vertical gap={14}>
-        <div>
-          <Text strong>能调的工具</Text>
-          <Paragraph type="secondary" className="permission-meta">
-            候选就是注册表里真实存在的那些。工具名写错一个字母会被后端当场拒掉（带可用清单）——
-            而那种错误的后果是"这把工具永远调不到"，且只在运行期表现为「模型选错了工具」。
-          </Paragraph>
-          {role?.access === 'ALL' ? (
-            <Alert type="info" showIcon title="这个角色是「全部工具」，工具清单对它不生效" />
-          ) : (
-            <Checkbox.Group
-              value={currentTools}
-              onChange={values => setTools(values as string[])}
-              options={availableTools.map(t => ({ value: t, label: <span className="is-mono">{t}</span> }))}
-            />
-          )}
-        </div>
-
-        <div>
-          <Text strong>能在哪些目录下干活</Text>
-          <Paragraph type="secondary" className="permission-meta">
-            按<strong>路径分段</strong>比较，不做字符串前缀：<span className="is-mono">D:\work\demo</span> 不会命中
-            <span className="is-mono">D:\work\demo-other</span>；<span className="is-mono">..</span> 也会被折叠掉，
-            走不出授权范围。
-          </Paragraph>
-          <Space direction="vertical" className="permission-dir-list">
-            {currentDirs.length === 0 && <Text type="secondary">（没有目录前缀 —— 任何目录都不被授权）</Text>}
-            {currentDirs.map(prefix => (
-              <Space key={prefix}>
-                <Text className="is-mono">{prefix}</Text>
-                <Button size="small" danger onClick={() => setDirs(currentDirs.filter(p => p !== prefix))}>移除</Button>
-              </Space>
-            ))}
-          </Space>
-          <Flex gap={8} className="permission-dir-add">
-            <Input
-              placeholder="目录前缀，例如 D:\work\demo"
-              value={newDir}
-              onChange={e => setNewDir(e.target.value)}
-            />
-            <Button
-              disabled={!newDir.trim()}
-              onClick={() => {
-                const value = newDir.trim()
-                if (value && !currentDirs.includes(value)) setDirs([...currentDirs, value])
-                setNewDir('')
-              }}
-            >
-              添加
-            </Button>
-          </Flex>
-        </div>
-      </Flex>
-    </Modal>
-  )
-}
-
-function UserRolesModal({ user, onClose, permissions, roles }: {
-  user: PermissionUser | null
-  onClose: () => void
-  permissions: UsePermissionsResult
-  roles: PermissionRole[]
-}) {
-  const [picked, setPicked] = useState<number[] | null>(null)
-  const byName = new Map(roles.map(r => [r.name, r.id]))
-  const current = picked ?? (user?.roles.map(name => byName.get(name)).filter((id): id is number => id !== undefined) ?? [])
-
-  const submit = async () => {
-    if (!user) return
-    const ok = await permissions.setUserRoles(user.id, current)
-    if (ok) {
-      setPicked(null)
-      onClose()
-    }
-  }
-
-  return (
-    <Modal
-      key={user?.id ?? 'none'}
-      open={user !== null}
-      title={user ? `账号「${user.name}」的角色` : ''}
-      okText="保存"
-      cancelText="取消"
-      confirmLoading={permissions.busy}
-      onOk={() => void submit()}
-      onCancel={onClose}
+      onCancel={close}
     >
       <Flex vertical gap={10}>
-        <Text type="secondary">
-          提交的是<strong>一整份</strong>角色清单（后端整体替换，不是增删）——
-          逐条增删要求前端算 diff，而 diff 少算一条的形态是"没撤掉一个授权"，页面上看不出来。
-        </Text>
-        <Checkbox.Group
-          value={current}
-          onChange={values => setPicked(values as number[])}
-          options={roles.map(r => ({ value: r.id, label: r.name }))}
-        />
-        {current.length === 0 && (
-          <Alert type="warning" showIcon title="一个角色都不勾 = 这个账号没有任何权限" />
+        <Paragraph type="secondary" className="permission-meta">
+          候选就是注册表里真实存在的那些。工具名写错一个字母会被后端当场拒掉（带可用清单）——
+          而那种错误的后果是"这把工具永远调不到"，且只在运行期表现为「模型选错了工具」。
+          提交的是<strong>一整份</strong>清单：取消勾选就是撤掉，后端整体替换。
+        </Paragraph>
+        {role?.access === 'ALL' ? (
+          <Alert type="info" showIcon title="这个角色是「全部工具」，工具清单对它不生效" />
+        ) : (
+          <Checkbox.Group
+            value={currentTools}
+            onChange={values => setTools(values as string[])}
+            options={availableTools.map(t => ({ value: t, label: <span className="is-mono">{t}</span> }))}
+          />
         )}
       </Flex>
     </Modal>
   )
 }
 
-function PasswordModal({ user, onClose, permissions }: {
-  user: PermissionUser | null
+function RoleDirectoriesModal({ role, onClose, permissions }: {
+  role: PermissionRole | null
   onClose: () => void
   permissions: UsePermissionsResult
 }) {
-  const [password, setPassword] = useState('')
-  const [confirm, setConfirm] = useState('')
-  const mismatch = confirm.length > 0 && password !== confirm
+  const [dirs, setDirs] = useState<string[] | null>(null)
+  const [newDir, setNewDir] = useState('')
+  const currentDirs = dirs ?? role?.dirPrefixes ?? []
+
+  const close = () => {
+    setDirs(null); setNewDir('')
+    onClose()
+  }
 
   const submit = async () => {
-    if (!user || !password || mismatch) return
-    const ok = await permissions.changePassword(user.id, password)
-    if (ok) {
-      setPassword(''); setConfirm('')
-      onClose()
-    }
+    if (!role) return
+    const ok = await permissions.setRoleDirectories(role.id, currentDirs)
+    if (ok) close()
   }
 
   return (
     <Modal
-      key={user?.id ?? 'none'}
-      open={user !== null}
-      title={user ? `改口令：${user.name}` : ''}
+      open={role !== null}
+      title={role ? `角色「${role.name}」能在哪些目录下干活` : ''}
+      width={640}
       okText="保存"
       cancelText="取消"
-      okButtonProps={{ disabled: !password || mismatch }}
       confirmLoading={permissions.busy}
       onOk={() => void submit()}
-      onCancel={onClose}
+      onCancel={close}
     >
       <Flex vertical gap={10}>
-        <Alert
-          type="info"
-          showIcon
-          title="口令只以散列保存，读不回来"
-          description="这一列存的是 PBKDF2 的散列，接口响应里也根本没有这个字段 —— 所以这里只有「重设」，没有「查看」。"
+        <Paragraph type="secondary" className="permission-meta">
+          按<strong>路径分段</strong>比较，不做字符串前缀：<span className="is-mono">D:\work\demo</span> 不会命中
+          <span className="is-mono">D:\work\demo-other</span>；<span className="is-mono">..</span> 也会被折叠掉，
+          走不出授权范围。提交的是<strong>一整份</strong>前缀清单：移除就是撤掉，后端整体替换。
+        </Paragraph>
+        {/* ⚠️ antd 6 把 `direction` 改名成 `orientation`：旧名只在控制台留一条 deprecation
+            警告 —— 而自检最后一条断言盯的就是控制台干净（这一处是打开目录弹窗时才暴露的） */}
+        <Space orientation="vertical" className="permission-dir-list">
+          {currentDirs.length === 0 && <Text type="secondary">（没有目录前缀 —— 任何目录都不被授权）</Text>}
+          {currentDirs.map(prefix => (
+            <Space key={prefix}>
+              <Text className="is-mono">{prefix}</Text>
+              <Button size="small" danger onClick={() => setDirs(currentDirs.filter(p => p !== prefix))}>移除</Button>
+            </Space>
+          ))}
+        </Space>
+        <Flex gap={8} className="permission-dir-add">
+          <Input
+            placeholder="目录前缀，例如 D:\work\demo"
+            value={newDir}
+            onChange={e => setNewDir(e.target.value)}
+          />
+          <Button
+            disabled={!newDir.trim()}
+            onClick={() => {
+              const value = newDir.trim()
+              if (value && !currentDirs.includes(value)) setDirs([...currentDirs, value])
+              setNewDir('')
+            }}
+          >
+            添加
+          </Button>
+        </Flex>
+      </Flex>
+    </Modal>
+  )
+}
+
+function RoleUsersModal({ role, onClose, permissions, users }: {
+  role: PermissionRole | null
+  onClose: () => void
+  permissions: UsePermissionsResult
+  users: PermissionUser[]
+}) {
+  const [picked, setPicked] = useState<number[] | null>(null)
+  // 角色名唯一，所以"谁有它"就是"谁的 roles 里有这个名字"
+  const current = picked ?? (role === null
+    ? []
+    : users.filter(u => u.roles.includes(role.name)).map(u => u.id))
+
+  const close = () => {
+    setPicked(null)
+    onClose()
+  }
+
+  const submit = async () => {
+    if (!role) return
+    const ok = await permissions.setRoleUsers(role.id, current)
+    if (ok) close()
+  }
+
+  return (
+    <Modal
+      open={role !== null}
+      title={role ? `角色「${role.name}」的成员` : ''}
+      width={560}
+      okText="保存"
+      cancelText="取消"
+      confirmLoading={permissions.busy}
+      onOk={() => void submit()}
+      onCancel={close}
+    >
+      <Flex vertical gap={10}>
+        <Text type="secondary">
+          勾选的就是这个角色<strong>全部</strong>的成员（后端整体替换，不是增删）——
+          取消勾选 = 那个人失去这个角色；提交的是这一整份清单。
+          停用的账号也在候选里：停用期间配好的角色，重新启用之后就生效。
+        </Text>
+        <Checkbox.Group
+          value={current}
+          onChange={values => setPicked(values as number[])}
+          options={users.map(u => ({
+            value: u.id,
+            label: u.usable ? `${u.name}（#${u.id}）` : `${u.name}（#${u.id} · ${u.statusLabel}）`,
+          }))}
         />
-        <Input.Password placeholder="新口令" value={password} onChange={e => setPassword(e.target.value)} />
-        <Input.Password placeholder="再输一遍" value={confirm} onChange={e => setConfirm(e.target.value)} />
-        {mismatch && <Text type="danger">两次输入不一致</Text>}
+        {current.length === 0 && (
+          <Alert
+            type="warning"
+            showIcon
+            title="一个账号都不勾 = 这个角色没有成员"
+            description="它的工具白名单与目录前缀对谁都还不生效 —— 直到有账号被勾进来。"
+          />
+        )}
       </Flex>
     </Modal>
   )

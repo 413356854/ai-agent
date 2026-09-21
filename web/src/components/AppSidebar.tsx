@@ -6,7 +6,8 @@ import type { Mode, NavGroup } from '../nav'
  * 左侧目录（类后台的三段式布局：目录 / 页头 / 内容）。
  *
  * <h2>为什么用 `button` 手写目录，而不是 antd 的 Menu</h2>
- * 需要的就是"两段标题 + 若干按钮 + 一个收起开关"。Menu 能画出来，但收起态要靠
+ * 需要的就是"两段标题 + 若干按钮 + 一个整体收起开关 + 每段自己的折叠开关"。
+ * Menu（或 SubMenu 的折叠）能画出来，但收起态要靠
  * `inlineCollapsed` + `Sider` 那套上下文，收起后只剩一列图标 —— 而本项目没有图标依赖
  * （`@ant-design/icons` 不在 package.json 里），收起后每一项都会变成一条空白的窄条。
  * 所以收起态由 `.is-collapsed` 这一个类控制：藏文字、留左边一条色标，每一项仍可点。
@@ -14,13 +15,34 @@ import type { Mode, NavGroup } from '../nav'
  * <h2>为什么收起态是"必须有的"</h2>
  * 目录占 232px，而这一页的主体是数据表（成本看板、五层 trace、版本历史）。
  * 1100px 宽的窗口下，那 232px 是差一行、差一列能不能放下的差别。
+ *
+ * <h2>为什么分组名也可点（折叠一段）</h2>
+ * 整条目录的收起是"横向省宽度"，分组折叠是"纵向省高度"：对话台那段有八项，
+ * 在应用管理里干活时它们只是占位，往下翻还得划过去。两件事互不影响。
+ * ⚠️ 折叠**只改渲染**，不改"当前在哪"的判断：收起的那一段里若正落着当前视图，
+ * 标题会带上色标与着色（见 styles.css 的 `is-active`），
+ * 因为"现在在哪"这一页最要紧的信息，不该因为收起而丢掉。
+ * 窄条态（railed）下分组一律展开 —— 那时标题那一行整行是藏起来的，点都点不到。
  */
 
 /** 收起态存 localStorage：那是"这台机器上我怎么看这个页面"的偏好，刷新一次就忘掉会很烦 */
 const COLLAPSE_KEY = 'ai-agent.nav.collapsed'
 
+/** 各分组的折叠态，同样存 localStorage（`{分组键: 是否收起}`；没记过的分组按展开算） */
+const GROUP_KEY = 'ai-agent.nav.group-collapsed'
+
 /** 窄屏（≤ 900px）不记忆收起状态：那是"窗口放不下"的临时妥协，窗口变宽后应当自己展开 */
 const NARROW_QUERY = '(max-width: 900px)'
+
+function readClosedGroups(): Record<string, boolean> {
+  try {
+    return JSON.parse(window.localStorage.getItem(GROUP_KEY) ?? '{}')
+  } catch {
+    // 存坏了（手改过 / 是旧格式）就当没折过：宁可是"都展开"，
+    // 也不能让某一段目录整段消失 —— 那看起来像功能坏了
+    return {}
+  }
+}
 
 export function AppSidebar(
   { mode, onSelect }: { mode: Mode; onSelect: (mode: Mode) => void },
@@ -28,6 +50,7 @@ export function AppSidebar(
   const [collapsed, setCollapsed] = useState(
     () => window.localStorage.getItem(COLLAPSE_KEY) === '1',
   )
+  const [closedGroups, setClosedGroups] = useState<Record<string, boolean>>(readClosedGroups)
   const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW_QUERY).matches)
 
   // 窄屏时自动收起。⚠️ 这里只**跟随窗口**，不写回 localStorage ——
@@ -47,6 +70,12 @@ export function AppSidebar(
     window.localStorage.setItem(COLLAPSE_KEY, next ? '1' : '0')
   }
 
+  const toggleGroup = (key: string) => {
+    const next = { ...closedGroups, [key]: !closedGroups[key] }
+    setClosedGroups(next)
+    window.localStorage.setItem(GROUP_KEY, JSON.stringify(next))
+  }
+
   return (
     <nav
       className={`app-sidebar${railed ? ' is-collapsed' : ''}`}
@@ -60,30 +89,48 @@ export function AppSidebar(
       </div>
 
       <div className="app-nav">
-        {NAV_SECTIONS.map((section: NavGroup) => (
-          <div className="app-nav-group" key={section.key}>
-            {/* 收起态这一行只剩一条分隔线（样式里给它固定高度），
-                否则两段目录会挤在一起，看不出是两段 */}
-            <div className="app-nav-group-title" title={section.title}>
-              {section.label}
+        {NAV_SECTIONS.map((section: NavGroup) => {
+          // 窄条态下这一行整行是藏起来的（点都点不到），所以那时一律按展开渲染 ——
+          // 否则记着"收起"的那一段会一项都不显示，看起来像那一段坏了
+          const closed = !railed && closedGroups[section.key] === true
+          // 收起来的那一段里正落着当前视图 —— 这时位置只剩标题上那枚标记，必须标出来
+          const activeInside = closed && section.items.some(item => item.mode === mode)
+          return (
+            <div className="app-nav-group" key={section.key}>
+              {/* 收起态这一行只剩一条分隔线（样式里给它固定高度），
+                  否则两段目录会挤在一起，看不出是两段 */}
+              <button
+                type="button"
+                className={`app-nav-group-title${activeInside ? ' is-active' : ''}`}
+                title={`${section.title}（点一下${closed ? '展开' : '收起'}这一段）`}
+                aria-expanded={!closed}
+                aria-controls={`nav-group-${section.key}`}
+                data-active-inside={activeInside ? '1' : '0'}
+                onClick={() => toggleGroup(section.key)}
+              >
+                <span className="app-nav-caret" aria-hidden="true" />
+                <span className="app-nav-group-name">{section.label}</span>
+              </button>
+              <div className="app-nav-group-items" id={`nav-group-${section.key}`}>
+                {!closed && section.items.map(item => {
+                  const active = item.mode === mode
+                  return (
+                    <button
+                      type="button"
+                      key={item.mode}
+                      className={`app-nav-item${active ? ' is-active' : ''}`}
+                      title={item.label}
+                      aria-current={active ? 'page' : undefined}
+                      onClick={() => onSelect(item.mode)}
+                    >
+                      <span className="app-nav-item-text">{item.label}</span>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
-            {section.items.map(item => {
-              const active = item.mode === mode
-              return (
-                <button
-                  type="button"
-                  key={item.mode}
-                  className={`app-nav-item${active ? ' is-active' : ''}`}
-                  title={item.label}
-                  aria-current={active ? 'page' : undefined}
-                  onClick={() => onSelect(item.mode)}
-                >
-                  <span className="app-nav-item-text">{item.label}</span>
-                </button>
-              )
-            })}
-          </div>
-        ))}
+          )
+        })}
       </div>
 
       <div className="app-sidebar-foot">

@@ -15,13 +15,14 @@ export interface UsePermissionsResult {
   createUser: (payload: { name: string; password: string; displayName?: string; enabled?: boolean }) => Promise<boolean>
   updateUser: (id: number, payload: { displayName?: string; enabled?: boolean }) => Promise<boolean>
   changePassword: (id: number, password: string) => Promise<boolean>
-  setUserRoles: (id: number, roleIds: number[]) => Promise<boolean>
 
   createRole: (payload: { name: string; description?: string; access?: string }) => Promise<boolean>
   updateRole: (id: number, payload: { name: string; description?: string; access?: string }) => Promise<boolean>
   deleteRole: (id: number) => Promise<boolean>
   setRoleTools: (id: number, toolNames: string[]) => Promise<boolean>
   setRoleDirectories: (id: number, prefixes: string[]) => Promise<boolean>
+  /** 替换角色的成员账号。账号↔角色的编辑只在角色这一侧（账号表上那个列是只读的）。 */
+  setRoleUsers: (id: number, userIds: number[]) => Promise<boolean>
 
   /** 核对一个账号的工具/目录权限。 */
   verdict: Remote<PermissionVerdict>
@@ -108,14 +109,6 @@ export function usePermissions(active: boolean): UsePermissionsResult {
       return r.note
     }), [mutate])
 
-  const setUserRoles = useCallback(async (id: number, roleIds: number[]) =>
-    mutate('改角色', async () => {
-      const r = await permissionApi.setUserRoles(id, roleIds)
-      return r.roles.length === 0
-        ? '这个账号现在一个角色都没有 —— 它的权限是空的（不是"默认全部"）'
-        : `账号的角色已改为：${r.roles.join('、')}`
-    }), [mutate])
-
   const createRole = useCallback(async (payload: { name: string; description?: string; access?: string }) =>
     mutate('建角色', async () => {
       const r = await permissionApi.createRole(payload)
@@ -150,6 +143,14 @@ export function usePermissions(active: boolean): UsePermissionsResult {
         : `目录前缀已替换为 ${r.dirPrefixes.length} 条：${r.dirPrefixes.join('、')}`
     }), [mutate])
 
+  const setRoleUsers = useCallback(async (id: number, userIds: number[]) =>
+    mutate('改成员', async () => {
+      const r = await permissionApi.setRoleUsers(id, userIds)
+      return r.accounts.length === 0
+        ? '这个角色现在一个成员都没有 —— 它的工具与目录对谁都不生效'
+        : `这个角色的成员已替换为 ${r.accounts.length} 个：${r.accounts.join('、')}`
+    }), [mutate])
+
   const verify = useCallback(async (account: string, tool?: string, dir?: string) => {
     setVerdict({ status: 'loading' })
     try {
@@ -182,12 +183,12 @@ export function usePermissions(active: boolean): UsePermissionsResult {
     createUser,
     updateUser,
     changePassword,
-    setUserRoles,
     createRole,
     updateRole,
     deleteRole,
     setRoleTools,
     setRoleDirectories,
+    setRoleUsers,
     verdict,
     verify,
     clearVerdict,

@@ -27,6 +27,9 @@ public interface PermissionStore {
 
 	List<Account> accounts();
 
+	/** 按 id 列表取（角色侧"设成员"前确认这些账号都存在）。 */
+	List<Account> findAccounts(List<Long> ids);
+
 	List<Role> roles();
 
 	List<Role> findRoles(List<Long> ids);

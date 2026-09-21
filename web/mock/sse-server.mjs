@@ -31,6 +31,7 @@ import { handleCostRoutes } from './cost-routes.mjs'
 import { handlePermissionRoutes } from './permission-routes.mjs'
 import { handlePromptRoutes } from './prompt-routes.mjs'
 import { handleRagRoutes } from './rag-routes.mjs'
+import { handleTaskRoutes } from './task-routes.mjs'
 
 const PORT = Number(process.env.MOCK_PORT ?? 8081)
 
@@ -375,11 +376,24 @@ const server = createServer((req, res) => {
     return
   }
 
+  // ---------------------------------------------------------------
+  //  agent 任务端点（应用管理 · agent任务）
+  //
+  //  ⚠️ 与 permissions 同一类：**有写端点，所以状态是进程内可变的**，
+  //  并且必须配一条 `POST /api/agent-tasks/__reset`（自检跑第二遍时会用到）。
+  //  这一组的假数据还要**照搬真后端的状态链**（推进到哪、生成哪条确认项、
+  //  当前状态不允许的动作 → 409），否则"点一下卡片真的换列了吗"这件事
+  //  在自检里永远走不到 —— 而那正是这一页的全部内容。
+  // ---------------------------------------------------------------
+  if (url.pathname.startsWith('/api/agent-tasks') && handleTaskRoutes(req, res, url, json)) {
+    return
+  }
+
   res.writeHead(404, { 'Content-Type': 'application/json' })
   res.end(
     JSON.stringify({
       message:
-        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async、POST /api/agent/ask、GET /api/agent/*、GET /api/cost/*、GET|POST /api/prompts/*、GET|POST /api/alerts/*、GET|POST /api/canary/*、GET|POST|PUT|DELETE /api/permissions/*',
+        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async、POST /api/agent/ask、GET /api/agent/*、GET /api/cost/*、GET|POST /api/prompts/*、GET|POST /api/alerts/*、GET|POST /api/canary/*、GET|POST|PUT|DELETE /api/permissions/*、GET|POST /api/agent-tasks/*',
     }),
   )
 })

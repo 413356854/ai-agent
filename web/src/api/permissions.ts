@@ -9,7 +9,7 @@
  * 改后端时回来对一遍。
  *
  * ---------------------------------------------------------------------------
- * 这一页有一处**必须由界面顶在最显眼位置**的说明
+ * 两条与页面行为绑定的后端事实
  * ---------------------------------------------------------------------------
  * **口令只以散列保存，响应里根本没有这一列**（后端的 `account(...)` 装配里就没有那个键）。
  * 页面上不能出现"重置口令"这类看起来能读出原口令的操作，也不能把散列画出来 ——
@@ -144,7 +144,12 @@ export const permissionApi = {
   changePassword: (id: number, password: string) =>
     send<{ ok: boolean; userId: number; note: string }>('PUT', `/users/${id}/password`, { password }),
 
-  /** 给账号**替换**角色清单（整份替换，不是增删 —— 理由见后端接口注释）。 */
+  /**
+   * 给账号**替换**角色清单（整份替换，不是增删 —— 理由见后端接口注释）。
+   *
+   * 界面只在角色侧编辑成员（见 `setRoleUsers`），这个方法没有调用方 ——
+   * 但端点本身仍是契约的一部分（本文件头一条就是"与后端逐字对应"），所以留着。
+   */
   setUserRoles: (id: number, roleIds: number[]) =>
     send<{ ok: boolean; userId: number; roles: string[] }>('PUT', `/users/${id}/roles`, { roleIds }),
 
@@ -163,4 +168,14 @@ export const permissionApi = {
 
   setRoleDirectories: (id: number, directories: { prefix: string; note?: string }[]) =>
     send<{ ok: boolean; roleId: number; dirPrefixes: string[] }>('PUT', `/roles/${id}/directories`, { directories }),
+
+  /**
+   * 给角色**替换**成员账号（整份替换）。
+   *
+   * 界面编辑账号↔角色关系只走这一侧（账号表上的角色列是只读的）：
+   * 同一份关系有两个界面入口就是两份判据，而它们不一致时页面上看不出来。
+   * 回执里是登录名（与 `setUserRoles` 回执里是角色名对称）—— 停用的账号也在里面。
+   */
+  setRoleUsers: (id: number, userIds: number[]) =>
+    send<{ ok: boolean; roleId: number; accounts: string[] }>('PUT', `/roles/${id}/users`, { userIds }),
 }

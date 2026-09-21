@@ -67,6 +67,17 @@ public class JdbcPermissionStore implements PermissionStore {
 	}
 
 	@Override
+	public List<Account> findAccounts(List<Long> ids) {
+		if (ids == null || ids.isEmpty()) {
+			// `IN ()` 在两种库上都是语法错，而它只在"这次一个账号都没勾"时出现
+			return List.of();
+		}
+		return read(() -> accounts.byIds(ids), "读账号失败 ids=" + ids).stream()
+				.map(MapperRows.AccountRow::toDomain)
+				.toList();
+	}
+
+	@Override
 	public List<Role> roles() {
 		return read(roles::list, "读角色列表失败").stream().map(MapperRows.RoleRow::toDomain).toList();
 	}

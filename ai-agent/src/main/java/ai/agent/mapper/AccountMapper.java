@@ -59,6 +59,14 @@ public interface AccountMapper {
 
 	MapperRows.AccountRow findByName(@Param("name") String name);
 
+	/**
+	 * 按 id 列表取（角色侧"设成员"时逐个确认账号存在，报错里要能说清缺的是哪几个）。
+	 *
+	 * <p>空列表时调用方不发这条查询 —— {@code IN ()} 在两种库上都是语法错，
+	 * 与 {@code RoleMapper.byIds} 同一条约定。
+	 */
+	List<MapperRows.AccountRow> byIds(@Param("ids") List<Long> ids);
+
 	List<MapperRows.AccountRow> list();
 
 	/** 改显示名与状态。**不含口令列** —— 改口令是 {@link #updatePassword}，两件事不共用一条 SQL。 */

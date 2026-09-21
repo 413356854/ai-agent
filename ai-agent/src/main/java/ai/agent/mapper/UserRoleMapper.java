@@ -28,6 +28,15 @@ public interface UserRoleMapper {
 
 	int deleteAllOfUser(@Param("userId") Long userId);
 
+	/**
+	 * 清空一个角色的成员。
+	 *
+	 * <p>角色侧的"设成员"（{@code PermissionService#setRoleUsers}）用它做整体替换的"先清后插"，
+	 * 与账号侧同一条理由（见类注释）：逐条增删的 diff 少算一条时，
+	 * 形态是"多留了授权"，而页面上看不出来。
+	 */
+	int deleteAllOfRole(@Param("roleId") Long roleId);
+
 	/** 有多少账号拥有这个角色（删角色前要把它告诉人：这个数字会让级联变成一次有意识的动作）。 */
 	int countByRole(@Param("roleId") Long roleId);
 

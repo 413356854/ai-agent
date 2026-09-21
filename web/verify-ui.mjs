@@ -33,11 +33,11 @@ const EXPECT_REFLECTION = process.env.CHECK_EXPECT_REFLECTION !== '0'
 /**
  * 每条路径实际执行多少项断言（**实测出来的，不是数出来的**）。
  *
- * 脚本里一共 414 个 `expect(...)`，但两条路径执行的数量不同 ——
+ * 脚本里一共 456 个 `expect(...)`，但两条路径执行的数量不同 ——
  * 因为有几个分支各跑各的（回灌细节 / 降级标记 / Agent 的完整轨迹 / HITL 的批准与拒绝），
  * 它们的可复现性依赖假后端：
  *
- *   假后端（默认路径，实测 2026-09-20）→ **369 项，全过**（同一份脚本连跑两遍，两遍都是 369）
+ *   假后端（默认路径，实测 2026-09-21）→ **411 项，全过**（同一份脚本连跑两遍，两遍都是 411）
  *   真后端（`CHECK_EXPECT_REFLECTION=0`）→ 见下面 README 那一行；本轮跑过，数字写在 web/README.md
  *
  * 真后端路径上失败的是**流式回答**（`流式回答已渲染`）：
@@ -100,6 +100,9 @@ const consoleErrors = []
  * 那次请求后端会正确地回 **400**，而浏览器控制台对任何非 2xx 的响应都会记一条
  * `Failed to load resource: ... 400 (Bad Request)` —— **这是浏览器行为，不是我们的 bug**。
  * 权限面板同理：自检会故意制造一次**同名账号（409）**，验证界面把它说成"名字已被占用"。
+ * agent 任务那一页也会造一次：先由脚本直接答掉一条确认项（模拟"另一个人"），
+ * 再让界面对着**已经变了**的那条任务点一次答复 —— 那次后端正确地回 **409**，
+ * 要验的正是"它被界面说成状态变了，而不是你填错了"。
  *
  * <p>所以这里不是把"控制台必须干净"这个要求降低，而是把它**写得准确**：
  * 「意料之内的失败请求」与「意料之外的报错」是两件事，前者必须被逐条命名出来
@@ -121,6 +124,7 @@ const expectedConflicts = []
 page.on('response', response => {
   const url = response.url()
   const fromOurEndpoints = url.includes('/api/prompts/') || url.includes('/api/permissions/')
+    || url.includes('/api/agent-tasks/')
   if (!fromOurEndpoints) return
   if (response.status() === 400) expectedRejections.push(url)
   if (response.status() === 409) expectedConflicts.push(url)
@@ -140,7 +144,14 @@ page.on('console', msg => {
 page.on('pageerror', err => consoleErrors.push(`[pageerror] ${err.message}`))
 
 const problems = []
+/**
+ * 已执行的断言条数。**由脚本自己报数**，而不是让人去数 `expect(` ——
+ * 文档里那个"411 项"就是数出来的，而数它要同时判断每个分支走没走到
+ * （README 里为此写过一条"不要凭印象写"）—— 那种手工账迟早对不上。
+ */
+let executed = 0
 const expect = (label, ok, detail = '') => {
+  executed++
   console.log(`    ${ok ? '✓' : '✗'} ${label}${detail ? ` — ${detail}` : ''}`)
   if (!ok) problems.push(label)
 }
@@ -180,18 +191,29 @@ const box = () => page.locator('textarea:not([name="hiddenTextarea"])')
  *
  * <h2>为什么切模式这件事要单独一个函数</h2>
  * 目录项与页头里那些按钮的标签会撞名（「新会话」「刷新」这类），
- * 而下面每一节开头都要切一次模式（共 11 处）。散着写，改一次布局就要改 11 个选择器，
+ * 而下面每一节开头都要切一次模式（共 16 处）。散着写，改一次布局就要改 16 个选择器，
  * 而漏改的那一处**不会报错** —— 它会点中另一个元素（或超时等 30 秒），
  * 症状看起来像"那个面板坏了"。收在一个函数里，布局再变也只需要改这里。
  *
  * <h2>为什么先读一次收起态，而不是直接点</h2>
  * 收起态（或窄窗口）下目录里没有文字，`hasText` 会一个都匹配不到，
  * 而失败信息是"等不到那个按钮"——看起来像目录里没有这一项。
+ *
+ * <h2>为什么还要先把分组展平</h2>
+ * 分组折叠（点一级目录名收起那一段）也是存在 localStorage 里的用户偏好，
+ * 会跨节保留：前面某一节若把这一段收起来过，它下面的项**根本不在 DOM 里**，
+ * 症状与上面那条一模一样。所以切模式前一律先展开所有被折叠的分组。
  */
 async function navMode(label) {
   const sidebar = page.locator('.app-sidebar')
   if ((await sidebar.getAttribute('data-collapsed')) === '1') {
     await page.locator('.app-collapse').click()
+  }
+  // 上限 2 次（分组只有两段；写死上限是为了"点了没反应"时不会变成死循环，
+  // 那种情况该以"点不到那一项"的形式报出来，而不是把自检挂在这里）
+  const folded = sidebar.locator('.app-nav-group-title[aria-expanded="false"]')
+  for (let i = 0; i < 2 && (await folded.count()) > 0; i++) {
+    await folded.first().click()
   }
   await sidebar.getByRole('button', { name: label, exact: true }).click()
 }
@@ -214,6 +236,12 @@ console.log('[1.5] 布局 —— 左侧目录与页头')
     groups.join(' / '))
   expect('对话台那段列出八个模式',
     (await sidebar.locator('.app-nav-group').first().locator('.app-nav-item').count()) === 8)
+  // 应用管理那一段的**顺序**也是要求的一部分：账号在前、角色在后、任务最后
+  const appsItems = (await sidebar.locator('.app-nav-group').nth(1).locator('.app-nav-item').allInnerTexts())
+    .map(t => t.trim())
+  expect('应用管理那段列出三项，顺序是 用户管理 / 权限管理 / agent任务',
+    JSON.stringify(appsItems) === JSON.stringify(['用户管理', '权限管理', 'agent任务']),
+    appsItems.join(' / '))
   expect('当前项被标出来（aria-current）', (await sidebar.locator('[aria-current="page"]').count()) === 1)
   // 默认落在流式模式：这条同时证明"选中的那一项就是当前视图"，而不只是"有一个项被标了"
   expect('默认进的是 SSE 流式',
@@ -252,6 +280,45 @@ console.log('[1.5] 布局 —— 左侧目录与页头')
   }), 3000)
   expect('再点一下回到展开态（宽度也回来了）',
     (await sidebar.getAttribute('data-collapsed')) === startCollapsed && expandedWidth)
+
+  // ---- 分组折叠：点一级目录名，收起/展开它下面那一段 ----
+  //
+  // 它与上面那条"整条目录收起"是两件事：那条是横向省宽度，这条是纵向省高度。
+  // 这里验三样：标题确实是个开关、收起真的把项拿走了、收起后**仍然读得出当前在哪**
+  // （最后一条与"收起之后仍然看得出当前在哪一项"是同一个性质的要求）。
+  const group1 = sidebar.locator('.app-nav-group').first()
+  const groupTitle = group1.locator('.app-nav-group-title')
+  // ⚠️ 折叠态同样是存在 localStorage 里的用户偏好（与整条目录的收起态一个道理），
+  // 所以不能硬断言"默认是展开的"：先归到展开态再验
+  if ((await groupTitle.getAttribute('aria-expanded')) === 'false') {
+    await groupTitle.click()
+  }
+  expect('分组名是一个可折叠的开关（aria-expanded 可读）',
+    (await groupTitle.getAttribute('aria-expanded')) === 'true',
+    `aria-expanded=${await groupTitle.getAttribute('aria-expanded')}`)
+
+  const itemsBefore = await group1.locator('.app-nav-item').count()
+  await groupTitle.click()
+  const foldedGroup = await waitFor(
+    async () => (await groupTitle.getAttribute('aria-expanded')) === 'false', 3000)
+  expect('★ 点一下分组名，这一段收起来了', foldedGroup
+    && (await group1.locator('.app-nav-item').count()) < itemsBefore,
+    `${itemsBefore} → ${await group1.locator('.app-nav-item').count()} 项`)
+  // 收起的是**当前视图所在的那一段**（此刻是默认的 SSE 流式，属于对话台）：
+  // 项都不在 DOM 里了，位置的唯一线索就是标题上那枚标记 —— 所以这一条必须成立
+  expect('收起后标题仍然标出「当前视图在这一段里」',
+    (await groupTitle.getAttribute('data-active-inside')) === '1',
+    `data-active-inside=${await groupTitle.getAttribute('data-active-inside')}`)
+  // 只收起被点的那一段：应用管理那三项不该跟着消失
+  expect('另一段不受影响',
+    (await sidebar.locator('.app-nav-group').nth(1).locator('.app-nav-item').count()) === 3)
+
+  await groupTitle.click()
+  const unfoldedGroup = await waitFor(
+    async () => (await groupTitle.getAttribute('aria-expanded')) === 'true', 3000)
+  expect('再点一下展开回来（项也回来了）', unfoldedGroup
+    && (await group1.locator('.app-nav-item').count()) === itemsBefore,
+    `aria-expanded=${await groupTitle.getAttribute('aria-expanded')}`)
 
   const layout1 = await page.evaluate(() => {
     const doc = document.documentElement
@@ -2554,57 +2621,150 @@ else {
 }
 
 
-// ---------- AI Agent 应用管理（目录区，暂无功能） ----------
+// ---------- 应用管理 · 用户管理 ----------
 //
-// 这一区**没有后端接口**（见 AppManagementPanel 的文件头），所以能验的只有两件事：
-// 入口在目录里、点开之后出现的是那张聚合清单而不是一张应用表。
-// ⚠️ 刻意**不**断言任何"应用数据"：断言它等于把假数据当成了契约。
-console.log('[8.5] AI Agent 应用管理（目录区）')
-await navMode('应用清单')
-await page.waitForTimeout(300)
+// 这一节验的是**两件事**，每一件都对应这一页最容易出错的形态：
+//   ① "没有角色 → 没有任何权限"这句话必须显示出来 ——
+//      读者对"新账号"的默认预期恰好相反（以为默认给点什么）；
+//   ② 账号↔角色的编辑入口**不在这里**（只在角色侧，见 [8.7]）——
+//      这一页的角色列是只读的，而那件事要在界面上看得出来。
+//
+// ⚠️ 真后端那条路径上**一个字节都不写库**：这一页的写端点会真的建账号、改口令，
+// 而 `db_ai_agent` 是用户自己的库（与 Prompt 面板那条"真路径不往库里塞版本"同一条纪律）。
+// 所以下面凡是要"造一份数据"的断言都只在假后端上跑。
+console.log('[8.6] 应用管理 · 用户管理')
+await navMode('用户管理')
+await waitFor(async () => (await page.locator('.permission-panel .ant-table').count()) > 0, 8000)
+const userText = await page.locator('.permission-panel').innerText()
+
 expect('页头标题换成了应用管理那一区',
   /AI Agent 应用管理/.test(await page.locator('.app-topbar .app-title').innerText()))
-expect('没有把规划清单渲染成应用列表（页面上没有表格数据区）',
-  (await page.locator('.diag-panel .ant-table').count()) === 0)
-const planText = await page.locator('.diag-panel').innerText()
-expect('页面如实写明这一区还没有后端接口',
-  /没有后端接口|还是空的/.test(planText))
-expect('聚合清单列出来了（每一行都有"还差什么"）',
-  (await page.locator('.app-plan-table tbody tr').count()) === 7
-  && (await page.locator('.app-plan-gap').count()) === 7)
-expect('写明了这一页不做什么（不调后端、不做增删改）', /不做增删改/.test(planText))
-await page.screenshot({ path: `${SHOT_DIR}/app-management.png`, fullPage: true })
+expect('没有角色的账号如实说成「没有角色 → 没有任何权限」', /没有角色/.test(userText))
+expect('说明了权限是角色的并集（不是逐条配在账号上）', /并集/.test(userText))
+expect('账号表渲染出来了（这一页只有账号一张表）',
+  (await page.locator('.permission-panel .ant-table').count()) === 1)
+expect('账号行上带着启用/停用开关', (await page.locator('.permission-panel .ant-table .ant-switch').count()) >= 1)
+expect('角色列写明了去哪儿改（这一页没有角色编辑入口）', /编辑在「权限管理」里/.test(userText))
+// ⚠️ 正则里要容忍那个空格：antd 6 的按钮会把**两个汉字**拆成「角 色」（`split('').join(' ')`，实测
+// 见 buttonHelpers 的 splitCNCharsBySpace）—— 写成 /^角色$/ 时连真的按钮也匹配不上，断言会假绿
+expect('★ 账号表上没有「角色」按钮（角色归属只在角色侧编辑）',
+  (await page.locator('.permission-panel button', { hasText: /^角\s*色$/ }).count()) === 0)
+
+if (EXPECT_REFLECTION) {
+  // ---- 写路径：只有假后端能安全地跑（真后端这一跑会往用户的库里塞账号） ----
+  // 这一节必须从复位开始：自检会跑两遍，第二遍继承第一遍造出来的账号/角色，
+  // 而"建完之后列表 +1"这种断言第二遍必红 —— 与 prompt / alerts 的 __reset 同一条经验。
+  // ⚠️ 这一次复位同时是 [8.7] 写路径的起点（那一节不再复位第二次）
+  const reset = await page.request.post(`${URL}/api/permissions/__reset`)
+  expect('假后端复位成功', reset.ok(), `HTTP ${reset.status()}`)
+  // ⚠️ 复位之后**不要 `page.reload()`**：reload 会把 App 整个重挂，
+  // 于是前面几节攒下的结果（结构化输出、RAG 对照、Agent 轨迹）全部丢掉 ——
+  // 而脚本最后那节「模式往返」正是在断言它们还在。第一版就是这么把三条断言弄红的。
+  // 正确做法是**切走再切回来**：面板按模式条件渲染，切回来就是一次重新挂载、重新拉数据
+  await navMode('权限管理')
+  await page.waitForTimeout(200)
+  await navMode('用户管理')
+  await waitFor(async () => (await page.locator('.permission-panel .ant-table').count()) > 0, 8000)
+
+  // ① 界面上建一个账号：它必须一个角色都没有，而且页面要把这件事说出来
+  //
+  // ⚠️ 两个坑（都踩过）：
+  //   ① 弹窗必须**按可见的那个**定位。antd 把关闭过的 Modal 留在 DOM 里（只是隐藏），
+  //      所以 `.ant-modal` 会命中多个 —— 用 `.ant-modal:visible` 才不会点到旧的；
+  //   ② **不能用"输入框回车"提交**：这里没有 `<form>`，回车什么都不会发生
+  //      （第一版就是这么红的：弹窗一直开着，而失败信息看起来像"创建没生效"）。
+  const newUserDialog = page.locator('.ant-modal:visible', { hasText: '新建账号' })
+  await page.locator('.permission-panel').getByRole('button', { name: '新建账号' }).click()
+  await newUserDialog.locator('input[placeholder^="登录名"]').fill('selfcheck-user')
+  await newUserDialog.locator('input[placeholder^="初始口令"]').fill('p@ss-1234')
+  // ⚠️ 用**类名**点主按钮，不用 `getByRole('button', {name:'创建'})`：
+  // antd 6 的按钮里有没有可算作无障碍名的文字，取决于它内部的 span 结构，
+  // 而那一层结构不该成为这条断言的前提（实测 getByRole 找不到它，超时信息只是"没有这个按钮"）。
+  // 主按钮在弹窗里只有一个（.ant-btn-primary），而"弹窗里的主按钮 = 提交"是这个组件的约定
+  await newUserDialog.locator('.ant-btn-primary').click()
+  const userCreated = await waitFor(async () =>
+    (await page.locator('.permission-panel').innerText()).includes('selfcheck-user'), 8000)
+  expect('界面上新建账号之后列表里出现它（前端 ↔ 后端这条线通了）', userCreated)
+  expect('新建账号的反馈说清了"一个角色都没有，因此没有任何权限"',
+    /已建账号「selfcheck-user」/.test(await page.locator('.permission-panel').innerText())
+    && /没有任何权限/.test(await page.locator('.permission-panel').innerText()))
+
+  // ② 同名再建一次 → 必须显示成 409 那句，而不是静默成功、也不是 500
+  await page.locator('.permission-panel').getByRole('button', { name: '新建账号' }).click()
+  await newUserDialog.locator('input[placeholder^="登录名"]').fill('selfcheck-user')
+  await newUserDialog.locator('input[placeholder^="初始口令"]').fill('p@ss-1234')
+  await newUserDialog.locator('.ant-btn-primary').click()
+  const conflictShown = await waitFor(async () =>
+    /名字已被占用/.test(await page.locator('.permission-panel').innerText()), 8000)
+  expect('同名账号被拒时界面说成「名字已被占用」（409 与 400 分开处理）', conflictShown)
+  // 取消 = 弹窗里那个非主按钮
+  await newUserDialog.locator('.ant-btn:not(.ant-btn-primary)').last().click()
+
+  // ③ 编辑弹窗：改显示名 + 停用（这个页面上"修改"与"删除的等价物"都在这一个弹窗 + 行上那枚开关）
+  const selfRow = page.locator('.permission-panel .ant-table-row', { hasText: 'selfcheck-user' })
+  // ⚠️ 两字按钮在 antd 6 里渲染成「编 辑」（汉字之间插了一个空格，见上面那条断言的注释）
+  await selfRow.locator('button', { hasText: /^编\s*辑$/ }).click()
+  const editDialog = page.locator('.ant-modal:visible', { hasText: '编辑账号' })
+  await editDialog.locator('input[placeholder^="显示名"]').fill('自检账号')
+  await editDialog.locator('.ant-switch').click()
+  await editDialog.locator('.ant-btn-primary').click()
+  const userEdited = await waitFor(async () =>
+    /账号「selfcheck-user」已更新（停用）/.test(await page.locator('.permission-panel').innerText()), 8000)
+  expect('★ 编辑弹窗改显示名 + 停用：反馈用的是后端那句话', userEdited)
+  expect('改完之后那一行显示新的显示名', /自检账号/.test(await selfRow.innerText()))
+  expect('停用之后那一行带上了停用标记', /停用/.test(await selfRow.innerText()))
+
+  // ④ 行上那枚开关就是"删除账号"的等价物：点回去 = 重新启用 ——
+  // 账号表刻意没有真删除（见 AccountMapper 的注释），所以这里验的是"关得掉、也开得回来"
+  await selfRow.locator('.ant-switch').click()
+  const userReEnabled = await waitFor(async () =>
+    /账号「selfcheck-user」已更新（启用）/.test(await page.locator('.permission-panel').innerText()), 8000)
+  expect('★ 开关点回去 = 重新启用（这个界面上没有真删除）', userReEnabled)
+
+  // ⑤ 改口令：只有「重设」，没有「查看」（响应里根本没有口令这一列）
+  await selfRow.locator('button', { hasText: /^改口令$/ }).click()
+  const passwordDialog = page.locator('.ant-modal:visible', { hasText: '改口令：selfcheck-user' })
+  await passwordDialog.locator('input[placeholder="新口令"]').fill('n3w-p@ss')
+  await passwordDialog.locator('input[placeholder="再输一遍"]').fill('n3w-p@ss')
+  await passwordDialog.locator('.ant-btn-primary').click()
+  const passwordChanged = await waitFor(async () =>
+    /口令已按新散列保存（旧口令立即失效）/.test(await page.locator('.permission-panel').innerText()), 8000)
+  expect('改口令成功，反馈说清了旧口令立即失效', passwordChanged)
+}
 
 // ---------- 应用管理 · 权限管理 ----------
 //
-// 这一节验的是**三件事**，每一件都对应这一页最容易出错的形态：
-//   ① 边界说明必须在场 —— 这一族端点没有登录、口令只存散列；
-//   ② 两条"空权限"的话必须显示出来（"没有角色 → 没有任何权限"）——
-//      读者对"新账号"的默认预期恰好相反；
-//   ③ 核对卡要能对同一份数据给出**两种结论**（允许 / 不允许），
-//      否则"判定到底有没有在工作"在界面上看不出来（一个恒返回 allowed 的接口
-//      画出来与真判定一模一样）。
-//
-// ⚠️ 真后端那条路径上**一个字节都不写库**：这一页的写端点会真的建账号、建角色，
-// 而 `db_ai_agent` 是用户自己的库（与 Prompt 面板那条"真路径不往库里塞版本"同一条纪律）。
-// 所以下面凡是要"造一份数据"的断言都只在假后端上跑。
-console.log('[8.6] 应用管理 · 权限管理')
+// 这一节验的是**角色那一半**：角色行上五个入口（编辑 / 工具 / 目录 / 成员 / 删除）里，
+// 前四个各打一个写端点，以及核对卡要能对同一份数据给出**两种结论**（允许 / 不允许）——
+// 否则"判定到底有没有在工作"在界面上看不出来（一个恒返回 allowed 的接口
+// 画出来与真判定一模一样）。
+// （账号那一半在 [8.6]；写路径同样只在假后端上跑，理由见那一节。）
+console.log('[8.7] 应用管理 · 权限管理')
 await navMode('权限管理')
 await waitFor(async () => (await page.locator('.permission-panel .ant-table').count()) > 0, 8000)
 const permText = await page.locator('.permission-panel').innerText()
 
 expect('页头标题换成了应用管理那一区',
   /AI Agent 应用管理/.test(await page.locator('.app-topbar .app-title').innerText()))
-expect('写明了这一族端点没有登录（能访问端口的人可以给自己开全部工具）',
-  /没有登录/.test(permText) && /全部工具/.test(permText))
-expect('写明了口令只存散列、响应里没有这一列',
-  /只以散列保存|散列/.test(permText))
-expect('两条"空权限"都如实说了出来（没有角色 / 清单为空）',
-  /没有角色/.test(permText) && /清单为空|一把工具都调不到/.test(permText))
-expect('账号表与角色表都渲染出来了',
-  (await page.locator('.permission-panel .ant-table').count()) >= 2)
-expect('说明了权限是角色的并集（不是逐条配在账号上）',
-  /并集/.test(permText))
+expect('清单为空的角色如实说成「一把工具都调不到」', /清单为空|一把工具都调不到/.test(permText))
+expect('角色表渲染出来了（这一页只有角色一张表）',
+  (await page.locator('.permission-panel .ant-table').count()) === 1)
+{
+  // 不挑具体角色名（真后端的数据与假后端不同）：任何一行都必须有这五个入口
+  const labels = await page.locator('.permission-panel .ant-table-row').first().locator('button').allInnerTexts()
+  // ⚠️ 去空白再比：两字按钮渲染出来是「编 辑 / 工 具 / 目 录 / 成 员」（antd 6 在汉字之间插空格）
+  expect('★ 角色行上有五个入口：编辑 / 工具 / 目录 / 成员 / 删除',
+    JSON.stringify(labels.map(t => t.replace(/\s+/g, ''))) === JSON.stringify(['编辑', '工具', '目录', '成员', '删除']),
+    labels.join(' / '))
+}
+
+{
+  // 成员不进角色表：谁有它要点「成员」进弹窗才查（弹窗里勾着的就是全部成员）。
+  // ⚠️ 只取 thead 里的 `th`：antd 的量尺行用的是 `td`，不会混进来
+  const headers = await page.locator('.permission-panel .ant-table-thead th').allInnerTexts()
+  expect('★ 角色表里没有「成员」列（谁有它要在「成员」弹窗里查）',
+    !headers.some(text => /成员/.test(text)), headers.join(' / '))
+}
 
 // ---- 核对卡：同一个人，两种结论 ----
 const verifyRow = page.locator('.permission-panel .diag-card', { hasText: '核对：这个人能不能' })
@@ -2643,55 +2803,58 @@ expect('目录按路径分段比：D:\\work\\demo 不命中 D:\\work\\demo-other
 await page.screenshot({ path: `${SHOT_DIR}/permissions.png`, fullPage: true })
 
 if (EXPECT_REFLECTION) {
-  // ---- 写路径：只有假后端能安全地跑（真后端这一跑会往用户的库里塞账号与角色） ----
-  // 这一节必须从复位开始：自检会跑两遍，第二遍继承第一遍造出来的账号/角色，
-  // 而"建完之后列表 +1"这种断言第二遍必红 —— 与 prompt / alerts 的 __reset 同一条经验
-  const reset = await page.request.post(`${URL}/api/permissions/__reset`)
-  expect('假后端复位成功', reset.ok(), `HTTP ${reset.status()}`)
-  // ⚠️ 复位之后**不要 `page.reload()`**：reload 会把 App 整个重挂，
-  // 于是前面几节攒下的结果（结构化输出、RAG 对照、Agent 轨迹）全部丢掉 ——
-  // 而脚本最后那节「模式往返」正是在断言它们还在。第一版就是这么把三条断言弄红的。
-  // 正确做法是**切走再切回来**：面板按模式条件渲染，切回来就是一次重新挂载、重新拉数据
-  await navMode('应用清单')
-  await page.waitForTimeout(200)
-  await navMode('权限管理')
-  await waitFor(async () => (await page.locator('.permission-panel .ant-table').count()) > 0, 8000)
+  // ---- 写路径：接 [8.6] 的同一份复位状态（那一节已经 __reset 过，这里不再复位） ----
+  // ① 角色行的「编辑」：改的是基本信息（名字 / 说明 / 档位），不碰工具、目录与成员 ——
+  // 它们是各自整体替换的三份清单，所以各有各的入口
+  const editRow = page.locator('.permission-panel .ant-table-row', { hasText: '待配置' })
+  await editRow.locator('button', { hasText: /^编\s*辑$/ }).click()
+  const roleEditDialog = page.locator('.ant-modal:visible', { hasText: '编辑角色' })
+  await roleEditDialog.locator('input[placeholder^="角色名"]').fill('自检-待配置')
+  await roleEditDialog.locator('input[placeholder^="这个角色"]').fill('自检改过说明')
+  await roleEditDialog.locator('.ant-btn-primary').click()
+  const roleEdited = await waitFor(async () =>
+    /角色「自检-待配置」已更新/.test(await page.locator('.permission-panel').innerText()), 8000)
+  expect('★ 角色行的「编辑」改了名字与说明（写的是 updateRole）', roleEdited)
 
-  // ① 界面上建一个账号：它必须一个角色都没有，而且页面要把这件事说出来
-  //
-  // ⚠️ 两个坑（都踩过）：
-  //   ① 弹窗必须**按可见的那个**定位。antd 把关闭过的 Modal 留在 DOM 里（只是隐藏），
-  //      所以 `.ant-modal` 会命中多个 —— 用 `.ant-modal:visible` 才不会点到旧的；
-  //   ② **不能用"输入框回车"提交**：这里没有 `<form>`，回车什么都不会发生
-  //      （第一版就是这么红的：弹窗一直开着，而失败信息看起来像"创建没生效"）。
-  const newUserDialog = page.locator('.ant-modal:visible', { hasText: '新建账号' })
-  await page.locator('.permission-panel').getByRole('button', { name: '新建账号' }).click()
-  await newUserDialog.locator('input[placeholder^="登录名"]').fill('selfcheck-user')
-  await newUserDialog.locator('input[placeholder^="初始口令"]').fill('p@ss-1234')
-  // ⚠️ 用**类名**点主按钮，不用 `getByRole('button', {name:'创建'})`：
-  // antd 6 的按钮里有没有可算作无障碍名的文字，取决于它内部的 span 结构，
-  // 而那一层结构不该成为这条断言的前提（实测 getByRole 找不到它，超时信息只是"没有这个按钮"）。
-  // 主按钮在弹窗里只有一个（.ant-btn-primary），而"弹窗里的主按钮 = 提交"是这个组件的约定
-  await newUserDialog.locator('.ant-btn-primary').click()
-  const userCreated = await waitFor(async () =>
-    (await page.locator('.permission-panel').innerText()).includes('selfcheck-user'), 8000)
-  expect('界面上新建账号之后列表里出现它（前端 ↔ 后端这条线通了）', userCreated)
-  expect('新建账号的反馈说清了"一个角色都没有，因此没有任何权限"',
-    /已建账号「selfcheck-user」/.test(await page.locator('.permission-panel').innerText())
-    && /没有任何权限/.test(await page.locator('.permission-panel').innerText()))
+  const roleRow = page.locator('.permission-panel .ant-table-row', { hasText: '自检-待配置' })
 
-  // ② 同名再建一次 → 必须显示成 409 那句，而不是静默成功、也不是 500
-  await page.locator('.permission-panel').getByRole('button', { name: '新建账号' }).click()
-  await newUserDialog.locator('input[placeholder^="登录名"]').fill('selfcheck-user')
-  await newUserDialog.locator('input[placeholder^="初始口令"]').fill('p@ss-1234')
-  await newUserDialog.locator('.ant-btn-primary').click()
-  const conflictShown = await waitFor(async () =>
-    /名字已被占用/.test(await page.locator('.permission-panel').innerText()), 8000)
-  expect('同名账号被拒时界面说成「名字已被占用」（409 与 400 分开处理）', conflictShown)
-  // 取消 = 弹窗里那个非主按钮
-  await newUserDialog.locator('.ant-btn:not(.ant-btn-primary)').last().click()
+  // ② 工具弹窗：勾一把保存 —— 提交的是整份清单（后端整体替换，不是增删）
+  await roleRow.locator('button', { hasText: /^工\s*具$/ }).click()
+  const toolsDialog = page.locator('.ant-modal:visible', { hasText: '能调的工具' })
+  await toolsDialog.locator('label', { hasText: 'search_docs' }).click()
+  await toolsDialog.locator('.ant-btn-primary').click()
+  const toolsSaved = await waitFor(async () =>
+    /工具清单已替换为 1 把：search_docs/.test(await page.locator('.permission-panel').innerText()), 8000)
+  expect('★ 工具弹窗勾选保存之后，反馈说出了新的清单', toolsSaved)
 
-  // ③ 剩下的写路径直接打接口 —— 它们要验的是**后端判据**，不是界面控件，
+  // ③ 目录弹窗：加一条前缀（「添加」只是加进草稿，保存才写库）
+  await roleRow.locator('button', { hasText: /^目\s*录$/ }).click()
+  const dirsDialog = page.locator('.ant-modal:visible', { hasText: '能在哪些目录下干活' })
+  await dirsDialog.locator('input[placeholder^="目录前缀"]').fill('D:\\work\\demo')
+  await dirsDialog.locator('button', { hasText: /^添\s*加$/ }).click()
+  await dirsDialog.locator('.ant-btn-primary').click()
+  const dirsSaved = await waitFor(async () =>
+    /目录前缀已替换为 1 条/.test(await page.locator('.permission-panel').innerText()), 8000)
+  expect('★ 目录弹窗添加一条前缀并保存（写的是 setRoleDirectories）', dirsSaved)
+
+  // ④ 成员弹窗：勾一个人保存，再打开清空保存 —— 打的是新端点 PUT /roles/{id}/users，
+  // 界面编辑账号↔角色关系只走这一侧
+  await roleRow.locator('button', { hasText: /^成\s*员$/ }).click()
+  const membersDialog = page.locator('.ant-modal:visible', { hasText: '的成员' })
+  await membersDialog.locator('label', { hasText: 'zhou' }).click()
+  await membersDialog.locator('.ant-btn-primary').click()
+  const memberAdded = await waitFor(async () =>
+    /这个角色的成员已替换为 1 个：zhou/.test(await page.locator('.permission-panel').innerText()), 8000)
+  expect('★ 成员弹窗勾选保存：反馈说出了新的成员', memberAdded)
+
+  await roleRow.locator('button', { hasText: /^成\s*员$/ }).click()
+  await membersDialog.locator('label', { hasText: 'zhou' }).click()
+  await membersDialog.locator('.ant-btn-primary').click()
+  const memberCleared = await waitFor(async () =>
+    /这个角色现在一个成员都没有/.test(await page.locator('.permission-panel').innerText()), 8000)
+  expect('清空成员会明说「一个成员都没有」（不是静默成功）', memberCleared)
+
+  // ⑤ 剩下的写路径直接打接口 —— 它们要验的是**后端判据**，不是界面控件，
   // 而界面上的复选框给不出"写错一个字母的工具名"这种输入
   const created = await page.request.post(`${URL}/api/permissions/roles`, {
     data: { name: '自检-只读', description: '自检用', access: 'LISTED' },
@@ -2722,25 +2885,195 @@ if (EXPECT_REFLECTION) {
 
   const userSnapshot = await (await page.request.get(`${URL}/api/permissions`)).json()
   const selfUser = userSnapshot.users.find(u => u.name === 'selfcheck-user')
-  const granted = await page.request.put(`${URL}/api/permissions/users/${selfUser.id}/roles`, {
-    data: { roleIds: [roleId] },
-  })
-  expect('给账号挂角色成功', granted.ok(), `HTTP ${granted.status()}`)
+  expect('自检账号还在（[8.6] 在界面上建的那一个）', !!selfUser)
 
+  // ⑥ 角色侧设成员（新端点）—— 界面上的「成员」弹窗打的就是这一条
+  const grantedViaRole = await page.request.put(`${URL}/api/permissions/roles/${roleId}/users`, {
+    data: { userIds: [selfUser.id] },
+  })
+  const grantedViaRoleBody = await grantedViaRole.json()
+  expect('★ 角色侧设成员成功，回执里是登录名',
+    grantedViaRole.ok() && grantedViaRoleBody.accounts.includes('selfcheck-user'),
+    `HTTP ${grantedViaRole.status()}`)
+
+  // ⑦ 未知 userId → 400（与"工具名写错"同一类判据：认不出就当场拒，且带可用清单）
+  const badUser = await page.request.put(`${URL}/api/permissions/roles/${roleId}/users`, {
+    data: { userIds: [999999] },
+  })
+  const badUserBody = await badUser.text()
+  expect('挂一个不存在的 userId → 400，报错里带可用账号清单',
+    badUser.status() === 400 && /这些账号不存在/.test(badUserBody) && /可用的是/.test(badUserBody),
+    `HTTP ${badUser.status()}`)
+
+  // ⑧ 核对：这一次的角色是**角色侧**挂上的，所以"允许"证明的是那条链路真的写进去了
   const allowed = await (await page.request.get(
     `${URL}/api/permissions/verify?account=selfcheck-user&tool=search_docs&dir=${encodeURIComponent('D:\\work\\demo')}`,
   )).json()
-  expect('挂上角色之后核对变成「允许」（同一份数据，两种结论）',
+  expect('角色侧挂上角色之后核对变成「允许」（同一份数据，两种结论）',
     allowed.allowed === true, allowed.reason)
+
+  // ⑨ 账号侧那个旧端点仍然可用：两侧写的是同一张 agent_user_role
+  const grantedViaUser = await page.request.put(`${URL}/api/permissions/users/${selfUser.id}/roles`, {
+    data: { roleIds: [roleId] },
+  })
+  const grantedViaUserBody = await grantedViaUser.json()
+  expect('账号侧的 PUT /users/{id}/roles 仍然可用（两侧同一张关系表）',
+    grantedViaUser.ok() && grantedViaUserBody.roles.includes('自检-只读'),
+    `HTTP ${grantedViaUser.status()}`)
 
   const del = await page.request.delete(`${URL}/api/permissions/roles/${roleId}`)
   const delBody = await del.json()
   expect('删角色时报告影响面（在删除之前数出来的那个数字）',
     del.ok() && delBody.affectedAccounts === 1, `affected=${delBody.affectedAccounts}`)
 
-  // ④ 恢复初始状态：自检跑完之后这一页应该还是它一开始的样子
+  // ⑩ 恢复初始状态：自检跑完之后这一区应该还是它一开始的样子
   const resetAgain = await page.request.post(`${URL}/api/permissions/__reset`)
   expect('自检收尾把假后端复位（不留状态给下一次）', resetAgain.ok())
+}
+
+// ---------- 应用管理 · agent任务 ----------
+//
+// 这一节验的是**看板与状态链的联动**，三处最容易出错的：
+//   ① 卡片停在哪一列 —— 状态→列的归属由后端算（AgentTaskService.Column），
+//      前端自己算一遍的话，卡片会出现在错误的列上，而"现在等谁"这个问题的答案就错了；
+//   ② 点一个动作之后卡片**真的换列了**，而不是只弹了一句反馈；
+//   ③ 409 那条路：别人先把一条确认项答掉之后，界面上那个按钮看起来还能点 ——
+//      这时要出现"这条任务的状态已经变了"，而不是"你填错了"。
+//
+// ⚠️ 真后端那条路径上**一个字节都不写库**（与用户管理 / 权限管理同一条纪律）：
+// 造数据、推进、答复、取消都只在假后端上跑。真后端只断言这一页渲染得出来。
+console.log('[8.8] 应用管理 · agent任务')
+await navMode('agent任务')
+await waitFor(async () => (await page.locator('.task-panel .ant-card').count()) > 0, 8000)
+
+/**
+ * 各列的卡片数，按列的 key 读（`.task-column-count` 上的 data-count 就是界面显示的那个数）。
+ * 读界面上的数而不是重新调一次接口：断言的是"用户看到的是不是对的"。
+ */
+const taskColumnCounts = () => page.$$eval('.task-column', els => Object.fromEntries(
+  els.map(el => [
+    el.dataset.column,
+    Number(el.querySelector('.task-column-count')?.dataset.count ?? -1),
+  ])))
+
+if (EXPECT_REFLECTION) {
+  const initialCounts = await taskColumnCounts()
+  expect('看板五列都在，顺序与后端的列定义一致',
+    JSON.stringify(Object.keys(initialCounts))
+      === JSON.stringify(['new', 'pending', 'executing', 'acceptance', 'completed']),
+    Object.keys(initialCounts).join(' / '))
+  expect('★ 假数据的每一列都有卡片（分组本身才验得出来）',
+    Object.values(initialCounts).every(count => count >= 1), JSON.stringify(initialCounts))
+
+  const boardText = await page.locator('.task-board').innerText()
+  expect('卡片写出「发布人 → 任务人」与当前执行人',
+    /张三 → 李四/.test(boardText) && /当前执行人/.test(boardText))
+  expect('待验收那条带着执行结果', /三条断言已补/.test(boardText))
+  // 「已取消」与「已完成」同列：那一条必须在**已完成**那一列里，且带着取消原因 ——
+  // 两者唯一的区别就是状态标签与这条原因（结论与结局同列这件事的判据）
+  const completedText = await page.locator('.task-column[data-column="completed"]').innerText()
+  expect('★ 已取消那条落在「已完成」列里，并带着取消原因',
+    /需求方撤回了这条调研/.test(completedText) && /已取消/.test(completedText)
+    // 同列另一条（验收通过的）也在：一列收两个状态，只放一条就看不出这件事
+    && /已改成 CI_MOCK_PORT/.test(completedText), initialCounts.completed + ' 条')
+
+  // ---- 新发布 → 待确认需求：这一点要连起来看（卡片换列 + 确认项出现） ----
+  const newColumn = page.locator('.task-column[data-column="new"]')
+  await newColumn.locator('.task-card').first().click()
+  const detail = page.locator('.ant-modal:visible', { hasText: '确认项' })
+  await waitFor(async () => (await detail.innerText()).includes('确认项'), 5000)
+  const openedId = Number(await newColumn.locator('.task-card').first().getAttribute('data-task-id'))
+
+  expect('打开「新发布」的任务：说清它还没有确认项（它不等于「待确认需求」）',
+    /还没有确认项/.test(await detail.innerText()))
+  await detail.getByRole('button', { name: '发起需求确认', exact: true }).click()
+  await waitFor(async () => (await page.locator('.task-panel').innerText()).includes('已推进到'), 8000)
+
+  const afterAdvance = await taskColumnCounts()
+  expect('★ 点「发起需求确认」之后：卡片从「新任务」移到了「待处理」',
+    afterAdvance.new === initialCounts.new - 1 && afterAdvance.pending === initialCounts.pending + 1,
+    `new ${initialCounts.new}→${afterAdvance.new} / pending ${initialCounts.pending}→${afterAdvance.pending}`)
+  expect('反馈写的是推进到哪一步（这句话来自后端）',
+    /已推进到「待确认需求」/.test(await page.locator('.task-panel').innerText()))
+
+  // ---- 答复确认项：答完自动推进到下一步、下一条确认项已经生成 ----
+  await waitFor(async () => /待答复/.test(await detail.innerText()), 8000)
+  expect('详情里出现第 1 条需求确认项（带着「第 1 步」与选项集）',
+    /第 1 步/.test(await detail.innerText()) && /需求确认/.test(await detail.innerText()))
+  // ⚠️ 两字按钮在 antd 6 里渲染成「确 认」（汉字之间插一个空格）——
+  // 写成 /^确认$/ 时连真的按钮也匹配不上，断言会假绿（同 [8.6] 的「角 色」）
+  await detail.locator('button', { hasText: /^确\s*认$/ }).first().click()
+  // ⚠️ 等的时候要把**两处都等上**：写操作的回执（面板上的反馈）先到，详情是紧接着重新拉的 ——
+  // 只看反馈就往下走的话，读详情时会读到回复前的那一份（实测闪断过一次）
+  const advanced = await waitFor(async () =>
+    /已答复「确认」/.test(await page.locator('.task-panel').innerText())
+    && /第 2 步/.test(await detail.innerText()), 8000)
+  expect('★ 答复第 1 步之后自动推进：第 2 步的计划确认项已经生成',
+    advanced && /计划确认/.test(await detail.innerText()))
+
+  // ---- 409：别人先答过同一条确认项（两个人在看同一张看板的常态） ----
+  //
+  // 脚本直接调后端替"另一个人"把当前待答的那条答掉，然后界面上的那个按钮**看起来还能点** ——
+  // 点下去必须收到 409，并被说成"状态已经变了"，而不是"你填错了"。
+  const current = await (await page.request.get(`${URL}/api/agent-tasks/${openedId}`)).json()
+  const pendingConfirm = current.confirms.find(c => !c.answered)
+  const otherAnswer = await page.request.post(
+    `${URL}/api/agent-tasks/${openedId}/confirms/${pendingConfirm.id}/answer`,
+    { data: { answer: '同意' } })
+  expect('（准备）脚本替另一个人先答掉这条确认项', otherAnswer.ok(), `HTTP ${otherAnswer.status()}`)
+
+  await detail.locator('button', { hasText: /^同\s*意$/ }).first().click()
+  const conflictShown = await waitFor(async () =>
+    /状态已经变了/.test(await page.locator('.task-panel').innerText()), 8000)
+  expect('★ 别人已经答过之后，界面上那次点答被说成「状态已经变了」（409 与 400 分开处理）',
+    conflictShown)
+  await detail.locator('.ant-modal-footer .ant-btn').click()
+  await waitFor(async () => (await page.locator('.ant-modal:visible').count()) === 0, 5000)
+
+  // ---- 发布一条新任务（界面走一遍表单） ----
+  await page.locator('.task-panel').getByRole('button', { name: '发布任务', exact: true }).click()
+  // ⚠️ 弹窗要按**标题**过滤，不能按 placeholder 过滤：placeholder 是属性、不进 innerText，
+  // 而 `hasText` 匹配的是渲染出来的文字 —— 按 placeholder 过滤会一直等不到，
+  // 而失败信息（"waiting for locator …" 超时）看起来像"弹窗没打开"
+  const createDialog = page.locator('.ant-modal:visible', { hasText: '发布任务' })
+  await createDialog.locator('input[placeholder^="发布人"]').fill('自检发布人')
+  await createDialog.locator('input[placeholder^="任务人"]').fill('自检任务人')
+  await createDialog.locator('textarea[placeholder^="任务描述"]').fill('自检造的一条任务')
+  await createDialog.locator('.ant-btn-primary').click()
+  const createdOk = await waitFor(async () =>
+    /已发布任务/.test(await page.locator('.task-panel').innerText()), 8000)
+  const afterCreate = await taskColumnCounts()
+  expect('★ 界面上发布任务：「新任务」列 +1，反馈说明它落在哪一列',
+    createdOk && afterCreate.new === afterAdvance.new + 1,
+    `new ${afterAdvance.new}→${afterCreate.new}`)
+
+  // ---- 取消：原因必填，取消后卡片进「已完成」列（与已完成同列）且原因显示在卡片上 ----
+  await page.locator('.task-column[data-column="new"] .task-card', { hasText: '自检造的一条任务' }).click()
+  const cancelDetail = page.locator('.ant-modal:visible', { hasText: '确认项' })
+  await cancelDetail.getByRole('button', { name: '取消任务', exact: true }).click()
+  const cancelDialog = page.locator('.ant-modal:visible', { hasText: '取消原因必填' })
+  await cancelDialog.locator('textarea').fill('自检：这条不需要了')
+  await cancelDialog.locator('.ant-btn-primary').click()
+  const cancelledOk = await waitFor(async () =>
+    /已取消：自检：这条不需要了/.test(await page.locator('.task-panel').innerText()), 8000)
+  const afterCancel = await taskColumnCounts()
+  expect('★ 取消之后卡片进「已完成」列（没有单独的已取消列），原因显示在卡片上',
+    cancelledOk && afterCancel.completed === initialCounts.completed + 1
+    && !('cancelled' in afterCancel)
+    && /自检：这条不需要了/.test(await page.locator('.task-column[data-column="completed"]').innerText()),
+    `completed ${initialCounts.completed}→${afterCancel.completed}`)
+  // 关掉详情弹窗：后面几节要切模式，留一个开着的弹窗在那里只是在制造噪声
+  await cancelDetail.locator('.ant-modal-footer .ant-btn').click()
+
+  // 收尾复位：与权限那一节同一条纪律（自检跑两遍，第二遍不该继承第一遍改出来的状态）
+  const taskReset = await page.request.post(`${URL}/api/agent-tasks/__reset`)
+  expect('自检收尾把任务假后端也复位（不留状态给下一次）', taskReset.ok())
+}
+else {
+  // 真后端：只断言这一页渲染得出来 —— 库里没有任务时它是空状态，而不是报错
+  const panelText = await page.locator('.task-panel').innerText()
+  expect('真后端的任务看板可读（空库时给的是「还没有任务」而不是报错）',
+    /任务看板/.test(panelText), panelText.slice(0, 80).replace(/\n/g, ' '))
 }
 
 // ---------- 切回流式：历史不能被清掉 ----------
@@ -2791,8 +3124,8 @@ await browser.close()
 
 console.log('')
 if (problems.length === 0) {
-  console.log(`✅ 全部通过。截图：${SHOT_DIR}/`)
+  console.log(`✅ 全部通过（${executed} 项断言）。截图：${SHOT_DIR}/`)
   process.exit(0)
 }
-console.log(`❌ ${problems.length} 项未通过：${problems.join('、')}`)
+console.log(`❌ ${executed} 项断言里 ${problems.length} 项未通过：${problems.join('、')}`)
 process.exit(1)

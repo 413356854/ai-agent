@@ -58,6 +58,14 @@
 		 WHERE LOWER(TRIM(name)) = LOWER(TRIM(#{name}))
 	</select>
 
+	<!-- 空列表时调用方不发这条查询（IN () 是语法错），理由见 RoleMapper.xml 的头注 -->
+	<select id="byIds" resultMap="accountRow">
+		SELECT <include refid="accountColumns"/>
+		  FROM agent_user
+		 WHERE id IN
+		<foreach item="id" collection="ids" open="(" separator="," close=")">#{id}</foreach>
+	</select>
+
 	<select id="list" resultMap="accountRow">
 		SELECT <include refid="accountColumns"/> FROM agent_user ORDER BY name
 	</select>

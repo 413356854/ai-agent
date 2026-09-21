@@ -9,11 +9,11 @@
 /**
  * 导航项标识 = 视图标识。前八个是对话台的模式，对应后端的八条链路
  * （逐条见 docs/项目功能点与代码索引.md 第 6 节）；
- * `appRegistry` 与 `permissions` 是应用管理区的两项。
+ * `users` / `permissions` / `tasks` 是应用管理区的三项。
  */
 export type Mode =
   | 'stream' | 'structured' | 'threads' | 'rag' | 'agent' | 'cost' | 'prompt' | 'alerts'
-  | 'appRegistry' | 'permissions'
+  | 'users' | 'permissions' | 'tasks'
 
 /** 导航分组 = 一级目录。它不是视觉分组：每个分组是一个独立的功能区，顶栏标题跟着它走 */
 export interface NavGroup {
@@ -31,8 +31,9 @@ export interface NavGroup {
  * 目录顺序 = 界面上的排列顺序。
  *
  * 「对话台」收的是**能点出一次运行**的八个模式（点一次提问 / 点一次实验）；
- * 「应用管理」收的是"配一次、以后一直生效"的东西。
- * 这条界线决定了新功能该往哪一区放：会花钱跑一次的进对话台，改配置的进应用管理。
+ * 「应用管理」收的是"配一次、以后一直生效"的东西，以及**一件活在人之间怎么流转的记录**
+ * （agent 任务：它自己不点模型，点的是人的确认）。
+ * 这条界线决定了新功能该往哪一区放：会花钱跑一次的进对话台，改配置、或者记录"谁把活交给了谁"的进应用管理。
  */
 export const NAV_SECTIONS: NavGroup[] = [
   {
@@ -54,11 +55,12 @@ export const NAV_SECTIONS: NavGroup[] = [
   {
     key: 'apps',
     label: 'AI Agent 应用管理',
-    title: 'AI Agent 应用管理：模型 / 工具 / 提示词 / 权限',
+    title: 'AI Agent 应用管理：账号 / 角色 / 权限 / 任务',
     tag: { color: 'geekblue', text: '配一次 · 之后每次调用都按它生效' },
     items: [
-      { mode: 'appRegistry', label: '应用清单' },
+      { mode: 'users', label: '用户管理' },
       { mode: 'permissions', label: '权限管理' },
+      { mode: 'tasks', label: 'agent任务' },
     ],
   },
 ]

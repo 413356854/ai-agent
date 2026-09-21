@@ -97,17 +97,67 @@ body {
   padding-top: 8px;
 }
 
-/* 一级目录名。它**不是**可点的：可点的是它下面那些项，
-   把分组名做成可折叠会把"这一段里有哪几项"藏起来 */
+/* 一级目录名。它**是可点的**：点一下收起/展开这一段里的项。
+   ⚠️ 收起确实会把"这一段里有哪几项"藏起来，那笔代价由下面的 `is-active` 补回来：
+   当前视图若正落在收起的那一段里，标题会带上着色与左侧色标。
+   （窄条态那一行整行是藏起来的，见 `.is-collapsed` 那一段。） */
 .app-nav-group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  /* 左侧 3px 留给"当前视图在这一段里"：与目录项那条色标同宽，展开/收起都不跳 */
+  border: none;
+  border-left: 3px solid transparent;
+  border-radius: 6px;
   padding: 4px 8px;
+  background: transparent;
+  /* 它是 button：字体要显式继承，否则会退回浏览器默认的按钮字体 */
+  font: inherit;
   font-size: 12px;
   font-weight: 600;
   color: #8c8c8c;
   letter-spacing: 0.02em;
+  text-align: left;
   white-space: nowrap;
   overflow: hidden;
+  cursor: pointer;
+}
+
+.app-nav-group-title:hover {
+  background: #f5f6f8;
+  color: #1677ff;
+}
+
+/* 收起的这一段里正落着当前视图。与目录项那条规则同一个理由：
+   "现在在哪"是这一页最要紧的信息，不靠颜色单独表达，也不该因为收起而丢掉 */
+.app-nav-group-title.is-active {
+  color: #0958d9;
+  border-left-color: #1677ff;
+}
+
+/* flex 子项要写 min-width: 0 才肯收缩 —— 少了它，长分组名会把这一行撑出去 */
+.app-nav-group-name {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 展开/收起的三角。没有图标依赖（见 AppSidebar 的文件头），所以用边框画：
+   一条实心左边 + 两条透明上下边 = 朝右的三角；展开时转 90° 朝下 */
+.app-nav-caret {
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 4px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transform: rotate(90deg);
+  transition: transform 0.15s;
+}
+
+.app-nav-group-title[aria-expanded='false'] .app-nav-caret {
+  transform: none;
 }
 
 .app-nav-item {
@@ -1904,34 +1954,6 @@ body {
 .canary-no-candidate { margin: 0; }
 
 /* ===========================================================================
-   AI Agent 应用管理（目录区，暂无功能）
-   ===========================================================================
-   这一页只有一张规划清单表。样式上唯一的要点：**它不能看起来像一份数据表**。
-   表格数值区的视觉语言（右对齐的等宽数字、彩色差值的那些类）一个都不往这里套，
-   否则"7 行规划"会被读成"7 个应用"。
-   =========================================================================== */
-
-.app-plan-table th,
-.app-plan-table td {
-  /* 覆盖 .rag-metric-table 的 nowrap：这里的单元格是一整句话，必须能换行 */
-  white-space: normal;
-}
-
-.app-plan-field {
-  font-weight: 600;
-}
-
-.app-plan-gap {
-  color: #d46b08;
-  max-width: 380px;
-}
-
-.app-plan-summary {
-  display: block;
-  margin-top: 10px;
-}
-
-/* ===========================================================================
    权限管理（应用管理 · 用户 / 角色 / 工具白名单 / 目录前缀）
    ===========================================================================
    四条与这一页的判断绑在一起的选择：
@@ -1990,4 +2012,216 @@ body {
 .permission-panel .ant-table-cell .is-mono {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
+}
+
+/* ===========================================================================
+   agent 任务看板（应用管理 · agent任务）
+   ===========================================================================
+   四条与这一页的判断绑在一起的选择：
+
+   1. **列自适应**（`flex: 1 1 0` + `min-width: 140px`）：五列等分可用宽度，
+      窗口变宽则列变宽 —— 不写死列宽也不写死列数（列数由后端的列定义决定，
+      flex 对"多一列"是自动的，写死五列的 grid 不是）；
+      窄到下限还放不下时在**面板内部**横向滚动 —— 面板本身 overflow-x 是 hidden，
+      所以滚动条不会把整页撑宽（verify-ui.mjs 在 documentElement 上断言"不横向溢出"）；
+   2. **卡片是 `button` 而不是带 onClick 的 div**：它要能按 Tab 聚焦、能被读屏读成"一个控件"，
+      自检也能用 getByRole('button') 说话 —— div 加 onClick 是"看起来能点"，键盘用户点不到；
+   3. **卡片标题按词换行、最多 3 行**（`line-clamp`）：任务描述可以很长，
+      不夹住的话一张卡片能占满整列，看板就不再是看板了；
+   4. **已取消的卡片不置灰到底**：它与验收通过的那条同处「已完成」列
+      （见 AgentTaskPanel 的文件头），灰到看不清就分不出两者 ——
+      而"取消原因"正是这两者唯一的区别。
+   =========================================================================== */
+
+.task-board {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.task-column {
+  /* 自适应：五列等分可用宽度（1100px 窗口下每列约 148px，五列全可见）。
+     窄到 140px 还放不下时才在面板内部横向滚动 —— 下限比等分点小一点，
+     是为了让"刚好放得下"的那几档窗口宽度不必滚（差 10px 就要滚很难解释） */
+  flex: 1 1 0;
+  min-width: 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.task-column-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.task-column-name {
+  font-weight: 600;
+}
+
+.task-column-count {
+  font-variant-numeric: tabular-nums;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+}
+
+.task-column-hint {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+  line-height: 1.5;
+}
+
+.task-column-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-column-empty {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.3);
+  padding: 4px 2px;
+}
+
+/* 卡片：块级 button。默认的按钮外观（居中、灰底、边框）都要去掉 —— 它是张卡片 */
+.task-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.task-card:hover {
+  border-color: #91caff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+
+.task-card:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: 1px;
+}
+
+.task-card-title {
+  font-weight: 500;
+  line-height: 1.5;
+  /* 描述可以很长：夹到 3 行，否则一张卡片能占满整列 */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.task-card-meta {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+  word-break: break-all;
+}
+
+.task-card-foot {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.task-card-result,
+.task-card-cancel {
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 2px 6px;
+  border-radius: 4px;
+  word-break: break-word;
+}
+
+.task-card-result {
+  background: #f6ffed;
+  color: #389e0d;
+}
+
+.task-card-cancel {
+  background: #fff7e6;
+  color: #d46b08;
+}
+
+/* ---- 详情弹窗 ---- */
+
+.task-detail-desc {
+  margin: 0 !important;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.task-detail-meta {
+  font-size: 12px;
+}
+
+.task-confirms {
+  border-top: 1px dashed #e8e8e8;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-confirm {
+  border: 1px solid #f0f0f0;
+  border-left: 3px solid #d9d9d9;
+  border-radius: 4px;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 等答复的那一条要一眼看出来：它是这一页唯一"现在该动"的东西 */
+.task-confirm.is-waiting {
+  border-left-color: #fa8c16;
+  background: #fffbf5;
+}
+
+.task-confirm.is-answered {
+  border-left-color: #52c41a;
+}
+
+.task-confirm-desc {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.65);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.task-confirm-options {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.task-confirm-answer {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.task-actions {
+  border-top: 1px dashed #e8e8e8;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }

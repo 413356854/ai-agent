@@ -50,6 +50,10 @@
 		DELETE FROM agent_user_role WHERE user_id = #{userId}
 	</delete>
 
+	<delete id="deleteAllOfRole">
+		DELETE FROM agent_user_role WHERE role_id = #{roleId}
+	</delete>
+
 	<select id="countByRole" resultType="java.lang.Integer">
 		SELECT COUNT(*) FROM agent_user_role WHERE role_id = #{roleId}
 	</select>

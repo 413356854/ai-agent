@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  agent_task 表的 SQL。
+
+  ⚠️ status 在这里读成**字符串**，解析成枚举在 AgentTaskRow.toDomain() 里 ——
+  让 MyBatis 直接映射枚举的话，库里一个认不出的取值会在读整个列表时抛，
+  而"取值的宽松解析"是一条业务判断，它的家应该在枚举自己的 parse 里（只有一处）。
+
+  ⚠️ 插入与取键是两条语句、两次调用（LAST_INSERT_ID() 是连接级的），
+  理由与三条实测的弯路见 AgentTaskMapper 的类注释。
+-->
+<mapper namespace="ai.agent.mapper.AgentTaskMapper">
+
+	<resultMap id="agentTaskRow" type="ai.agent.mapper.MapperRows$AgentTaskRow">
+		<constructor>
+			<idArg column="id" javaType="java.lang.Long"/>
+			<arg column="publisher" javaType="java.lang.String"/>
+			<arg column="assignee" javaType="java.lang.String"/>
+			<arg column="description" javaType="java.lang.String"/>
+			<arg column="status" javaType="java.lang.String"/>
+			<arg column="current_executor" javaType="java.lang.String"/>
+			<!-- 计数列用包装类型：构造器映射对基本类型会在实例化时匹配失败（见 MapperRows 的类注释） -->
+			<arg column="current_step" javaType="java.lang.Integer"/>
+			<arg column="agent_id" javaType="java.lang.Long"/>
+			<arg column="result" javaType="java.lang.String"/>
+			<arg column="cancel_reason" javaType="java.lang.String"/>
+			<arg column="created_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="updated_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+		</constructor>
+	</resultMap>
+
+	<sql id="taskColumns">
+		id, publisher, assignee, description, status, current_executor, current_step, agent_id, result,
+		cancel_reason, created_at, updated_at
+	</sql>
+
+	<insert id="insert">
+		INSERT INTO agent_task (publisher, assignee, description, status, current_executor, current_step, agent_id)
+		VALUES (#{publisher}, #{assignee}, #{description}, #{status}, #{currentExecutor}, #{currentStep}, #{agentId})
+	</insert>
+
+	<select id="lastInsertId" resultType="java.lang.Long">
+		SELECT LAST_INSERT_ID()
+	</select>
+
+	<select id="findById" resultMap="agentTaskRow">
+		SELECT <include refid="taskColumns"/> FROM agent_task WHERE id = #{id}
+	</select>
+
+	<!-- 看板一次取全量。排序的兜底见 AgentTaskMapper#list 的注释（updated_at 是秒精度，同秒用 id 倒序） -->
+	<select id="list" resultMap="agentTaskRow">
+		SELECT <include refid="taskColumns"/> FROM agent_task ORDER BY updated_at DESC, id DESC
+	</select>
+
+	<update id="updateProgress">
+		UPDATE agent_task
+		   SET status = #{status}, current_executor = #{currentExecutor}, current_step = #{currentStep}
+		 WHERE id = #{id}
+	</update>
+
+	<update id="updateResult">
+		UPDATE agent_task SET result = #{result} WHERE id = #{id}
+	</update>
+
+	<update id="updateCancel">
+		UPDATE agent_task SET cancel_reason = #{cancelReason} WHERE id = #{id}
+	</update>
+
+</mapper>

@@ -40,7 +40,7 @@ import java.util.Optional;
  *   <tr><th>端点</th><th>回答什么</th></tr>
  *   <tr><td>{@code GET /api/permissions}</td><td>"现在有谁、有哪些角色、每个角色配了什么"（一页一次取回）</td></tr>
  *   <tr><td>{@code POST/PUT/DELETE /api/permissions/users…}</td><td>"加个人 / 停用他 / 给他角色 / 改他的口令"</td></tr>
- *   <tr><td>{@code POST/PUT/DELETE /api/permissions/roles…}</td><td>"建个角色 / 它能有哪几把工具、哪几个目录"</td></tr>
+ *   <tr><td>{@code POST/PUT/DELETE /api/permissions/roles…}</td><td>"建个角色 / 它能有哪几把工具、哪几个目录、它有哪些成员"</td></tr>
  *   <tr><td>{@code GET /api/permissions/verify}</td><td>"这个人到底能不能在这把工具上、在这个目录里干活"</td></tr>
  * </table>
  *
@@ -284,6 +284,23 @@ public class PermissionController {
 		return body;
 	}
 
+	/**
+	 * 替换角色的成员账号（整份替换）。
+	 *
+	 * <p>与 {@code PUT /users/{id}/roles} 是同一张 {@code agent_user_role} 表的两侧 ——
+	 * 界面只在角色侧编辑（见 {@code web/README.md}），但端点两个都留着：
+	 * 两侧各自是一次完整的关系替换，谁先谁后没有区别。
+	 */
+	@PutMapping(path = "/roles/{id}/users", consumes = MediaType.APPLICATION_JSON_VALUE)
+	public Map<String, Object> setRoleUsers(@PathVariable Long id, @RequestBody RoleUsersRequest request) {
+		permissions.setRoleUsers(id, request == null ? List.of() : request.userIdsOrDefault());
+		Map<String, Object> body = new LinkedHashMap<>();
+		body.put("ok", true);
+		body.put("roleId", id);
+		body.put("accounts", accountNamesOfRole(id));
+		return body;
+	}
+
 	// ------------------------------------------------------------------
 	//  错误处理
 	// ------------------------------------------------------------------
@@ -346,6 +363,32 @@ public class PermissionController {
 				.orElse(List.of());
 	}
 
+	/**
+	 * 这个角色现在的成员登录名（按名字排序）。
+	 *
+	 * <p>刻意不走 {@link #rolesOfUser} 那条路：它经 {@code PermissionResolver.resolveById}，
+	 * 而那条路按"停用即无权限"过滤 —— 把停用账号挂进角色之后，回执会显示成"一个成员都没有"
+	 * （写进去了，回话是空的）。这里读的是关系本身。
+	 */
+	private List<String> accountNamesOfRole(Long roleId) {
+		PermissionService.Snapshot snapshot = permissions.snapshot();
+		String roleName = snapshot.roles().stream()
+				.filter(role -> role.id().equals(roleId))
+				.map(Role::name)
+				.findFirst()
+				.orElse(null);
+		if (roleName == null) {
+			return List.of();
+		}
+		List<String> names = new ArrayList<>();
+		for (Account account : snapshot.accounts()) {
+			if (snapshot.accountRoles().getOrDefault(account.id(), List.of()).contains(roleName)) {
+				names.add(account.name());
+			}
+		}
+		return names;
+	}
+
 	// ------------------------------------------------------------------
 	//  请求体
 	// ------------------------------------------------------------------
@@ -372,6 +415,15 @@ public class PermissionController {
 
 		List<Long> roleIdsOrDefault() {
 			return roleIds == null ? List.of() : roleIds;
+		}
+
+	}
+
+	/** 角色侧"设成员"的请求体：一份完整的账号 id 清单（整体替换，见 {@link RolesRequest}）。 */
+	public record RoleUsersRequest(List<Long> userIds) {
+
+		List<Long> userIdsOrDefault() {
+			return userIds == null ? List.of() : userIds;
 		}
 
 	}
