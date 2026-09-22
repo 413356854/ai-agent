@@ -1,10 +1,9 @@
-import { Alert, Button, Card, Empty, Flex, Input, Modal, Select, Space, Spin, Tag, Typography } from 'antd'
-import { useEffect, useRef, useState } from 'react'
-import { permissionApi } from '../api/permissions'
-import type { PermissionUserOption } from '../api/permissions'
+import { Alert, Button, Card, Empty, Flex, Input, Modal, Space, Spin, Tag, Typography } from 'antd'
+import { useState } from 'react'
 import type { AgentTaskCard, AgentTaskConfirm } from '../api/tasks'
 import type { UseTasksResult } from '../hooks/useTasks'
 import { Clamped } from './Clamped'
+import { UserPicker } from './UserPicker'
 
 const { Text, Paragraph } = Typography
 
@@ -415,10 +414,11 @@ function NewTaskModal({ open, onClose, tasks }: {
     >
       <Flex vertical gap={10}>
         {/* 发布人 / 任务人两格都是**搜索选择器**，不是能打字的输入框：
-            名字在库里存的是快照，打错一个字不会有任何约束拦下那条任务 */}
-        <UserPicker value={publisher} onChange={setPublisher}
+            名字在库里存的是快照，打错一个字不会有任何约束拦下那条任务。
+            这个组件与页头的「模拟登录」共用（见 UserPicker 的文件头） */}
+        <UserPicker value={publisher} onChange={name => setPublisher(name)}
           placeholder="发布人（必填）—— 搜索登录名，从候选里选一个真实用户" />
-        <UserPicker value={assignee} onChange={setAssignee}
+        <UserPicker value={assignee} onChange={name => setAssignee(name)}
           placeholder="任务人（必填）—— 搜索登录名，从候选里选一个真实用户" />
         <Input.TextArea rows={3} placeholder="任务描述（必填）—— 要做什么；判定需求有没有歧义、拆任务点都以它为准"
           value={description} onChange={e => setDescription(e.target.value)} />
@@ -430,99 +430,6 @@ function NewTaskModal({ open, onClose, tasks }: {
       </Flex>
     </Modal>
   )
-}
-
-/**
- * 「从账号表里选一个人」—— 发布人与任务人两格共用。
- *
- * <h2>为什么是搜索选择器，而不是一个能打字的输入框</h2>
- * 任务表存的是姓名快照，打错一个字不会被任何数据库约束拦下 —— 那条任务会挂在
- * 一个不存在的人名下，而它在看板上与正常任务长得完全一样。所以这两格的值只能来自
- * `GET /api/permissions/users/search` 给出的候选（后端 create 时还会再核一遍账号表）。
- *
- * <h2>为什么是服务端搜索（`filterOption={false}`）</h2>
- * 候选是整张账号表：一次全取回来在账号多时就是"为了填一个名字下载一张表"；
- * 而 antd 自带的前端过滤只过滤已经取回来的那几条 —— 那会让"搜不到"看起来像
- * "系统里没有这个人"（真相是它不在前 5 条里）。所以搜索词一变就重新问后端，
- * 条数与上限由后端定（默认 5、最多 20）。
- *
- * <h2>为什么选中的那一条要留在候选里</h2>
- * 候选列表每次搜索都会被替换，而 antd 的选中项显示的是**候选里那一条的 label**：
- * 不把它留住的话，选完再搜下一个词，之前那一格会退化成裸的登录名（看起来像没选中）。
- */
-function UserPicker({ value, onChange, placeholder }: {
-  value: string
-  onChange: (value: string) => void
-  placeholder: string
-}) {
-  const [options, setOptions] = useState<PermissionUserOption[]>([])
-  const [searching, setSearching] = useState(false)
-  /** 搜索本身的失败（例如后端没起）要显示出来：静默的空下拉看起来像"没有这个人"。 */
-  const [error, setError] = useState('')
-  /** 选中的那一条（见上面第三条理由：它要一直留在候选里）。 */
-  const picked = useRef<PermissionUserOption | null>(null)
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
-
-  // 外面把值清空时（发布成功之后弹窗复位）也要丢掉"选中的那一条"：
-  // 留着的话，下一次点开下拉会看到上一条任务选的人还挂在候选里
-  useEffect(() => { if (!value) picked.current = null }, [value])
-
-  const search = (keyword: string) => {
-    if (timer.current) clearTimeout(timer.current)
-    const wanted = keyword.trim()
-    if (!wanted) {
-      setOptions(picked.current ? [picked.current] : [])
-      setError('')
-      return
-    }
-    // 防抖：每敲一个字都发一次请求的话，一次输入就是五次往返，而结果只可能用最后一次
-    timer.current = setTimeout(() => {
-      setSearching(true)
-      permissionApi.searchUsers(wanted)
-        .then(result => {
-          setOptions(result.users)
-          setError('')
-        })
-        .catch((e: unknown) => {
-          setOptions([])
-          setError(e instanceof Error ? e.message : String(e))
-        })
-        .finally(() => setSearching(false))
-    }, 250)
-  }
-
-  const choose = (name: string) => {
-    picked.current = options.find(option => option.name === name) ?? null
-    onChange(name)
-  }
-
-  return (
-    <Flex vertical gap={4}>
-      <Select
-        showSearch
-        // 候选由后端按搜索词给（见组件注释第二条）：交给 antd 再过滤一遍就会把
-        // "后端说匹配的那几条"又筛一次，而筛掉的正是它刚匹配上的
-        filterOption={false}
-        value={value || undefined}
-        placeholder={placeholder}
-        onSearch={search}
-        onChange={choose}
-        loading={searching}
-        options={options.map(option => ({ value: option.name, label: userOptionLabel(option) }))}
-        notFoundContent={searching ? '正在搜索…' : '没有匹配的用户 —— 换个搜索词试试'}
-        style={{ width: '100%' }}
-      />
-      {error && <Text type="danger">搜索用户失败：{error}</Text>}
-    </Flex>
-  )
-}
-
-/** 候选上那一行字：显示名（登录名），停用的在后面加一个标记 —— 但它仍然可以选（见后端注释）。 */
-function userOptionLabel(option: PermissionUserOption): string {
-  const base = option.displayName ? `${option.displayName}（${option.name}）` : option.name
-  return option.usable ? base : `${base} · 已停用`
 }
 
 function CancelModal({ open, taskId, onClose, tasks }: {

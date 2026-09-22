@@ -549,6 +549,31 @@ body {
   flex: none;
 }
 
+/*
+  模拟登录（页头主题开关左侧）。它显示的是"现在以谁的身份在用这一页"，
+  所以与主题开关一样在所有视图上都在，也不跟着某个面板出现或消失。
+  底色与分区标签同一族（品牌蓝的浅底 + 文字档 ink）：深色下 `--brand-ink` 会换成
+  浅一档的那个值，直接写字面量的话这一块在深色下会看不清（见上面 :root 那两段）。
+*/
+.mock-login {
+  flex: none;
+}
+
+.mock-login-chip {
+  padding: 1px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--brand-border);
+  background: var(--brand-bg);
+  color: var(--brand-ink);
+  font-size: 12px;
+  line-height: 20px;
+  /* 显示名可能很长：页头这一行不许被它顶出横向滚动（约束见上面 .app-shell 那一段） */
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 消息区：唯一需要滚动的区域，头部/输入区固定 */
 .message-list {
   flex: 1;

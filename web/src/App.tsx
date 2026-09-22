@@ -7,6 +7,7 @@ import { AppSidebar } from './components/AppSidebar'
 import { Composer } from './components/Composer'
 import { CostPanel } from './components/CostPanel'
 import { MessageBubble } from './components/MessageBubble'
+import { MockLoginBar } from './components/MockLoginBar'
 import { PermissionPanel } from './components/PermissionPanel'
 import { PromptPanel } from './components/PromptPanel'
 import { RagPanel } from './components/RagPanel'
@@ -18,6 +19,7 @@ import { useAgent } from './hooks/useAgent'
 import { useAlerts } from './hooks/useAlerts'
 import { useChatStream } from './hooks/useChatStream'
 import { useCost } from './hooks/useCost'
+import { useMockLogin } from './hooks/useMockLogin'
 import { usePermissions } from './hooks/usePermissions'
 import { usePrompt } from './hooks/usePrompt'
 import { useRagDiag } from './hooks/useRagDiag'
@@ -58,7 +60,7 @@ import type { Mode } from './nav'
  * 它是派给 Agent 的活在人之间怎么流转（发布 / 确认 / 执行 / 验收），
  * 所以它画的是卡片看板而不是配置表 —— 一张卡片停在哪一列，就等于现在等谁。
  *
- * 十个 hook 都挂在 App 上（而不是按视图条件挂载）：切换视图时对话记录和实验数据不会被清空，
+ * 十一个 hook 都挂在 App 上（而不是按视图条件挂载）：切换视图时对话记录和实验数据不会被清空，
  * 来回切两次不会丢掉刚才的结果 —— 这也是把状态放在这一层的理由。
  * **Agent 那一页尤其需要这样**：一次任务会真的调模型花钱、要等十几秒，
  * 切走再切回来就重跑一遍（再花一次钱）的代价太大。
@@ -70,6 +72,11 @@ import type { Mode } from './nav'
  * 而页头那个开关在 `App` 里 —— 中间只隔这一层，所以由 props 往下传。
  * 颜色本身**一个都不从这里传下去**：面板只管写语义变量（`styles.css` 的 `:root`），
  * 深浅两套取值在那里换。把颜色当 props 传的后果是每加一个面板都要多接一根线。
+ *
+ * <h2>模拟登录为什么也在这一层</h2>
+ * 它记的是"现在以谁的身份在用这一页"（`useMockLogin`），页头那块标签只是它的一个显示出口。
+ * 后续要按人区分的业务（谁发布的任务、谁确认的）从 `mockLogin.user.id` 取 ——
+ * 拿到 id 的路径与主题一样是 props，所以不存在"页头显示的是张三、业务用的是李四"这种分裂。
  */
 export default function App(
   { themeMode, onToggleTheme }: { themeMode: ThemeMode; onToggleTheme: () => void },
@@ -101,6 +108,9 @@ export default function App(
   // 第十个（agent任务）：进面板拉一次看板。写操作（发布 / 推进 / 答复 / 取消）之后
   // hook 会自己把看板与打开着的那条详情一起重拉 —— 一次写会同时改这两处的形状
   const tasks = useTasks(mode === 'tasks')
+  // 第十一个：页头的模拟登录。它不发请求（选人那一步走搜索端点），也不跟着视图走 ——
+  // 它记的是"现在以谁的身份在用这一页"，后续要按人区分的业务从这里取 id
+  const mockLogin = useMockLogin()
 
   const listRef = useRef<HTMLElement>(null)
 
@@ -166,6 +176,9 @@ export default function App(
                 </Button>
               </>
             )}
+            {/* 模拟登录在**所有十一个视图**上都在（与主题开关同理）：它说的是
+                "现在以谁的身份在用这一页"，后续按人区分的业务认的是它记下的那个 id */}
+            <MockLoginBar login={mockLogin} />
             {/* 主题开关在**所有十一个视图**上都在：它换的是整页的底色，
                 属于"看这一页的方式"，不跟着某个视图出现或消失 */}
             <ThemeToggle mode={themeMode} onToggle={onToggleTheme} />

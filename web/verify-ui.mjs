@@ -33,11 +33,11 @@ const EXPECT_REFLECTION = process.env.CHECK_EXPECT_REFLECTION !== '0'
 /**
  * 每条路径实际执行多少项断言（**实测出来的，不是数出来的**）。
  *
- * 脚本里一共 457 个 `expect(...)`，但两条路径执行的数量不同 ——
+ * 脚本里一共 518 个 `expect(...)`，但两条路径执行的数量不同 ——
  * 因为有几个分支各跑各的（回灌细节 / 降级标记 / Agent 的完整轨迹 / HITL 的批准与拒绝），
  * 它们的可复现性依赖假后端：
  *
- *   假后端（默认路径，实测 2026-09-22）→ **454 项，全过**（同一份脚本连跑两遍，两遍都是 454）
+ *   假后端（默认路径，实测 2026-09-22）→ **472 项，全过**（同一份脚本连跑两遍，两遍都是 472）
  *   真后端（`CHECK_EXPECT_REFLECTION=0`）→ 见下面 README 那一行；本轮跑过，数字写在 web/README.md
  *
  * 真后端路径上失败的是**流式回答**（`流式回答已渲染`）：
@@ -3417,6 +3417,131 @@ console.log('[10] 主题（浅色 / 深色）')
   expect('再点一下切回浅色，底色也跟着回来', backToLight && !isDark(backBody), `${await htmlTheme()} ${backBody}`)
   expect('没有横向溢出（深色下也一样）',
     (await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)) === 0)
+}
+
+// ---------- 模拟登录（页头右上角） ----------
+//
+// 这一节验四件事，每一件都对应一个"看起来正常、其实不对"的形态：
+//   ① 选人走的是**已有的用户搜索端点**（候选来自 `GET /api/permissions/users/search`），
+//      而不是一格格能打字的输入框 —— 打错一个字不会有任何东西拦下来；
+//   ② 页头显示的是**显示名**，而记下来的是**用户 id**（后续业务认 id）——
+//      所以 id 读的是 `data-login-user-id` 属性，不去解析那行显示文字；
+//   ③ 记录落在 localStorage：刷新之后仍然是登录态（刷新就掉会让人每次改动重选一遍）；
+//   ④ 退出**真的把那条记录删掉**：刷新之后仍是未登录 ——
+//      只清内存的实现同样"看起来退出了"，而下次打开这一页身份又回来了。
+//
+// ⚠️ 这一节要 `page.reload()`，所以它必须排在其他节之后（reload 会把 App 整个重挂，
+// 前面几节攒下的对话、RAG、Agent 结果全丢 —— 这与 [8.6] 那条"复位之后不要 reload"同源）。
+// 它**不写后端**（搜索是只读端点），所以真后端路径上也能跑。
+console.log('[11] 模拟登录（页头右上角）')
+{
+  const entry = page.locator('.app-topbar .mock-login-entry')
+  const chip = page.locator('.app-topbar .mock-login-chip')
+  const exit = page.locator('.app-topbar .mock-login-exit')
+
+  expect('页头右上角有「模拟登录」入口（未登录时是一个按钮）',
+    (await entry.count()) === 1 && (await chip.count()) === 0,
+    `entry=${await entry.count()} chip=${await chip.count()}`)
+
+  // 它不跟着视图走：诊断视图上没有 conversationId / 新会话那一族，但它仍在
+  await navMode('成本看板')
+  expect('换到没有会话状态的视图，模拟登录仍在（它说的是"以谁的身份"，不是某一页的数据）',
+    (await entry.count()) === 1 && (await page.locator('.app-topbar .conversation-id').count()) === 0)
+  await navMode('SSE 流式')
+
+  await entry.click()
+  const dialog = page.locator('.ant-modal:visible', { hasText: '模拟登录' })
+  await dialog.waitFor({ state: 'visible', timeout: 8000 })
+  expect('★ 点入口弹出选人弹窗', await dialog.isVisible())
+
+  const picker = dialog.locator('.ant-select')
+  expect('弹窗里是一个搜索选择器（不是能随便打字的输入框）', (await picker.count()) === 1)
+  // 没选人时不让登录：这个记录是后续业务的身份，"空身份"比"没有身份"更糟
+  expect('没选人时「登录」是按不动的',
+    await dialog.locator('.ant-btn-primary').isDisabled())
+
+  // 输入搜索词 → 等**那个端点**的响应（这一条同时证明"候选不是前端过滤出来的"）
+  const [searchResponse] = await Promise.all([
+    page.waitForResponse(r => r.url().includes('/api/permissions/users/search')
+      && r.status() === 200, { timeout: 10000 }),
+    (async () => { await picker.click(); await picker.locator('input').fill('adm') })(),
+  ])
+  const searched = await searchResponse.json()
+  const hit = searched.users.find(u => u.name === 'admin') ?? searched.users[0]
+  // 一条候选都没有时后面的断言无从谈起（选人 → 登录 → 刷新这条链每一步都要有那个人），
+  // 所以在这里就把原因说清楚，而不是让它表现成"等不到某个元素"
+  if (!hit) throw new Error('搜索端点没有返回任何候选（keyword=adm）—— 这一节的前提不成立')
+  expect('★ 候选来自已有的用户搜索端点（搜索词进的是后端）',
+    searched.users.length > 0 && /keyword=adm/.test(searchResponse.url()),
+    `${searched.count} 条 · ${searchResponse.url().split('/api')[1]}`)
+
+  const option = page.locator('.ant-select-dropdown:visible .ant-select-item-option',
+    { hasText: hit.name }).first()
+  await option.waitFor({ state: 'visible', timeout: 8000 })
+  const optionText = (await option.innerText()).trim()
+  expect('候选上写的是「显示名（登录名）」（选的是账号表里的那个人）',
+    optionText.includes(hit.name) && (hit.displayName === '' || optionText.includes(hit.displayName)),
+    optionText)
+  await option.click()
+
+  expect('选中之后「登录」可以点了（选中项回显里带着将记下的 id）',
+    !(await dialog.locator('.ant-btn-primary').isDisabled())
+    && new RegExp(`用户 id\\s*${hit.id}`).test(await dialog.innerText()),
+    (await dialog.innerText()).replace(/\n/g, ' ').slice(0, 100))
+
+  await dialog.locator('.ant-btn-primary').click()
+  const loggedIn = await waitFor(async () => (await chip.count()) === 1, 8000)
+  // 关掉之后页面上不该还剩浮层：候选下拉是挂在 `<body>` 上的 portal，
+  // 弹窗只隐藏（不卸载）时它会留在页面上 —— "登录成功了"与"那格下拉还浮在那儿"是两件事
+  const modalClosed = await waitFor(async () =>
+    (await page.locator('.ant-modal:visible').count()) === 0
+    && (await page.locator('.ant-select-dropdown:visible').count()) === 0, 5000)
+  expect('★ 登录之后弹窗与候选下拉都收干净了（不是只把弹窗藏起来）', modalClosed,
+    `modal=${await page.locator('.ant-modal:visible').count()}`
+    + ` dropdown=${await page.locator('.ant-select-dropdown:visible').count()}`)
+  const label = hit.displayName || hit.name
+  expect('★ 登录后页头显示的是那个人的显示名', loggedIn && (await chip.innerText()).includes(label),
+    (await chip.innerText()).replace(/\n/g, ' '))
+  // ⚠️ 判据落在 id 上，不落在文字上：名字可以重名、也可以改，而后续业务要的是 id
+  expect('★ 记下来的是搜索结果里那个 id（后续业务认它）',
+    Number(await chip.getAttribute('data-login-user-id')) === hit.id,
+    `data-login-user-id=${await chip.getAttribute('data-login-user-id')} 期望=${hit.id}`)
+  expect('记录里还有登录名（可选不再是裸的显示名）',
+    (await chip.getAttribute('data-login-user')) === hit.name,
+    `data-login-user=${await chip.getAttribute('data-login-user')}`)
+  expect('入口按钮换成了「退出」',
+    (await entry.count()) === 0 && (await exit.count()) === 1)
+
+  const stored = await page.evaluate(() => window.localStorage.getItem('ai-agent.mock-login'))
+  expect('★ 记录落在 localStorage（id / 登录名 / 显示名三样）',
+    (() => {
+      try {
+        const parsed = JSON.parse(stored)
+        return parsed.id === hit.id && parsed.name === hit.name && parsed.displayName === hit.displayName
+      } catch { return false }
+    })(),
+    String(stored))
+
+  await page.screenshot({ path: `${SHOT_DIR}/mock-login.png` })
+
+  // 刷新之后仍然是登录态：这是"记录"与"临时状态"的差别
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.waitForSelector('.app-topbar')
+  expect('刷新之后仍然是登录态，且 id 没变（读的是存下来的那份记录）',
+    (await chip.count()) === 1 && Number(await chip.getAttribute('data-login-user-id')) === hit.id,
+    (await chip.innerText()).replace(/\n/g, ' '))
+
+  await exit.click()
+  const loggedOut = await waitFor(async () => (await entry.count()) === 1, 8000)
+  expect('★ 点「退出」回到未登录（入口按钮回来、标签消失）',
+    loggedOut && (await chip.count()) === 0)
+  const cleared = await page.evaluate(() => window.localStorage.getItem('ai-agent.mock-login'))
+  expect('★ 退出把那条记录删掉了（不是只清了内存）', cleared === null, `localStorage=${cleared}`)
+
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.waitForSelector('.app-topbar')
+  expect('刷新之后仍然是未登录（删的是记录，不是只改了这一次的显示）',
+    (await entry.count()) === 1 && (await chip.count()) === 0)
 }
 
 // ---------- 控制台必须干净 ----------
