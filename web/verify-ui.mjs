@@ -37,7 +37,7 @@ const EXPECT_REFLECTION = process.env.CHECK_EXPECT_REFLECTION !== '0'
  * 因为有几个分支各跑各的（回灌细节 / 降级标记 / Agent 的完整轨迹 / HITL 的批准与拒绝），
  * 它们的可复现性依赖假后端：
  *
- *   假后端（默认路径，实测 2026-09-21）→ **411 项，全过**（同一份脚本连跑两遍，两遍都是 411）
+ *   假后端（默认路径，实测 2026-09-22）→ **442 项，全过**（同一份脚本连跑两遍，两遍都是 442）
  *   真后端（`CHECK_EXPECT_REFLECTION=0`）→ 见下面 README 那一行；本轮跑过，数字写在 web/README.md
  *
  * 真后端路径上失败的是**流式回答**（`流式回答已渲染`）：
@@ -146,7 +146,7 @@ page.on('pageerror', err => consoleErrors.push(`[pageerror] ${err.message}`))
 const problems = []
 /**
  * 已执行的断言条数。**由脚本自己报数**，而不是让人去数 `expect(` ——
- * 文档里那个"411 项"就是数出来的，而数它要同时判断每个分支走没走到
+ * 文档里那个"442 项"就是数出来的，而数它要同时判断每个分支走没走到
  * （README 里为此写过一条"不要凭印象写"）—— 那种手工账迟早对不上。
  */
 let executed = 0
@@ -2969,6 +2969,69 @@ if (EXPECT_REFLECTION) {
   expect('卡片写出「发布人 → 任务人」与当前执行人',
     /admin → zhou/.test(boardText) && /当前执行人/.test(boardText))
   expect('待验收那条带着执行结果', /已补上说明段落/.test(boardText))
+
+  // ---- 长文字默认夹住：夹掉了才出现「展开全文」，点开能看到剩下的字 ----
+  //
+  // 这一条要断的是几何：断言"文字还在 DOM 里"毫无意义（`overflow: hidden` 之下它一直在，
+  // 自检第一版就是这么写的，`toContainText` 直接假绿）。所以量的是 `scrollHeight`
+  // 与 `clientHeight` 的关系 —— 前者是完整内容的高度，后者是被 `max-height` 截过之后的高度。
+  //
+  // ⚠️ "夹掉了没有"是 `Clamped` 挂载之后量出来的（首帧一律按没夹掉渲染），所以下面**先等
+  // 它量完再断言几何**：直接读会读到那一帧展开的样子（实测：内容 162px / 露出 162px，
+  // 而失败信息看起来像"max-height 没生效"）。开关在不在、文字在不在都不是判据 ——
+  // 开关是量完才画的，而文字一直就在 DOM 里。
+  //
+  // ⚠️ 状态一律用 `waitForState` 取回**原始读数**再断言，不要 `waitFor` 的布尔值：
+  // 那一头返回的是 true/false（见 `waitFor`），拿它当读数用只会打出 `undefinedpx` ——
+  // 而失败信息里没有真实数字时，"差 1px"与"根本没量到"看起来一模一样。
+  //
+  // 「已完成」列里那张刻意写长描述的卡片（mock/task-routes.mjs 的 id 10）是唯一会夹住的：
+  // 描述只要一行时「展开全文」永远不出现，这条断言也就断不到任何东西。
+  const longCard = page.locator('.task-card[data-task-id="10"]')
+  const longTitle = longCard.locator('.task-card-title')
+  const longToggle = longCard.locator('.task-card-toggle')
+  const titleState = () => longTitle.evaluate(el => ({
+    // scrollHeight 是内容高度，与展开/收起那道 max-height 过渡无关
+    content: el.scrollHeight,
+    visible: el.clientHeight,
+    width: el.clientWidth,
+    clamped: el.dataset.clamped,
+    classes: el.className,
+  }))
+  /** 轮询直到这一段达到某个状态，返回**最后一次读数**（不是布尔值 —— 见上面那条注释）。 */
+  const waitForState = async (ok, timeoutMs = 5000) => {
+    const deadline = Date.now() + timeoutMs
+    let last = await titleState()
+    while (!ok(last) && Date.now() < deadline) {
+      await page.waitForTimeout(200)
+      last = await titleState()
+    }
+    return last
+  }
+
+  const collapsed = await waitForState(s => s.clamped === 'yes' && s.content > s.visible + 1)
+  const describe = s => `内容 ${s.content}px / 露出 ${s.visible}px（列宽 ${s.width}px，${s.classes}）`
+  expect('★ 长描述那张卡片给出「展开全文」入口（夹掉了才画这个开关）',
+    collapsed.content > collapsed.visible + 1 && (await longToggle.count()) === 1,
+    describe(collapsed))
+  expect('★ 夹住时只露出前几行，剩下的字被挡在外面（内容比露出来的地方高）',
+    collapsed.content > collapsed.visible + 1, describe(collapsed))
+
+  await longToggle.click()
+  const expanded = await waitForState(s => s.clamped === 'no' && s.visible === s.content)
+  expect('★ 展开后整段文字都露出来（露出的高度 = 内容高度）',
+    expanded.clamped === 'no' && expanded.visible === expanded.content, describe(expanded))
+  expect('★ 展开之后同一个开关变成「收起」', /收\s*起/.test(await longToggle.innerText()))
+  // ★ 点开关**不能**顺手把详情打开：卡片整张是"点开详情"的热区，而开关浮在它上面。
+  // 少了这一条，一个"开关与卡片都被点到"的实现会照样全绿（症状是每次展开都弹出详情）
+  expect('★ 点展开开关不会连带打开详情弹窗',
+    (await page.locator('.ant-modal:visible').count()) === 0)
+
+  await longToggle.click()
+  const recollapsed = await waitForState(s => s.clamped === 'yes' && s.visible === collapsed.visible)
+  expect('★ 再点「收起」回到夹住时的高度（同一个开关两个方向都管用）',
+    recollapsed.clamped === 'yes' && recollapsed.visible === collapsed.visible,
+    describe(recollapsed) + `（收起时是 ${collapsed.visible}px）`)
 
   // ---- 「执行中」那一列收**四个**状态：已确认需求 / 已确认计划 / 已授权 / 执行中 ----
   //

@@ -20,6 +20,10 @@
 --  持续成立只更新 last_seen_at / occurrences。
 --  ⚠️ 但"什么时候开始的、什么时候结束的"必须留住 —— 那是复盘时的第一句话，
 --  所以 first_seen_at / resolved_at 两列不能省。
+--
+--  ⚠️ **每一列都带 COMMENT**，表注释写在 CREATE TABLE 末尾。
+--  `ALTER TABLE t COMMENT='…'` 只有 MySQL 认（H2 报 42001，实测），
+--  所以改注释就是改建表语句 + 重建表，本文件里没有一条 ALTER。
 -- ============================================================================
 
 -- 告警的当前状态（一条判据 × 一个主体 = 一行）
@@ -27,27 +31,27 @@ CREATE TABLE IF NOT EXISTS alert_event (
   -- 去重键：rule_code + '|' + subject。**它是主键** ——
   -- 靠"先查再写"去重会在并发评估下写出两行，而那种重复在界面上看起来
   -- 只是"同一个问题出现了两遍"，没人会去查原因
-  fingerprint    VARCHAR(160) NOT NULL,
-  rule_code      VARCHAR(64)  NOT NULL,             -- AlertRule.code
-  subject        VARCHAR(128) NOT NULL DEFAULT '',  -- 说的是谁（模型名 / 灰度版本 / 空=没有主体）
-  severity       VARCHAR(16)  NOT NULL,             -- INFO / WARNING / BLOCKER
-  phase          VARCHAR(16)  NOT NULL,             -- GATE / OBSERVE
-  state          VARCHAR(16)  NOT NULL,             -- OPEN / ACKNOWLEDGED / RESOLVED
-  first_seen_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  fingerprint    VARCHAR(160) NOT NULL COMMENT '去重键：rule_code + ''|'' + subject（一条判据的一个主体一行）',
+  rule_code      VARCHAR(64)  NOT NULL COMMENT '判据编码（AlertRule.code）',
+  subject        VARCHAR(128) NOT NULL DEFAULT '' COMMENT '说的是谁（模型名 / 灰度版本 / 空=没有主体）',
+  severity       VARCHAR(16)  NOT NULL COMMENT '严重级：INFO / WARNING / BLOCKER',
+  phase          VARCHAR(16)  NOT NULL COMMENT '判据所属阶段：GATE / OBSERVE',
+  state          VARCHAR(16)  NOT NULL COMMENT '状态：OPEN / ACKNOWLEDGED / RESOLVED',
+  first_seen_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '第一次发现它成立的时间（与 last_seen_at 合起来才答得了"存在了多久"）',
   -- 最后一次发现它成立。FIRING 时它≈现在；RESOLVED 之后它停住不动 ——
   -- 这两个时间合起来才回答得了"它到底存在了多久"
-  last_seen_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  occurrences    INT          NOT NULL DEFAULT 1,   -- 一共被发现了多少次（持续成立会一直涨）
-  resolved_at    TIMESTAMP    NULL,                 -- 恢复时间；NULL = 还在响
-  acknowledged_at TIMESTAMP   NULL,                 -- 人看过的时间；NULL = 还没人看
-  acknowledged_by VARCHAR(128) NULL,
-  observed       VARCHAR(512) NULL,                 -- 观测值（例如 "0.0500（3/60）"）
-  threshold      VARCHAR(512) NULL,                 -- 判据阈值 + 它的形态
-  why            VARCHAR(1024) NULL,                -- 为什么这个阈值是这个数
-  action         TEXT         NULL,                 -- 该做什么（来自判据目录）
-  window_label   VARCHAR(64)  NULL,                 -- 判定时的窗口（没有它，数字不可复现）
-  created_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  last_seen_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '最后一次发现它成立的时间（RESOLVED 之后停住不动）',
+  occurrences    INT          NOT NULL DEFAULT 1 COMMENT '一共被发现了多少次（持续成立会一直涨）',
+  resolved_at    TIMESTAMP    NULL COMMENT '恢复时间；NULL = 还在响',
+  acknowledged_at TIMESTAMP   NULL COMMENT '人看过的时间；NULL = 还没人看',
+  acknowledged_by VARCHAR(128) NULL COMMENT '是谁确认的；NULL = 还没人确认',
+  observed       VARCHAR(512) NULL COMMENT '观测值（例如 "0.0500（3/60）"）',
+  threshold      VARCHAR(512) NULL COMMENT '判据阈值 + 它的形态',
+  why            VARCHAR(1024) NULL COMMENT '为什么这个阈值是这个数',
+  action         TEXT         NULL COMMENT '该做什么（来自判据目录）',
+  window_label   VARCHAR(64)  NULL COMMENT '判定时的窗口（没有它，数字不可复现）',
+  created_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  updated_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
   PRIMARY KEY (fingerprint)
 ) COMMENT='告警状态';
 
@@ -74,14 +78,14 @@ CREATE TABLE IF NOT EXISTS alert_event (
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS prompt_canary (
-  kind              VARCHAR(64) NOT NULL,            -- PromptKind.defaultValue
-  candidate_version INT         NOT NULL,            -- 候选版本号（**必须已存在**，见 CanaryService.start）
-  weight_percent    INT         NOT NULL,            -- 放量比例（1..99）
-  started_at        TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  started_by        VARCHAR(128) NULL,
-  note              VARCHAR(512) NULL,               -- 这次实验想验证什么（必填）
-  ended_at          TIMESTAMP   NULL,                -- 停止时间；NULL = 进行中
-  ended_by          VARCHAR(128) NULL,
-  end_reason        VARCHAR(512) NULL,               -- 为什么停（推全 / 回滚 / 实验结束）
+  kind              VARCHAR(64) NOT NULL COMMENT '提示词种类（PromptKind.defaultValue）',
+  candidate_version INT         NOT NULL COMMENT '候选版本号（**必须已存在**，见 CanaryService.start）',
+  weight_percent    INT         NOT NULL COMMENT '放量比例（1..99）',
+  started_at        TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '这次灰度开始的时间',
+  started_by        VARCHAR(128) NULL COMMENT '谁开的这次灰度',
+  note              VARCHAR(512) NULL COMMENT '这次实验想验证什么（必填）',
+  ended_at          TIMESTAMP   NULL COMMENT '停止时间；NULL = 进行中',
+  ended_by          VARCHAR(128) NULL COMMENT '谁停的；NULL = 还没停',
+  end_reason        VARCHAR(512) NULL COMMENT '为什么停（推全 / 回滚 / 实验结束）',
   PRIMARY KEY (kind)
 ) COMMENT='灰度配置';

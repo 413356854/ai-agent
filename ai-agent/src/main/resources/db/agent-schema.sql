@@ -12,30 +12,38 @@
 --  ⚠️ 一个实测发现的兼容性边界：MySQL 的**前缀索引**（`INDEX (col(64))`）在
 --  H2 的 MODE=MySQL 下**不被接受**。所以这里不给 TEXT 列建前缀索引 ——
 --  本场景也不需要（按主键查，不按正文查）。
+--
+--  ⚠️ **每一列都带 COMMENT**（表注释同理，写在 CREATE TABLE 末尾）：
+--  字段的中文含义写在 COMMENT 里，于是 `SHOW FULL COLUMNS` / 元数据里直接读得到，
+--  不必回到这份脚本里找。写法上 COMMENT 只出现在列定义那一行的末尾，
+--  一段设计取舍（"为什么是两列而不是一列"）仍然写在列上方 —— 理由不是字段含义，
+--  元数据里放它只会把字段名挤没。
+--  ⚠️ `ALTER TABLE t COMMENT='…'` 只有 MySQL 认（H2 报 42001，实测），
+--  所以改注释就是改建表语句 + 重建表，本文件里没有一条 ALTER。
 -- ============================================================================
 
 -- 一次 Agent 运行（一个用户问题）
 CREATE TABLE IF NOT EXISTS agent_run (
-  id            VARCHAR(64)  NOT NULL,               -- 运行 id（恢复时的对账凭据）
-  question      TEXT         NOT NULL,               -- 用户原始问题
-  status        VARCHAR(32)  NOT NULL,               -- RUNNING / ANSWERED / FAILED / INTERRUPTED
-  stop_reason   VARCHAR(32)  NULL,                   -- 走到哪个出口（AgentStopReason）
-  final_answer  TEXT         NULL,                   -- 最终答案；被上限截断时为 NULL
-  total_tokens  INT          NOT NULL DEFAULT 0,     -- 累计 token（阶段四成本看板的运行时口径）
-  tool_calls    INT          NOT NULL DEFAULT 0,     -- 一共提出过几次工具调用（含被拒的）
-  elapsed_ms    BIGINT       NOT NULL DEFAULT 0,
-  node          VARCHAR(128) NULL,                   -- 哪个实例跑的（多实例时能看出"是谁挂的"）
-  error         TEXT         NULL,                   -- 失败原因（status=FAILED 时）
+  id            VARCHAR(64)  NOT NULL COMMENT '运行 id（恢复时的对账凭据）',
+  question      TEXT         NOT NULL COMMENT '用户原始问题',
+  status        VARCHAR(32)  NOT NULL COMMENT '运行状态：RUNNING / ANSWERED / FAILED / INTERRUPTED',
+  stop_reason   VARCHAR(32)  NULL COMMENT '走到哪个出口（AgentStopReason）',
+  final_answer  TEXT         NULL COMMENT '最终答案；被上限截断时为 NULL',
+  total_tokens  INT          NOT NULL DEFAULT 0 COMMENT '累计 token（阶段四成本看板的运行时口径）',
+  tool_calls    INT          NOT NULL DEFAULT 0 COMMENT '一共提出过几次工具调用（含被拒的）',
+  elapsed_ms    BIGINT       NOT NULL DEFAULT 0 COMMENT '运行耗时（毫秒）',
+  node          VARCHAR(128) NULL COMMENT '哪个实例跑的（多实例时能看出"是谁挂的"）',
+  error         TEXT         NULL COMMENT '失败原因（status=FAILED 时）',
   -- 失败细分原因（第七轮新增）：MODEL_ERROR 这一个出口下面藏着鉴权失败/限流/超时/连不上/
   -- 以及**我们自己的并发闸门拒绝**，而"太挤"与"上游挂了"的排查方向完全相反。
   -- 老数据为 NULL —— 加列不影响已有行，这正是这个设计的好处
-  failure_cause VARCHAR(32)  NULL,
+  failure_cause VARCHAR(32)  NULL COMMENT '失败细分原因（鉴权/限流/超时/连不上/并发闸门拒绝）',
   -- 【阶段四成本看板】业务归因键（「成本归因：按业务/租户/功能拆分」）。
   -- 由调用方在 /ask 时给出，本列**刻意不做外键、不做枚举**：
   -- 归因键是业务侧的概念，数据库管不了它有多少取值。
   -- NULL 表示"这次运行没有标注归因" —— 看板会把它显示成「未标注」，
   -- 而不是悄悄并进某一个业务里（那会让那一项虚高，且无从发现）
-  intent        VARCHAR(64)  NULL,
+  intent        VARCHAR(64)  NULL COMMENT '业务归因键（标注这次运行花在哪个功能上）；NULL=未标注',
   -- 【阶段四 Agent trace】**会话 id**：把"同一次对话里的多次运行"串起来（trace 五层的第一层）。
   --
   -- 【它与 id 的分工，别混】
@@ -52,7 +60,7 @@ CREATE TABLE IF NOT EXISTS agent_run (
   -- 刻意不自动生成一个：给每次孤立调用编一个会话 id，会让"有会话"这件事
   -- 看起来处处成立，而真相是"我们不知道这些运行属不属于同一段对话" ——
   -- 那与成本看板"没标注就显示未标注"是同一条规矩。
-  conversation_id VARCHAR(64) NULL,
+  conversation_id VARCHAR(64) NULL COMMENT '会话 id（把同一段对话里的多次运行串起来）；NULL=没有会话信息',
   -- 【阶段四第 6 件 · 成本归因】**租户**：这次运行花的是谁的钱。
   --
   -- 【为什么必须与 intent 分开成两列，而不是"按业务/租户"共用一个字段】
@@ -68,7 +76,7 @@ CREATE TABLE IF NOT EXISTS agent_run (
   -- NULL = **这次运行没有标注租户**（curl 直接调、外部系统调、界面没填）。
   -- 与 intent 同一条规矩：看板会把它显示成「未标注租户」并**独立成一行**，
   -- 而不是并进某个租户里（那会让那个租户的成本虚高，且无从发现）。
-  tenant_id     VARCHAR(64)  NULL,
+  tenant_id     VARCHAR(64)  NULL COMMENT '租户 id（这次运行花的是谁的钱）；NULL=未标注租户',
   -- 【运行权限的落点（本次新增）】发起任务时选了哪个工作区目录、哪一档权限。
   --
   -- 为什么必须落库而不是只留在请求体里：这两列回答的是"这次运行是在什么前提下跑的"，
@@ -78,13 +86,13 @@ CREATE TABLE IF NOT EXISTS agent_run (
   --
   -- NULL / 空串 = 没有工作区信息（老数据、curl 直接调、外部系统调）。
   -- 与 intent / tenant_id 同一条规矩：不编默认值，页面如实显示"未记录"。
-  workspace_dir VARCHAR(512) NULL,
+  workspace_dir VARCHAR(512) NULL COMMENT '发起任务时选的工作区目录；NULL=没有工作区信息',
   -- 权限档位：READ_ONLY / WORKSPACE_WRITE / FULL_ACCESS。
   -- ⚠️ 读侧对认不出的取值一律降成 READ_ONLY（见 AgentPermissionLevel.parse）：
   -- 认不出就当完全权限会让一次写操作被静默放行，两个方向的代价不对称。
-  permission_level VARCHAR(32) NULL,
-  created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  permission_level VARCHAR(32) NULL COMMENT '权限档位：READ_ONLY / WORKSPACE_WRITE / FULL_ACCESS；认不出的取值降成 READ_ONLY',
+  created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  updated_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
   PRIMARY KEY (id)
 ) COMMENT='运行记录';
 
@@ -95,23 +103,23 @@ CREATE TABLE IF NOT EXISTS agent_run (
 -- 没有它就只能"从头重放"，而那会把已经执行过的工具再执行一遍 ——
 -- 对于只读工具是浪费，对于写操作是灾难（这就是"工具调用重试会不会产生重复副作用"）。
 CREATE TABLE IF NOT EXISTS agent_step (
-  run_id            VARCHAR(64) NOT NULL,
-  step_index        INT         NOT NULL,            -- 从 1 开始
-  thought_text      TEXT        NULL,                -- 模型这一步的文字输出（ReAct 的 think）
-  prompt_tokens     INT         NOT NULL DEFAULT 0,
-  completion_tokens INT         NOT NULL DEFAULT 0,
+  run_id            VARCHAR(64) NOT NULL COMMENT '属于哪次运行（agent_run.id）',
+  step_index        INT         NOT NULL COMMENT '第几步，从 1 开始',
+  thought_text      TEXT        NULL COMMENT '模型这一步的文字输出（ReAct 的 think）',
+  prompt_tokens     INT         NOT NULL DEFAULT 0 COMMENT '输入 token 数（含缓存命中与未命中）',
+  completion_tokens INT         NOT NULL DEFAULT 0 COMMENT '输出 token 数',
   -- 【阶段四成本看板】这一步的输入里有多少命中了上游的提示词缓存。
   -- 为什么必须单独一列：缓存命中与未命中的**单价差一个数量级**（DeepSeek 官方口径是 50 倍），
   -- 而 prompt_tokens 是**两者之和**。只存合计的话，成本的误差方向永远是"高估"，
   -- 且高估的倍数取决于上游缓存命中率 —— 一个我们既看不见也调不了的量。
   -- 上游没报这个字段时记 0，读的时候按"全部未命中"算（偏保守，见 CostPricing 的注释）。
-  cache_read_tokens INT         NOT NULL DEFAULT 0,
+  cache_read_tokens INT         NOT NULL DEFAULT 0 COMMENT '输入里命中上游提示词缓存的 token 数；上游没报时记 0',
   -- 【阶段四成本看板】这一步是**哪个模型**跑的。
   -- 为什么落在"每一步"而不是"每次运行"上：成本和 token 一样，是**每一步**的产物
   -- （同一轮运行里换了模型，每步的单价就不同）。落在运行上只有在
   -- "整个运行只用一个模型"时才成立，而那正是灰度/切换期间不成立的前提。
   -- 上游没报 / 取不到名字时为空串，看板显示成「未知模型」，且**不给它算命**
-  model_name        VARCHAR(128) NOT NULL DEFAULT '',
+  model_name        VARCHAR(128) NOT NULL DEFAULT '' COMMENT '这一步用的模型名；空串=未知模型（不上报时不给它算命）',
   -- 【阶段四 Agent trace】这一步用的是**哪一版系统提示词**（指纹形如 `v3:9ab12cd34ef5`）。
   --
   -- 【为什么必须落这一列，而且落的是指纹不是版本号】
@@ -127,7 +135,7 @@ CREATE TABLE IF NOT EXISTS agent_step (
   --
   -- 空串 = 库里读不到这一版（老数据、或提示词服务不可用），
   -- 与"某个叫空串的版本"不会混淆（后者不是一个合法的指纹）。
-  prompt_fingerprint VARCHAR(64) NOT NULL DEFAULT '',
+  prompt_fingerprint VARCHAR(64) NOT NULL DEFAULT '' COMMENT '这一步用的系统提示词指纹（v3:9ab12cd34ef5 形态）；空串=读不到这一版',
   -- 【阶段四第 5 件 · 灰度发布】这一步所在的那次运行属于**哪一组**。
   --
   -- 【为什么分组必须与指纹分开存，而且必须落库】
@@ -141,10 +149,10 @@ CREATE TABLE IF NOT EXISTS agent_step (
   -- ⚠️ 空串与 'stable' 是两件事：前者是"这次实验不包含它"（灰度还没开），
   -- 后者是"它是这次实验的对照组"。混起来会让灰度报告的参与率虚高，
   -- 而参与率虚高的直接后果是"样本够了"这个判断过早成立。
-  canary_variant    VARCHAR(16) NOT NULL DEFAULT '',
-  elapsed_ms        BIGINT      NOT NULL DEFAULT 0,
-  transcript        TEXT        NOT NULL,            -- 这一步之后的完整消息列表（JSON）
-  created_at        TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  canary_variant    VARCHAR(16) NOT NULL DEFAULT '' COMMENT '灰度分组：canary / stable / 空串（没有参与这次实验）',
+  elapsed_ms        BIGINT      NOT NULL DEFAULT 0 COMMENT '这一步耗时（毫秒）',
+  transcript        TEXT        NOT NULL COMMENT '这一步之后的完整消息列表（JSON）—— 断点恢复的检查点',
+  created_at        TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (run_id, step_index)
 ) COMMENT='运行步骤';
 
@@ -154,16 +162,16 @@ CREATE TABLE IF NOT EXISTS agent_step (
 -- 报告里要能回答"模型一共想调几次、其中几次没让它调"。
 -- 只记成功的会让这个数字永远偏小。
 CREATE TABLE IF NOT EXISTS agent_tool_invocation (
-  run_id       VARCHAR(64) NOT NULL,
-  step_index   INT         NOT NULL,
-  call_index   INT         NOT NULL,                 -- 同一步内的第几个调用（并行工具调用会有多个）
-  call_id      VARCHAR(128) NULL,                    -- 模型给的 id（回填时对账用）
-  tool_name    VARCHAR(128) NOT NULL,
-  arguments    TEXT        NULL,                     -- 原始 JSON 参数（截断后）
-  stage        VARCHAR(32) NOT NULL,                 -- UNKNOWN_TOOL / PARSE_ERROR / VALIDATION_ERROR / EXECUTION_ERROR / OK
-  feedback     TEXT        NULL,                     -- 回填给模型的文本
-  elapsed_ms   BIGINT      NOT NULL DEFAULT 0,
-  created_at   TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  run_id       VARCHAR(64) NOT NULL COMMENT '属于哪次运行（agent_run.id）',
+  step_index   INT         NOT NULL COMMENT '第几步发起的调用',
+  call_index   INT         NOT NULL COMMENT '同一步内的第几个调用（并行工具调用会有多个）',
+  call_id      VARCHAR(128) NULL COMMENT '模型给的调用 id（回填时对账用）',
+  tool_name    VARCHAR(128) NOT NULL COMMENT '工具名（AgentTool.name()）',
+  arguments    TEXT        NULL COMMENT '原始 JSON 参数（截断后）',
+  stage        VARCHAR(32) NOT NULL COMMENT '走到哪一步：UNKNOWN_TOOL / PARSE_ERROR / VALIDATION_ERROR / EXECUTION_ERROR / OK',
+  feedback     TEXT        NULL COMMENT '回填给模型的文本',
+  elapsed_ms   BIGINT      NOT NULL DEFAULT 0 COMMENT '这次工具调用耗时（毫秒）',
+  created_at   TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (run_id, step_index, call_index)
 ) COMMENT='工具调用';
 
@@ -201,13 +209,13 @@ CREATE TABLE IF NOT EXISTS agent_tool_invocation (
 --  写一个 "system" 进去会让"谁批的"这个问题得到一个是又不是的答案。
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS agent_tool_approval (
-  id            VARCHAR(64)  NOT NULL,               -- 审批 id（界面拿它批准/拒绝）
-  run_id        VARCHAR(64)  NULL,                   -- 属于哪次运行；外部 MCP 链路的调用为 NULL
-  step_index    INT          NULL,                   -- 第几步（审计要能回答"它挂在哪一步"）
-  tool_name     VARCHAR(128) NOT NULL,
-  arguments     TEXT         NULL,                   -- **真正会被执行的那份参数**（人批的就是它）
-  hints         VARCHAR(128) NULL,                   -- 风险声明的可读描述（展示用，故存字符串）
-  summary       VARCHAR(512) NULL,                   -- 工具自己的一句话摘要
+  id            VARCHAR(64)  NOT NULL COMMENT '审批 id（界面拿它批准/拒绝）',
+  run_id        VARCHAR(64)  NULL COMMENT '属于哪次运行；外部 MCP 链路的调用为 NULL',
+  step_index    INT          NULL COMMENT '第几步（审计要能回答"它挂在哪一步"）',
+  tool_name     VARCHAR(128) NOT NULL COMMENT '工具名（AgentTool.name()）',
+  arguments     TEXT         NULL COMMENT '**真正会被执行的那份参数**（人批的就是它）',
+  hints         VARCHAR(128) NULL COMMENT '风险声明的可读描述（展示用，故存字符串）',
+  summary       VARCHAR(512) NULL COMMENT '工具自己的一句话摘要',
   -- 【本次新增】发起这次调用的那次运行被授予的权限（形如 `仅可查看 · D:\work\demo`）。
   --
   -- 为什么它与 hints 必须分开：hints 是**工具固有**的风险声明（对所有运行都一样），
@@ -215,12 +223,14 @@ CREATE TABLE IF NOT EXISTS agent_tool_approval (
   -- 在"仅可查看"下会弹、在"完全权限"下不会，只看 hints 分不出这两种情况。
   --
   -- 空串 = 没有权限上下文（外部 MCP 客户端那条链路没有"运行"这个对象，老数据也没有这一列）。
-  permission_note VARCHAR(512) NOT NULL DEFAULT '',
-  status        VARCHAR(32)  NOT NULL,               -- PENDING / APPROVED / DENIED / TIMED_OUT / EXPIRED
-  requested_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  decided_at    TIMESTAMP    NULL,
-  decided_by    VARCHAR(128) NULL,                   -- 谁做的决定（超时/作废时为空）
-  decision_note TEXT         NULL,                   -- 决定说明（拒绝理由会回填给模型）
+  -- ⚠️ COMMENT 里的反斜杠要写成 `\\`：MySQL 把 `\` 当转义符，写成单斜杠时
+  -- `D:\work\demo` 会被**静默**存成 `D:workdemo`（实测：库里读回来就是这样）。
+  permission_note VARCHAR(512) NOT NULL DEFAULT '' COMMENT '发起这次调用时那次运行的权限上下文（形如「仅可查看 · D:\\work\\demo」）；空串=没有权限上下文',
+  status        VARCHAR(32)  NOT NULL COMMENT '审批状态：PENDING / APPROVED / DENIED / TIMED_OUT / EXPIRED',
+  requested_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '提出审批的时间',
+  decided_at    TIMESTAMP    NULL COMMENT '人处理的时间；NULL=还没人处理',
+  decided_by    VARCHAR(128) NULL COMMENT '谁做的决定（超时/作废时为空 —— 那两个没有"决定人"）',
+  decision_note TEXT         NULL COMMENT '决定说明（拒绝理由会回填给模型）',
   PRIMARY KEY (id)
 ) COMMENT='人工审批';
 
@@ -254,20 +264,20 @@ CREATE TABLE IF NOT EXISTS agent_tool_approval (
 --  前三层是"谁在什么上下文里做了什么"，本表是"它到底看到了什么"。
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS retrieval_hit (
-  run_id       VARCHAR(64)  NOT NULL,
-  step_index   INT          NOT NULL,               -- 第几步发起的检索
-  call_index   INT          NOT NULL,               -- 这一步里的第几次工具调用（与 agent_tool_invocation 同一套编号）
-  hit_rank     INT          NOT NULL,               -- 第几名（从 1 开始，**就是模型看到的名次**）
-  chunk_id     VARCHAR(256) NULL,                   -- 块 id（`文档id#序号`）—— 能直接回到分块结果
-  document_id  VARCHAR(256) NULL,                   -- 来源文档
-  breadcrumb   VARCHAR(512) NULL,                   -- 标题路径（"这条命中属于哪一节"）
-  token_count  INT          NOT NULL DEFAULT 0,     -- 这个块**估算**的 token（进 prompt 的量级）
+  run_id       VARCHAR(64)  NOT NULL COMMENT '属于哪次运行（agent_run.id）',
+  step_index   INT          NOT NULL COMMENT '第几步发起的检索',
+  call_index   INT          NOT NULL COMMENT '这一步里的第几次工具调用（与 agent_tool_invocation 同一套编号）',
+  hit_rank     INT          NOT NULL COMMENT '第几名（从 1 开始，**就是模型看到的名次**）',
+  chunk_id     VARCHAR(256) NULL COMMENT '块 id（`文档id#序号`）—— 能直接回到分块结果',
+  document_id  VARCHAR(256) NULL COMMENT '来源文档',
+  breadcrumb   VARCHAR(512) NULL COMMENT '标题路径（"这条命中属于哪一节"）',
+  token_count  INT          NOT NULL DEFAULT 0 COMMENT '这个块**估算**的 token（进 prompt 的量级）',
   -- 相关性得分。**只在同一次检索内可比** —— 不同检索引擎的量纲不同（这正是混合检索
   -- 必须按名次融合、不能直接相加的原因）。落它不是为了与别次比较，而是为了回答
   -- "第 3 条与第 4 条的分差有多大"（分差极小说明这次检索其实没区分度）
-  score        DOUBLE       NOT NULL DEFAULT 0,
-  excerpt      VARCHAR(512) NULL,                   -- 片段开头（截断）—— 让人不下钻也能认出召回对不对
-  created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  score        DOUBLE       NOT NULL DEFAULT 0 COMMENT '相关性得分（只在同一次检索内可比，不同引擎量纲不同）',
+  excerpt      VARCHAR(512) NULL COMMENT '片段开头（截断）—— 让人不下钻也能认出召回对不对',
+  created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (run_id, step_index, call_index, hit_rank)
 ) COMMENT='检索命中';
 
@@ -277,19 +287,19 @@ CREATE TABLE IF NOT EXISTS retrieval_hit (
 -- 用户说"它答不上来"，第一件要看的就是"它拿什么词去查的、一条都没查到吗"）。
 -- 一次没有命中的检索**同样要留痕**，所以它必须有自己的行。
 CREATE TABLE IF NOT EXISTS retrieval_call (
-  run_id       VARCHAR(64)  NOT NULL,
-  step_index   INT          NOT NULL,
-  call_index   INT          NOT NULL,
+  run_id       VARCHAR(64)  NOT NULL COMMENT '属于哪次运行（agent_run.id）',
+  step_index   INT          NOT NULL COMMENT '第几步发起的检索',
+  call_index   INT          NOT NULL COMMENT '这一步里的第几次工具调用（与 agent_tool_invocation 同一套编号）',
   -- 哪把工具发起的检索。今天只有 search_docs 一把，但记下来才能回答
   -- "将来的第二把检索工具用得怎么样" —— 而那个问题在没有这一列时**无法补算**
   -- （agent_tool_invocation 里有，但那里分不出"检索类"与"非检索类"的调用）
-  tool_name    VARCHAR(128) NOT NULL DEFAULT '',
-  query        VARCHAR(512) NULL,                   -- 实际拿去检索的查询词
-  top_k        INT          NOT NULL DEFAULT 0,     -- 模型要了几条（不是引擎实际返回几条）
-  hit_count    INT          NOT NULL DEFAULT 0,     -- 实际命中几条（0 是正常结果，不是故障）
-  index_size   INT          NOT NULL DEFAULT 0,     -- 当时索引里有多少块（回答"库是不是空的"）
-  elapsed_ms   BIGINT       NOT NULL DEFAULT 0,
-  created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  tool_name    VARCHAR(128) NOT NULL DEFAULT '' COMMENT '哪把工具发起的检索（今天只有 search_docs 一把）',
+  query        VARCHAR(512) NULL COMMENT '实际拿去检索的查询词',
+  top_k        INT          NOT NULL DEFAULT 0 COMMENT '模型要了几条（不是引擎实际返回几条）',
+  hit_count    INT          NOT NULL DEFAULT 0 COMMENT '实际命中几条（0 是正常结果，不是故障）',
+  index_size   INT          NOT NULL DEFAULT 0 COMMENT '当时索引里有多少块（回答"库是不是空的"）',
+  elapsed_ms   BIGINT       NOT NULL DEFAULT 0 COMMENT '这次检索耗时（毫秒）',
+  created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (run_id, step_index, call_index)
 ) COMMENT='检索调用';
 

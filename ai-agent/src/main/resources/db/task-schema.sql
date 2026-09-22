@@ -45,6 +45,8 @@
 --  TIMESTAMP DEFAULT CURRENT_TIMESTAMP / ON UPDATE CURRENT_TIMESTAMP /
 --  外键 ON DELETE CASCADE / 建表语句末尾的 COMMENT='…'。
 --  ⚠️ 表注释只能写在 CREATE TABLE 末尾（`ALTER TABLE t COMMENT='…'` 只有 MySQL 认，H2 报 42001）。
+--  ⚠️ **每一列都带 COMMENT**：字段含义写在 COMMENT 里（元数据里读得到），
+--  一段设计取舍写在列上方 —— 理由不是字段含义，塞进元数据只会把字段名挤没。
 --
 --  【索引不在这里建】见 ai.agent.config.SchemaIndexInitializer 的 DEFINITIONS：
 --  MySQL 8.0 不认 `CREATE INDEX IF NOT EXISTS`，写在脚本里会让第二次启动直接失败。
@@ -52,30 +54,30 @@
 
 -- 一次派给 Agent 的任务
 CREATE TABLE IF NOT EXISTS agent_task (
-  id               BIGINT       NOT NULL AUTO_INCREMENT,
+  id               BIGINT       NOT NULL AUTO_INCREMENT COMMENT '任务 id',
   -- 发布人：指派出任务的人（姓名快照，不是 agent_user 的外键）
   --
   -- 【为什么是快照而不是外键】这一列要回答的是"当时是谁派的"，
   -- 而账号是可以改显示名、可以停用的 —— 外键会让这条任务在账号改名后显示成新名字，
   -- 于是"当时"这个语义丢了。与 agent_run.decided_by / granted_by 同一条规矩。
-  publisher        VARCHAR(128) NOT NULL,
+  publisher        VARCHAR(128) NOT NULL COMMENT '发布人：指派出任务的人（姓名快照，不做外键，于是账号改名不影响"当时是谁派的"）',
   -- 任务人：交付任务的人。**写入路径必填**（发布人 / 任务人都必须是 agent_user 里真实存在的名字，
   -- 判据在 DefaultAgentTaskService#realUser —— 它要读账号表，所以不在实体里）。
   -- 列本身允许 NULL：库里可能有任务人为空的行，而读侧把它显示成「未指定任务人」，
   -- 比"这一行读不出来，整张看板打不开"好得多
-  assignee         VARCHAR(128) NULL,
+  assignee         VARCHAR(128) NULL COMMENT '任务人：交付任务的人（写入路径必填，必须是真实存在的账号名）；NULL 显示为「未指定任务人」',
   -- 任务描述：这次要做什么。它同时也是生成第一条确认项的输入
-  description      TEXT         NOT NULL,
+  description      TEXT         NOT NULL COMMENT '任务描述：这次要做什么（也是生成第一条确认项的输入）',
   -- 状态取值见头注的状态链，库里的值一律是枚举名（AgentTaskStatus）。
   -- ⚠️ 读侧对认不出的取值落在 NEW 而不是"某一个看起来正常的中间态"：
   -- 落成终态会让这一行从看板的活跃列里消失，而"卡片不见了"是最难发现的一种坏法
-  status           VARCHAR(32)  NOT NULL DEFAULT 'NEW',
+  status           VARCHAR(32)  NOT NULL DEFAULT 'NEW' COMMENT '任务状态：NEW / PENDING_REQUIREMENT / PENDING_PLAN / PENDING_AUTHORIZATION / EXECUTING / PENDING_ACCEPTANCE / COMPLETED / CANCELLED（认不出的取值落 NEW）',
   -- 当前执行人：这条任务现在流转到谁手里。
   -- EXECUTING 时写 agent（形如 agent#3，3 是 agent_id）；其余是人的名字（发布人或任务人）
-  current_executor VARCHAR(128) NULL,
+  current_executor VARCHAR(128) NULL COMMENT '当前执行人：EXECUTING 时写 agent（形如 agent#3），其余是人的名字',
   -- 任务当前步骤，从 1 开始：1 需求 / 2 计划 / 3 授权 / 4 执行 / 5 验收 / 6 完成。
   -- 新发布也记 1 —— 它表示"停在第 1 步还没开始"，而不是第 0 步（界面上没有第 0 步这个东西）
-  current_step     INT          NOT NULL DEFAULT 1,
+  current_step     INT          NOT NULL DEFAULT 1 COMMENT '任务当前步骤：1 需求 / 2 计划 / 3 授权 / 4 执行 / 5 验收 / 6 完成（新发布也记 1）',
   -- 任务交给哪个 Agent 应用。**不做外键**：Agent 应用表在另一个业务域里，
   -- 而这里只需要一个引用键（与 agent_run.intent / tenant_id 同一条规矩：
   -- 归因键的取值由业务侧定义，数据库管不了它有多少个）
@@ -84,35 +86,35 @@ CREATE TABLE IF NOT EXISTS agent_task (
   -- 用 ai.agent.task.agent-id 写入（见 DefaultAgentTaskExecution#stampAgent）。
   -- 于是"交给哪个 Agent 应用"只有一个来源 —— 那个 id 是部署方才知道的东西，
   -- 让发布人打一个数字等于把"它对不对"变成一个人的记忆
-  agent_id         BIGINT       NULL,
+  agent_id         BIGINT       NULL COMMENT '交给哪个 Agent 应用（不做外键；平台第一次接手时由 ai.agent.task.agent-id 写入）',
   -- 执行结果：执行那一步走完时登记（EXECUTING → 待验收）
-  result           TEXT         NULL,
+  result           TEXT         NULL COMMENT '执行结果：执行那一步走完时登记（EXECUTING → 待验收）',
   -- 取消原因：用户取消时填写，与 status=CANCELLED 同一次写入。
   -- 允许 NULL 只为了非取消状态的那一行；取消时由写入路径强制非空（服务层唯一入口）
-  cancel_reason    VARCHAR(512) NULL,
-  created_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  cancel_reason    VARCHAR(512) NULL COMMENT '取消原因：与 status=CANCELLED 同一次写入（取消时写入路径强制非空）',
+  created_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  updated_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
   PRIMARY KEY (id)
 ) COMMENT='agent任务';
 
 -- 一条确认项：任务在第几步问了什么、给了哪些选项、用户答了什么
 CREATE TABLE IF NOT EXISTS agent_task_confirm (
-  id           BIGINT      NOT NULL AUTO_INCREMENT,
-  task_id      BIGINT      NOT NULL,
+  id           BIGINT      NOT NULL AUTO_INCREMENT COMMENT '确认项 id',
+  task_id      BIGINT      NOT NULL COMMENT '属于哪条任务（agent_task.id）',
   -- 任务步骤：这一条是在任务的第几步提出来的（值来自 agent_task.current_step，
   -- 即"第 1/2/3 步"= 需求 / 计划 / 授权三种确认）。列轴与 agent_step.step_index 同名同义
-  step_index   INT         NOT NULL,
+  step_index   INT         NOT NULL COMMENT '任务步骤（1 需求 / 2 计划 / 3 授权，值来自 agent_task.current_step）',
   -- 类型：REQUIREMENT 需求确认 / PLAN 计划确认 / AUTHORIZATION 授权确认
-  confirm_type VARCHAR(32) NOT NULL,
+  confirm_type VARCHAR(32) NOT NULL COMMENT '确认类型：REQUIREMENT 需求 / PLAN 计划 / AUTHORIZATION 授权',
   -- 确认事项描述：要用户确认的那件事
-  description  TEXT        NULL,
+  description  TEXT        NULL COMMENT '确认事项描述：要用户确认的那件事',
   -- 选项集：JSON 数组，如 ["确认","需要补充"]。空/null = 只收自由回复
-  option_set   TEXT        NULL,
+  option_set   TEXT        NULL COMMENT '选项集（JSON 数组，如 ["确认","需要补充"]）；空/null = 只收自由回复',
   -- 用户确认项：用户选的选项或自由回复；NULL = **还没答**。
   -- "空串"与 NULL 在这里是两件事：空串是一次"答了但什么都没写"，会被拒绝在写入路径上
-  answer       TEXT        NULL,
-  created_at   TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at   TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  answer       TEXT        NULL COMMENT '用户答的内容（选的选项或自由回复）；NULL=还没答（空串=答了但什么都没写，写入路径拒绝）',
+  created_at   TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  updated_at   TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
   PRIMARY KEY (id),
   -- 同一步骤同一种类型只允许一条：并发推进时第二次插入被数据库拦下，
   -- 而不是在界面上出现两条一模一样的确认项（然后用户只能猜该答哪一条）

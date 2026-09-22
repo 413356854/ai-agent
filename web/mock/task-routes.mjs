@@ -222,9 +222,12 @@ function initialState() {
         result: '【产出】已补上说明段落。\n\n【改动】成功的才算数：\n- edit_file {"path":"web/src/components/CostPanel.tsx"}',
         cancelReason: null,
       },
-      // 已完成
+      // 已完成。描述刻意写长：它要盖住"卡片上的文字默认夹住"这件事 ——
+      // 一列里所有描述都只有一行时，「展开全文」永远不出现，界面自检也就断不到它
       {
-        id: 10, publisher: 'zhou', assignee: 'admin', description: '把 CI 的端口说明改成环境变量法',
+        id: 10, publisher: 'zhou', assignee: 'admin',
+        description: '把 CI 的端口说明改成环境变量法：两套服务各用一对变量，'
+          + '并写清"代理指错了端口"与"服务没起来"这两种失败长得完全一样、该先查哪一个',
         status: 'COMPLETED', currentExecutor: '', currentStep: 9, agentId: AGENT_ID,
         result: '【产出】已改成 CI_MOCK_PORT / CI_UI_PORT 两行说明。', cancelReason: null,
       },

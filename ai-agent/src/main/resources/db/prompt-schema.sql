@@ -25,32 +25,36 @@
 --  "两次读到的数不一样"。而它有真实用处：换提示词最常见的副作用是**预算变了**，
 --  页面上要能直接看出"这一版比上一版多占多少 token" ——
 --  不然那个变化只在"历史被裁得更早"时才显形，而那时没人会想到是提示词改的。
+--
+--  ⚠️ **每一列都带 COMMENT**，表注释写在 CREATE TABLE 末尾。
+--  `ALTER TABLE t COMMENT='…'` 只有 MySQL 认（H2 报 42001，实测），
+--  所以改注释就是改建表语句 + 重建表，本文件里没有一条 ALTER。
 -- ============================================================================
 
 -- 每一版提示词的正文（只追加，不修改、不删除）
 CREATE TABLE IF NOT EXISTS prompt_version (
-  kind         VARCHAR(64)   NOT NULL,              -- PromptKind.defaultValue（system-agent / system-agent-tools）
-  version      INT           NOT NULL,              -- 每份提示词各自从 1 开始
-  content      TEXT          NOT NULL,              -- 正文
-  hash         VARCHAR(32)   NOT NULL,              -- SHA-256 前 12 位：用于"页面这一版 == 库里那一版"的断言
-  char_count   INT           NOT NULL DEFAULT 0,
-  token_estimate INT         NOT NULL DEFAULT 0,    -- 估算 token（换提示词最常见的副作用是预算变了）
-  note         VARCHAR(512)  NULL,                  -- 这一版为什么这么改（必填，见 PromptValidator）
-  author       VARCHAR(128)  NULL,
+  kind         VARCHAR(64)   NOT NULL COMMENT '提示词种类（PromptKind.defaultValue：system-agent / system-agent-tools）',
+  version      INT           NOT NULL COMMENT '版本号（每份提示词各自从 1 开始）',
+  content      TEXT          NOT NULL COMMENT '提示词正文',
+  hash         VARCHAR(32)   NOT NULL COMMENT 'SHA-256 前 12 位：用于"页面这一版 == 库里那一版"的断言',
+  char_count   INT           NOT NULL DEFAULT 0 COMMENT '正文字符数（与 token_estimate 一起摆出"这一版比上一版大多少"）',
+  token_estimate INT         NOT NULL DEFAULT 0 COMMENT '估算 token（换提示词最常见的副作用是预算变了）',
+  note         VARCHAR(512)  NULL COMMENT '这一版为什么这么改（必填，见 PromptValidator）',
+  author       VARCHAR(128)  NULL COMMENT '这一版是谁写的',
   -- 复制自哪一版。首次手工新建为 NULL；**回滚也记它** ——
   -- 于是一条回滚在历史里长成"第 7 版（复制自第 3 版）"，而不是"指针莫名其妙退回去了"
-  forked_from  INT           NULL,
-  created_at   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  forked_from  INT           NULL COMMENT '复制自哪一版；NULL=首次手工新建（回滚也记它，于是回滚在历史里看得见出处）',
+  created_at   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (kind, version)
 ) COMMENT='提示词版本';
 
 -- 当前生效的那一版（每份提示词一行）
 CREATE TABLE IF NOT EXISTS prompt_active (
-  kind          VARCHAR(64) NOT NULL,
-  version       INT         NOT NULL,
+  kind          VARCHAR(64) NOT NULL COMMENT '提示词种类（PromptKind.defaultValue）',
+  version       INT         NOT NULL COMMENT '当前生效的版本号',
   -- 谁把它切成这一版的。与 prompt_version.author 是两个不同的问题：
   -- 「这一版是谁写的」与「是谁让它生效的」在灰度/回滚时经常不是同一个人
-  activated_by  VARCHAR(128) NULL,
-  activated_at  TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  activated_by  VARCHAR(128) NULL COMMENT '是谁让它生效的（与 prompt_version.author 是两个不同的问题）',
+  activated_at  TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '它是什么时候生效的',
   PRIMARY KEY (kind)
 ) COMMENT='提示词生效';

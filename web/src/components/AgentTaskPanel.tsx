@@ -4,6 +4,7 @@ import { permissionApi } from '../api/permissions'
 import type { PermissionUserOption } from '../api/permissions'
 import type { AgentTaskCard, AgentTaskConfirm } from '../api/tasks'
 import type { UseTasksResult } from '../hooks/useTasks'
+import { Clamped } from './Clamped'
 
 const { Text, Paragraph } = Typography
 
@@ -37,6 +38,13 @@ const { Text, Paragraph } = Typography
  * 看板只画"这件事结束了没有"，而两者都是结束；给已取消单开一列会让一条流程里
  * 最边缘的结局占掉一整列宽度。两者的区别靠卡片上的状态标签与取消原因表达 ——
  * 所以那两样必须显示出来（见上面第 3 条）。
+ *
+ * <h2>卡片上的长文字默认夹住，夹掉了就在卡片上给一个「展开全文」</h2>
+ * 标题与执行结果各最多 6 行（`Clamped`，量出真的夹掉了才画开关）。
+ * 判据是**看板要能一眼看全几件事**：一张写着长产出的卡片把整列撑高之后，
+ * 同一个窗口里就只剩两三张卡可见，"有几件事在等谁"这个看板唯一的答案就看不出来了。
+ * 展开入口必须在卡片上（而不是"想看就去点详情"）：一列里摆着好几张卡时，
+ * 哪一张被夹掉靠比对各卡高度是看不出来的。
  */
 export function AgentTaskPanel({ tasks }: { tasks: UseTasksResult }) {
   const { board } = tasks
@@ -133,29 +141,66 @@ function TaskFeedback({ tasks }: { tasks: UseTasksResult }) {
 /*  卡片                                                                */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 一张卡片。
+ *
+ * <h2>默认夹住：标题与执行结果各最多 6 行，夹掉了才给一个「展开全文」</h2>
+ * 任务描述可以很长（执行结果更是一份多行产出），不夹住的话一张卡片能占满整列，
+ * 看板就不再是看板。夹住之后必须在**卡片上**给出展开入口，而不是只让人"点开详情看"：
+ * 那一列摆着好几张卡时，「哪一张是被夹掉的那张」靠比较各卡的高度是看不出来的。
+ *
+ * 开关画在状态标签那一行的右端，管的正是上面那一段被夹住的文字 ——
+ * 它必须画在被夹的那一段**外面**，否则一收起就连开关一起看不见了。
+ *
+ * 三处判断各归各的：`overflow`（夹掉了没有）由 `Clamped` 量出来，`expanded` 是用户点的，
+ * 而两者都要为真才画 `is-open`（放开上限）。少了 `overflow` 这一半，
+ * 短描述的卡片也会挂一个点了没反应的「展开全文」。
+ */
 function TaskCard({ task, onOpen }: { task: AgentTaskCard; onOpen: () => void }) {
+  /** 上面的文字有没有被夹掉 —— 由 Clamped 量出来（见那个组件）。 */
+  const [overflow, setOverflow] = useState(false)
+  /** 每张卡片自己的展开态：看板上同时摆着十几张，共用一个状态会让它们一起展开。 */
+  const [expanded, setExpanded] = useState(false)
+  const open = overflow && expanded
+
   return (
-    <button
-      type="button"
-      className={`task-card is-${task.status.toLowerCase()}`}
-      data-task-id={task.id}
-      onClick={onOpen}
-    >
-      <span className="task-card-title">{task.description}</span>
-      <span className="task-card-meta">
-        {task.publisher} → {task.assignee || '（未指派任务人）'}
-      </span>
-      <span className="task-card-meta">
-        第 {task.currentStep} 步 · 当前执行人 {task.currentExecutor || '（无）'}
-        {task.agentId != null ? ` · agent#${task.agentId}` : ''}
-      </span>
-      <span className="task-card-foot">
-        <Tag color={statusColor(task.status)}>{task.statusLabel}</Tag>
-      </span>
-      {/* 执行结果与取消原因都只在自己那一段出现：没有的时候不画一行空白 */}
-      {task.result && <span className="task-card-result">执行结果：{task.result}</span>}
-      {task.cancelReason && <span className="task-card-cancel">取消原因：{task.cancelReason}</span>}
-    </button>
+    <div className={`task-card is-${task.status.toLowerCase()}`} data-task-id={task.id}>
+      {/* 卡片整张可点（点开详情）。它是一个铺满卡片的 button，文字那一层不接收指针事件 ——
+          button 里不能嵌 button，而「展开全文」必须是真按钮（键盘用户要能按到）。
+          于是：这一层负责点击，文字层只负责显示，开关层浮在最上面（见 styles.css）。 */}
+      <button type="button" className="task-card-open" onClick={onOpen} aria-hidden="true" tabIndex={-1} />
+      <div className="task-card-body">
+        <span className="task-card-text">
+          <Clamped text={task.description} className="task-card-title" maxHeight={66}
+            open={open} onOverflow={(_region, more) => setOverflow(more)} />
+          {/* 执行结果与取消原因都只在自己那一段出现：没有的时候不画一行空白 */}
+          {task.result && (
+            <Clamped text={`执行结果：${task.result}`} className="task-card-result" maxHeight={84}
+              open={open} onOverflow={(_region, more) => setOverflow(more)} />
+          )}
+          {task.cancelReason && (
+            <Clamped text={`取消原因：${task.cancelReason}`} className="task-card-cancel" maxHeight={62}
+              open={open} onOverflow={(_region, more) => setOverflow(more)} />
+          )}
+        </span>
+        <span className="task-card-meta">
+          {task.publisher} → {task.assignee || '（未指派任务人）'}
+        </span>
+        <span className="task-card-meta">
+          第 {task.currentStep} 步 · 当前执行人 {task.currentExecutor || '（无）'}
+          {task.agentId != null ? ` · agent#${task.agentId}` : ''}
+        </span>
+        <span className="task-card-foot">
+          <Tag color={statusColor(task.status)}>{task.statusLabel}</Tag>
+          {overflow && (
+            <button type="button" className="task-card-toggle"
+              onClick={() => setExpanded(!expanded)}>
+              {expanded ? '收起' : '展开全文'}
+            </button>
+          )}
+        </span>
+      </div>
+    </div>
   )
 }
 

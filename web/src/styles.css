@@ -2024,10 +2024,13 @@ body {
       flex 对"多一列"是自动的，写死五列的 grid 不是）；
       窄到下限还放不下时在**面板内部**横向滚动 —— 面板本身 overflow-x 是 hidden，
       所以滚动条不会把整页撑宽（verify-ui.mjs 在 documentElement 上断言"不横向溢出"）；
-   2. **卡片是 `button` 而不是带 onClick 的 div**：它要能按 Tab 聚焦、能被读屏读成"一个控件"，
-      自检也能用 getByRole('button') 说话 —— div 加 onClick 是"看起来能点"，键盘用户点不到；
-   3. **卡片标题按词换行、最多 3 行**（`line-clamp`）：任务描述可以很长，
-      不夹住的话一张卡片能占满整列，看板就不再是看板了；
+   2. **卡片整张是一个热区，靠叠一层透明 `button` 实现**：它要能按 Tab 聚焦、能被读屏读成"一个控件"，
+      自检也能用 getByRole('button') 说话 —— div 加 onClick 是"看起来能点"，键盘用户点不到。
+      用叠一层、而不是"卡片本身就是 button"，是因为卡上还要有「展开全文」那个**真按钮**
+      （button 里不能嵌 button，见 `.task-card-open` 与 `.task-card-body`）；
+   3. **标题与执行结果默认最多占 6 行**（被夹的那一段上的 `max-height`，值由 AgentTaskPanel 按行高算）：
+      任务描述可以很长、执行结果更是一份多行产出，不夹住的话一张卡片能占满整列，
+      看板就不再是看板；字被夹掉的那张卡片上会出现「展开全文」（量法见 `Clamped.tsx`）；
    4. **已取消的卡片不置灰到底**：它与验收通过的那条同处「已完成」列
       （见 AgentTaskPanel 的文件头），灰到看不清就分不出两者 ——
       而"取消原因"正是这两者唯一的区别。
@@ -2091,20 +2094,14 @@ body {
   padding: 4px 2px;
 }
 
-/* 卡片：块级 button。默认的按钮外观（居中、灰底、边框）都要去掉 —— 它是张卡片 */
+/* 卡片：块级容器。点开详情由里面那个铺满卡片的 `.task-card-open` 负责（见 AgentTaskPanel） */
 .task-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  position: relative;
   width: 100%;
-  text-align: left;
   padding: 8px 10px;
   background: #fff;
   border: 1px solid #e8e8e8;
   border-radius: 6px;
-  cursor: pointer;
-  font: inherit;
-  color: inherit;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
@@ -2113,24 +2110,77 @@ body {
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
 }
 
-.task-card:focus-visible {
+.task-card:focus-within {
   outline: 2px solid #1677ff;
   outline-offset: 1px;
 }
 
+/* 点开详情那一层：铺满整张卡片、透明。`opacity: 0` 仍然能点（`visibility: hidden` 不能）。
+   文字层是 `pointer-events: none`，所以卡上的字选不中 —— 取舍是：卡片整张可点只有一个热区，
+   而"选中卡片上的一段话"由详情弹窗负责（那里的文字是可选的）。 */
+.task-card-open {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.task-card-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  pointer-events: none;
+}
+
+/* 被夹住的那一段（标题 + 执行结果 + 取消原因）。`min-width: 0` 是 flex 子项肯收缩的前提 */
+.task-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* 夹住时切在行与行之间而不是半个字上：被夹的各段行高统一到 18px（12px × 1.5），
+   于是"最多几行"就是 maxHeight ÷ 18（由 AgentTaskPanel 给值，见 TaskCard）。
+   过渡只影响观感：量"夹掉没有"读的是 scrollHeight（内容高度），与它无关。
+   `overflow-wrap` 对中文长句不生效（中文本来就能在任意字间换行），
+   它保的是种子里那些没有空格的路径（`web/src/components/CostPanel.tsx`）不从卡片里溢出去 */
+.task-card .is-clamped {
+  min-width: 0;
+  line-height: 18px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  transition: max-height 0.15s ease;
+}
+
+/* 展开 = 把上限放开。`!important` 压的是元素上那个行内 `max-height`：
+   Clamped 的判据是"内容高不高过那个常数"，所以那个数必须不随展开变化，只能留在行内；
+   "现在是展开"就只剩这一条规则能表达。丢掉 `!important` 的后果不是报错，
+   而是点了「展开全文」什么都不发生。 */
+.task-card .is-clamped.is-open {
+  max-height: none !important;
+}
+
 .task-card-title {
   font-weight: 500;
-  line-height: 1.5;
-  /* 描述可以很长：夹到 3 行，否则一张卡片能占满整列 */
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
+  font-size: 14px;
+}
+
+/* 执行结果是一份多行产出（假数据里就带换行），按原样断行显示；取消原因同理 */
+.task-card-result,
+.task-card-cancel {
+  white-space: pre-wrap;
 }
 
 .task-card-meta {
   font-size: 12px;
+  line-height: 1.5;
   color: rgba(0, 0, 0, 0.45);
   word-break: break-all;
 }
@@ -2139,15 +2189,14 @@ body {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .task-card-result,
 .task-card-cancel {
   font-size: 12px;
-  line-height: 1.5;
   padding: 2px 6px;
   border-radius: 4px;
-  word-break: break-word;
 }
 
 .task-card-result {
@@ -2158,6 +2207,32 @@ body {
 .task-card-cancel {
   background: #fff7e6;
   color: #d46b08;
+}
+
+/* 展开/收起：文字层整体不接收指针事件，所以这一个要自己收回来，并浮在点开层之上
+   （两者都是定位元素且都没写 z-index，DOM 在后的 `.task-card-body` 本来就压在上面 ——
+   显式写出来是为了不让"改一下结构顺序"把开关变成点不动） */
+.task-card-toggle {
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: #1677ff;
+  cursor: pointer;
+  pointer-events: auto;
+  position: relative;
+  z-index: 1;
+}
+
+.task-card-toggle:hover {
+  text-decoration: underline;
+}
+
+.task-card-toggle:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: 2px;
 }
 
 /* ---- 详情弹窗 ---- */
