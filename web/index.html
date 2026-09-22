@@ -5,6 +5,53 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>AI Agent 控制台</title>
+    <!--
+      代码高亮的两套主题（这是全页唯一一处**颜色不来自 styles.css** 的地方）。
+      两张表都进 DOM，由下面那段脚本（启动之后是 useThemeMode 的 applyTheme）按主题留一套 ——
+      只引一套不行:github.css 给 `.hljs` 写死了浅色背景与文字色，深色下就是一块白底代码块。
+
+      ⚠️ 文件放在 `public/` 下（`public/hljs-github.css` 是 highlight.js 11.12.0 的
+      `styles/github.css` 原样副本），**不能写成指向 `node_modules` 的路径**：
+      打包时 Vite 会把那种 `<link>` 整个丢掉（实测四种写法都不行 —— 产物里 `dist/index.html`
+      只剩 favicon 与主 CSS），而开发期一切正常（dev server 直接从 node_modules 取文件）。
+      症状是"线上切主题，代码块的配色永远不变"。
+      升级 highlight.js 时，这两个副本要跟着重新复制。
+    -->
+    <link id="hljs-light" rel="stylesheet" href="/hljs-github.css" />
+    <link id="hljs-dark" rel="stylesheet" href="/hljs-github-dark.css" />
+    <script>
+      /*
+        首帧定主题。**这段必须内联、必须在 <head> 里**：
+        它是主题的第一现场 —— 等 React 起来再切，深色用户会先看到一帧白屏。
+        它做两件事：把解析出来的主题写到 <html> 的 data-theme 上（styles.css 的深色规则
+        全部挂在这个属性下），以及留一张代码高亮表。
+
+        解析顺序（与 useThemeMode 的分工见那个文件的注释）：
+        存过的偏好 → 系统偏好 → 浅色。
+
+        ⚠️ 启动之后，切主题那一份**是 `hooks/useThemeMode.ts` 里的 `applyTheme`** ——
+        这里这份只负责第一帧。两边做的是同样的两件事（属性 + 高亮表），改一处要想着另一处。
+        ⚠️ 存偏好的键在这里是字面量：内联脚本拿不到 TS 模块。
+      */
+      ;(function () {
+        // 读偏好单独 try：隐私模式下 localStorage 会抛，而**不能因此就不上主题** ——
+        // 两张表都默认生效时后一张（深色）赢，浅色页面会挂上深色代码块
+        var dark = false
+        try {
+          var saved = window.localStorage.getItem('ai-agent.theme')
+          dark = saved
+            ? saved === 'dark'
+            : window.matchMedia('(prefers-color-scheme: dark)').matches
+        } catch (e) {
+          dark = false
+        }
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+        var light = document.getElementById('hljs-light')
+        var darkSheet = document.getElementById('hljs-dark')
+        if (light) light.disabled = dark
+        if (darkSheet) darkSheet.disabled = !dark
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

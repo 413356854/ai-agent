@@ -11,6 +11,7 @@ import { PermissionPanel } from './components/PermissionPanel'
 import { PromptPanel } from './components/PromptPanel'
 import { RagPanel } from './components/RagPanel'
 import { StructuredResultCard } from './components/StructuredResultCard'
+import { ThemeToggle } from './components/ThemeToggle'
 import { ThreadBudgetPanel } from './components/ThreadBudgetPanel'
 import { UserPanel } from './components/UserPanel'
 import { useAgent } from './hooks/useAgent'
@@ -23,6 +24,7 @@ import { useRagDiag } from './hooks/useRagDiag'
 import { useStructuredChat } from './hooks/useStructuredChat'
 import { useTasks } from './hooks/useTasks'
 import { useThreadDiag } from './hooks/useThreadDiag'
+import type { ThemeMode } from './hooks/useThemeMode'
 import { sectionOf } from './nav'
 import type { Mode } from './nav'
 
@@ -62,8 +64,16 @@ import type { Mode } from './nav'
  * 切走再切回来就重跑一遍（再花一次钱）的代价太大。
  * 成本看板同理：它的查询比运行列表重（四条 GROUP BY + 一次对账），来回切一次重跑一遍是浪费。
  * Prompt 那一页则是"编辑到一半切走再回来"的场景 —— 丢掉草稿的代价是重写一遍整段提示词。
+ *
+ * <h2>主题（浅色 / 深色）为什么是 props 而不是各面板自己读</h2>
+ * 主题状态挂在 `main.tsx` 上：antd 的 `ConfigProvider` 要有它才切算法，
+ * 而页头那个开关在 `App` 里 —— 中间只隔这一层，所以由 props 往下传。
+ * 颜色本身**一个都不从这里传下去**：面板只管写语义变量（`styles.css` 的 `:root`），
+ * 深浅两套取值在那里换。把颜色当 props 传的后果是每加一个面板都要多接一根线。
  */
-export default function App() {
+export default function App(
+  { themeMode, onToggleTheme }: { themeMode: ThemeMode; onToggleTheme: () => void },
+) {
   const [mode, setMode] = useState<Mode>('stream')
 
   const stream = useChatStream()
@@ -142,19 +152,24 @@ export default function App() {
             而线程面板借用的其实是流式模式那个 conversationId（见 useThreadDiag 的注释）。
             RAG 面板更是完全无会话 —— 它跑的是离线语料，跟对话没有半点关系。
           */}
-          {!isDiagnostic && (
-            <Flex align="center" gap={12}>
-              <Typography.Text type="secondary" className="conversation-id" title={conversationId}>
-                conversationId: {conversationId.slice(0, 8)}…
-              </Typography.Text>
-              <Button
-                onClick={mode === 'stream' ? stream.newConversation : structured.newConversation}
-                disabled={busy}
-              >
-                新会话
-              </Button>
-            </Flex>
-          )}
+          <Flex align="center" gap={12}>
+            {!isDiagnostic && (
+              <>
+                <Typography.Text type="secondary" className="conversation-id" title={conversationId}>
+                  conversationId: {conversationId.slice(0, 8)}…
+                </Typography.Text>
+                <Button
+                  onClick={mode === 'stream' ? stream.newConversation : structured.newConversation}
+                  disabled={busy}
+                >
+                  新会话
+                </Button>
+              </>
+            )}
+            {/* 主题开关在**所有十一个视图**上都在：它换的是整页的底色，
+                属于"看这一页的方式"，不跟着某个视图出现或消失 */}
+            <ThemeToggle mode={themeMode} onToggle={onToggleTheme} />
+          </Flex>
         </header>
 
         {mode === 'users' ? (

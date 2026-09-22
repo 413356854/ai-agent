@@ -33,11 +33,11 @@ const EXPECT_REFLECTION = process.env.CHECK_EXPECT_REFLECTION !== '0'
 /**
  * 每条路径实际执行多少项断言（**实测出来的，不是数出来的**）。
  *
- * 脚本里一共 456 个 `expect(...)`，但两条路径执行的数量不同 ——
+ * 脚本里一共 457 个 `expect(...)`，但两条路径执行的数量不同 ——
  * 因为有几个分支各跑各的（回灌细节 / 降级标记 / Agent 的完整轨迹 / HITL 的批准与拒绝），
  * 它们的可复现性依赖假后端：
  *
- *   假后端（默认路径，实测 2026-09-22）→ **442 项，全过**（同一份脚本连跑两遍，两遍都是 442）
+ *   假后端（默认路径，实测 2026-09-22）→ **454 项，全过**（同一份脚本连跑两遍，两遍都是 454）
  *   真后端（`CHECK_EXPECT_REFLECTION=0`）→ 见下面 README 那一行；本轮跑过，数字写在 web/README.md
  *
  * 真后端路径上失败的是**流式回答**（`流式回答已渲染`）：
@@ -3299,6 +3299,125 @@ expect(
   timelineNow === timelineWasThere,
   timelineWasThere ? '（原来有时间线，切回来也应有）' : '（原来就没有时间线 —— 本次运行 0 步，属正常）',
 )
+
+// ---------- 主题（浅色 / 深色） ----------
+//
+// 这一节的判据落在**两件能算出来的事**上，而不是"看上去像不像深色"：
+//   1. `<html>` 上的 `data-theme` 与按钮自己的 `aria-pressed` —— 状态是否真的切了；
+//   2. 几个关键容器的**实际计算底色**（几何 / 颜色断言，不用肉眼）。
+//
+// ⚠️ 为什么必须显式设一次偏好再刷新，而不是"打开页面就开始断言"：
+// 首帧主题取自「存过的偏好 → 系统偏好 → 浅色」，而这台机器上系统多半是浅色、
+// 存过的偏好又可能被上一轮自检留下 —— 不钉住起点的话，这一节在别人机器上会从深色开始，
+// 后续断言全反。这与"假后端状态机必须先 __reset"是同一条纪律。
+//
+// ⚠️ 为什么断言里没有"切主题要发请求"：它压根不发。这一节因此可以放在最后 ——
+// 它不碰任何后端状态，也就不需要像前面几节那样收尾复位。
+console.log('[10] 主题（浅色 / 深色）')
+{
+  const htmlTheme = () => page.evaluate(() => document.documentElement.dataset.theme)
+  const bg = sel => page.evaluate(
+    s => {
+      const el = document.querySelector(s)
+      return el ? getComputedStyle(el).backgroundColor : ''
+    },
+    sel,
+  )
+  /** 'rgb(20, 20, 20)' → [20,20,20]；拿来判"这一块是深色还是浅色" */
+  const rgb = value => (value.match(/\d+/g) ?? []).slice(0, 3).map(Number)
+  const isDark = value => {
+    const [r, g, b] = rgb(value)
+    return r + g + b < 240
+  }
+
+  // 从浅色起步（见上面那条注释）
+  await page.evaluate(() => window.localStorage.setItem('ai-agent.theme', 'light'))
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.waitForSelector('.app-topbar')
+
+  expect('页头右上角有主题开关', (await page.locator('.theme-toggle').count()) === 1)
+  expect('默认（没切过时）是浅色', (await htmlTheme()) === 'light', await htmlTheme())
+  const lightBody = await bg('body')
+  expect('浅色的页面底色是浅的', !isDark(lightBody), lightBody)
+
+  await page.locator('.theme-toggle').click()
+  // 只等属性，不等固定时长：状态一进 DOM 就能读到（等待时长与它要等的东西无关的那种断言，
+  // 正是本项目反复踩过的那一类）
+  const darkOn = await waitFor(async () => (await htmlTheme()) === 'dark', 3000)
+  expect('点一下切到深色（<html> 的 data-theme）', darkOn, await htmlTheme())
+  expect('按钮的 aria-pressed 跟着变（不靠颜色单独表达）',
+    (await page.locator('.theme-toggle').getAttribute('aria-pressed')) === 'true')
+
+  const shellParts = {
+    body: await bg('body'),
+    sidebar: await bg('.app-sidebar'),
+    topbar: await bg('.app-topbar'),
+    footer: await bg('.app-footer'),
+  }
+  expect(
+    '深色下外壳四块（页面 / 目录 / 页头 / 输入区）都不是浅底',
+    Object.values(shellParts).every(v => v !== '' && isDark(v)),
+    Object.entries(shellParts).map(([k, v]) => `${k}=${v}`).join(' '),
+  )
+  // 卡片单独到**有卡片的视图**上量：对话模式里没有 `.diag-card`，
+  // 在这里写 `bg('.diag-card, .ant-card')` 会拿到空串 —— 而空串恰好会让"非浅底"成立，
+  // 于是一条永远为真的断言。第一版就是那么写的，实测报了 `card=`（空）。
+  //
+  // 判据也**不只是"不浅"**：卡片与页面的亮度要拉开一档。只判"不浅"的话，
+  // 卡片与容器同色（深色下曾经都是 #141414）照样绿 —— 而那时整页是糊成一片的。
+  await navMode('成本看板')
+  const cardBg = await bg('.diag-card')
+  const pageBg = await bg('body')
+  const gap = Math.abs(rgb(cardBg).reduce((a, b) => a + b, 0) - rgb(pageBg).reduce((a, b) => a + b, 0))
+  expect(
+    '深色下卡片比页面亮出一档（否则卡片与底色糊在一起，而功能全对）',
+    cardBg !== '' && isDark(cardBg) && gap > 30,
+    `卡片 ${cardBg} / 页面 ${pageBg}（亮度差 ${gap}）`,
+  )
+  await navMode('SSE 流式')
+
+  // 文字不能是"深色底 + 深色字"。只判"亮不亮"是不够的：
+  // `rgba(0, 0, 0, 0.88)` 的 RGB 是黑的，可它的**alpha 让它照样压在深底上看不见** ——
+  // 所以按 alpha 合成一次再判（实测：漏了这一步时，浅色主题那套文字色也能过这条断言）
+  const textColor = await page.evaluate(() => {
+    const parse = value => {
+      const m = /rgba?\((\d+), (\d+), (\d+)(?:, ([\d.]+))?\)/.exec(value)
+      return { r: +m[1], g: +m[2], b: +m[3], a: m[4] === undefined ? 1 : +m[4] }
+    }
+    const c = parse(getComputedStyle(document.body).color)
+    const onDark = { r: 0, g: 0, b: 0 } // 深色页面底就是纯黑，合成用它可以，也最保守
+    return {
+      raw: getComputedStyle(document.body).color,
+      effective: c.r * c.a + onDark.r * (1 - c.a) + c.g * c.a + onDark.g * (1 - c.a)
+        + c.b * c.a + onDark.b * (1 - c.a),
+    }
+  })
+  expect('深色下正文颜色是浅的（不是深底深字）', textColor.effective > 300, `${textColor.raw} → ${textColor.effective}`)
+
+  // 代码块：这是唯一一处**颜色不来自 styles.css** 的地方（highlight.js 的两张表在 index.html 里），
+  // 所以它必须单独钉 —— 只换 data-theme 而忘了换那张表，症状是深色页面上挂着一块白底代码
+  const hljs = await page.evaluate(() => ({
+    light: document.getElementById('hljs-light')?.disabled,
+    dark: document.getElementById('hljs-dark')?.disabled,
+  }))
+  expect('深色下代码高亮用的是深色那一套表', hljs.light === true && hljs.dark === false,
+    `light.disabled=${hljs.light} dark.disabled=${hljs.dark}`)
+
+  await page.screenshot({ path: `${SHOT_DIR}/theme-dark.png` })
+
+  // 刷新之后要记得住（它是"这台机器上我怎么看这个页面"的偏好，见 useThemeMode）
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.waitForSelector('.app-topbar')
+  expect('刷新之后仍是深色（偏好存在 localStorage）', (await htmlTheme()) === 'dark', await htmlTheme())
+
+  // 切回去：颜色要能回到浅色，而且这一轮自检给下一次留下的偏好是浅色
+  await page.locator('.theme-toggle').click()
+  const backToLight = await waitFor(async () => (await htmlTheme()) === 'light', 3000)
+  const backBody = await bg('body')
+  expect('再点一下切回浅色，底色也跟着回来', backToLight && !isDark(backBody), `${await htmlTheme()} ${backBody}`)
+  expect('没有横向溢出（深色下也一样）',
+    (await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)) === 0)
+}
 
 // ---------- 控制台必须干净 ----------
 console.log('[9] 控制台')

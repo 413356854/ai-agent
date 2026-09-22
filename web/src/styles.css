@@ -1,5 +1,158 @@
+/* ===========================================================================
+   配色变量：这一页所有颜色**只从这里取**（下面的规则里不许再出现颜色字面量）
+
+   一套变量名，两份取值：`:root` 是浅色，`[data-theme='dark']` 只覆盖需要变的那几个。
+   切换主题就是 `document.documentElement` 上的 `data-theme` 换一个值 ——
+   属性挂在 `<html>` 上（不是 `#root` 里某个 div），所以 antd 渲染在 body 下的浮层
+   （Modal / message / Dropdown）与主题同步，不需要各自一份上下文。
+
+   ⚠️ 加新样式时**不要写字面量**：手写一个 `#fff` 的后果是数据全对、只有那一块在深色下
+   白得刺眼，而**没有任何东西会报错**。自检里为此钉了一条判据：
+   开着深色把每个视图走一遍，断言"页面主背景与文字都在深色那一侧"（见 verify-ui.mjs 那一节）。
+
+   ⚠️ 「同色不同义」的坑：`#f0f0f0` 当边框是 `--border`、当进度条底槽是 `--bg-soft`。
+   搬家时按**属性**分的，不是按色值 —— 按色值一律映射会让其中一边在深色下糊成一片。
+   --------------------------------------------------------------------------- */
+
+:root {
+  /* 底色：页面 / 容器（卡片、目录、页头）/ 抬升层（弹窗、下拉）/ 几种程度的浅底 */
+  --bg-page: #f5f6f8;
+  --bg-surface: #fff;
+  --bg-elevated: #fff;
+  --bg-subtle: #fafbfc;
+  --bg-soft: #fafafa;
+  --bg-hover: #f5f6f8;
+  --bg-overlay: rgba(0, 0, 0, 0.03);
+  /* 压在品牌蓝上的白（用户气泡、品牌方块）。**两套主题同值** —— 它配的是那块蓝底，
+     不配页面底色 */
+  --text-on-brand: #fff;
+
+  /* 文字：正文 / 二（正文里的次要信息）/ 三（标签、说明）/ 更弱 */
+  --text: rgba(0, 0, 0, 0.88);
+  --text-secondary: #595959;
+  --text-tertiary: #8c8c8c;
+  --text-muted: #bfbfbf;
+
+  /* 边框：常规分隔 / 重一点（表格线、轨道底） */
+  --border: #eceef1;
+  --border-strong: #dfe2e7;
+
+  /* 品牌（蓝） */
+  --brand: #1677ff;
+  --brand-ink: #0958d9;
+  --brand-bg: #f0f7ff;
+  --brand-border: #bae0ff;
+  --brand-soft: #91caff;
+
+  /* 成功（绿）：bar 是色带那类"面积色"，ink 是文字色 */
+  --ok: #52c41a;
+  --ok-ink: #389e0d;
+  --ok-bg: #f6ffed;
+  --ok-border: #b7ebc6;
+  --ok-bar: #95de64;
+
+  /* 警告（橙）与危险（红） */
+  --warn: #faad14;
+  --warn-ink: #d46b08;
+  --warn-bg: #fffbe6;
+  --warn-border: #ffe58f;
+  --danger: #ff4d4f;
+  --danger-ink: #cf1322;
+  --danger-bg: #fff1f0;
+  --danger-border: #ffccc7;
+  --danger-strong: #ff7875;
+
+  /* 紫：载体线程与面包屑那一族 */
+  --violet-ink: #391085;
+  --violet-bg: #f7f4ff;
+  --violet-border: #d3c7ff;
+
+  /* token 预算色带里"输出预留"那一段 */
+  --budget-output: #ffd591;
+
+  --shadow-soft: rgba(0, 0, 0, 0.06);
+}
+
+/*
+  深色：只覆盖**需要变**的。留白的那些（品牌蓝、警告橙、红、紫）在两套主题下同一个值 ——
+  深色下它们本来就够亮，换一个更亮的蓝只会让"品牌色"跟着主题漂移。
+  绿与红的文字档（ink）是例外：`#389e0d` / `#cf1322` 压在深底上几乎看不见，换成浅一档。
+*/
+[data-theme='dark'] {
+  /*
+    底色分三级，级差本身就是信息：页面 < 容器（目录 / 页头 / 输入区）< 卡片 / 悬浮层。
+    ⚠️ 实测调出来的，不是照抄 antd：算法给的是**页面纯黑 + 容器 #141414**，
+    而 8 级差在这一页上分不出"哪一块是卡片" —— 成本看板头部那张卡是**没有边框的 div**
+    （`.diag-card.cost-head`），它只能靠底色与页面分开，实测那一块读出来与页面同为纯黑。
+    所以页面压到 `#0a0a0a`、卡片抬到 `#242424`（antd 的 `colorBgElevated`，也就是
+    弹窗那一层），容器（`#141414`）留在中间：与 antd 的 `colorBgContainer` 同值，
+    于是自绘的外壳与 antd 的表格 / 表单控件是同一层底色，接缝处不会出现一条色差。
+  */
+  --bg-page: #0a0a0a;
+  /* 容器（目录 / 页头 / 输入区）与**自绘的卡片 div**（`.diag-card.cost-head` 那种）同值 ——
+     两处都是"容器"那一层，分开命名只是因为语义不同（浅色下它们也确实都是 #fff） */
+  --bg-surface: #141414;
+  /* 卡片与悬浮层（antd 的 `colorBgElevated` 同值）。比容器亮一档，级差 16 */
+  --bg-elevated: #242424;
+  --bg-subtle: #1b1b1b;
+  --bg-soft: #242424;
+  --bg-hover: #2b2b2b;
+  --bg-overlay: rgba(255, 255, 255, 0.08);
+
+  --text: rgba(255, 255, 255, 0.85);
+  --text-secondary: #a6adb8;
+  --text-tertiary: #8c8c8c;
+  /* 最弱的一档。深色下取 `#808a99` 而不是更暗的灰：它压在容器底上有 5.1:1，
+     再暗一档（6b7280 ≈ 3.9:1）空状态那句说明就成了整页最难读的东西（实测） */
+  --text-muted: #808a99;
+
+  --border: #303030;
+  --border-strong: #434343;
+
+  --brand: #4096ff;
+  /* 蓝的"文字档"。**深色下必须换成浅一档**：`#0958d9` 压在 `--brand-bg`（#111d2c）上
+     只有 2.8:1，而同一个色号在浅色下是 5.7:1 —— 写死一个值的后果是深色下
+     "当前在哪一项"看不清（实测就是这个数）。 */
+  --brand-ink: #69b1ff;
+  --brand-bg: #111d2c;
+  --brand-border: #15395b;
+  --brand-soft: #2f4a6b;
+
+  --ok-ink: #73d13d;
+  --ok-bg: #162312;
+  --ok-border: #274916;
+  --ok-bar: #237804;
+
+  --warn-bg: #2b2111;
+  --warn-border: #594214;
+
+  --danger-ink: #ff7875;
+  --danger-bg: #2c1618;
+  --danger-border: #58181c;
+
+  --violet-bg: #1a1325;
+  --violet-border: #301c4d;
+
+  --budget-output: #613400;
+
+  --shadow-soft: rgba(0, 0, 0, 0.45);
+}
+
 * {
   box-sizing: border-box;
+}
+
+/*
+  `color-scheme` 管的是**浏览器自己画的那几块**：滚动条、原生下拉、输入法候选框、日期选择器。
+  antd 的算法管不到它们（那是浏览器原生渲染的），所以不写这一条时，深色页面边上会挂着一条
+  浅色滚动条 —— 而它在截图里只是一条窄边，很容易被当成"截图工具的问题"。
+*/
+:root {
+  color-scheme: light;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
 }
 
 html,
@@ -11,7 +164,8 @@ body,
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', Roboto, sans-serif;
-  background: #f5f6f8;
+  background: var(--bg-page);
+  color: var(--text);
 }
 
 /* ===========================================================================
@@ -40,8 +194,8 @@ body {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #fff;
-  border-right: 1px solid #eceef1;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
   padding: 14px 10px;
   /* 宽度要跟着收起一起过渡，否则收起时内容区会"跳"一下 */
   transition: width 0.2s;
@@ -68,8 +222,8 @@ body {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: #1677ff;
-  color: #fff;
+  background: var(--brand);
+  color: var(--text-on-brand);
   font-size: 12px;
   font-weight: 700;
   display: flex;
@@ -93,7 +247,7 @@ body {
 
 .app-nav-group + .app-nav-group {
   margin-top: 10px;
-  border-top: 1px solid #f0f0f0;
+  border-top: 1px solid var(--border);
   padding-top: 8px;
 }
 
@@ -116,7 +270,7 @@ body {
   font: inherit;
   font-size: 12px;
   font-weight: 600;
-  color: #8c8c8c;
+  color: var(--text-tertiary);
   letter-spacing: 0.02em;
   text-align: left;
   white-space: nowrap;
@@ -125,15 +279,15 @@ body {
 }
 
 .app-nav-group-title:hover {
-  background: #f5f6f8;
-  color: #1677ff;
+  background: var(--bg-hover);
+  color: var(--brand);
 }
 
 /* 收起的这一段里正落着当前视图。与目录项那条规则同一个理由：
    "现在在哪"是这一页最要紧的信息，不靠颜色单独表达，也不该因为收起而丢掉 */
 .app-nav-group-title.is-active {
-  color: #0958d9;
-  border-left-color: #1677ff;
+  color: var(--brand-ink);
+  border-left-color: var(--brand);
 }
 
 /* flex 子项要写 min-width: 0 才肯收缩 —— 少了它，长分组名会把这一行撑出去 */
@@ -183,15 +337,15 @@ body {
 }
 
 .app-nav-item:hover {
-  background: #f5f6f8;
+  background: var(--bg-hover);
 }
 
 /* 选中态：底色 + 左侧色标 + 加粗。**不靠颜色单独表达** ——
    "现在在哪一项"是这一页最要紧的信息，色觉障碍与黑白打印下也得读得出来 */
 .app-nav-item.is-active {
-  background: #f0f7ff;
-  border-left-color: #1677ff;
-  color: #0958d9;
+  background: var(--brand-bg);
+  border-left-color: var(--brand);
+  color: var(--brand-ink);
   font-weight: 600;
 }
 
@@ -234,15 +388,15 @@ body {
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: #8c8c8c;
+  color: var(--text-tertiary);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
 }
 
 .app-collapse:hover:not(:disabled) {
-  background: #f5f6f8;
-  color: #1677ff;
+  background: var(--bg-hover);
+  color: var(--brand);
 }
 
 .app-collapse:disabled {
@@ -317,8 +471,8 @@ body {
   justify-content: space-between;
   gap: 16px;
   padding: 12px 24px;
-  background: #fff;
-  border-bottom: 1px solid #eceef1;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
 }
 
 .app-title {
@@ -339,15 +493,15 @@ body {
 }
 
 .app-section-tag.is-blue {
-  color: #0958d9;
-  background: #f0f7ff;
-  border-color: #bae0ff;
+  color: var(--brand-ink);
+  background: var(--brand-bg);
+  border-color: var(--brand-border);
 }
 
 .app-section-tag.is-geekblue {
-  color: #391085;
-  background: #f7f4ff;
-  border-color: #d3c7ff;
+  color: var(--violet-ink);
+  background: var(--violet-bg);
+  border-color: var(--violet-border);
 }
 
 .conversation-id {
@@ -357,6 +511,42 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/*
+  主题开关（页头最右）。做成一个 32×32 的方钮而不是 antd 的 Switch：
+  Switch 是一个"开/关"的形状，而这里没有"关掉的深色模式"这回事 —— 两个状态地位相同。
+  图形本身是内联 SVG（见 ThemeToggle 的文件头），这里只管这块底色与边框。
+*/
+.theme-toggle {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.theme-toggle:hover {
+  color: var(--brand);
+  border-color: var(--brand-border);
+  background: var(--bg-hover);
+}
+
+.theme-toggle:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+/* SVG 的宽高由标签上的属性给（16×16），这条只保证它不被 flex 压扁 */
+.theme-icon {
+  flex: none;
 }
 
 /* 消息区：唯一需要滚动的区域，头部/输入区固定 */
@@ -385,16 +575,16 @@ body {
   max-width: min(760px, 88%);
   padding: 10px 14px;
   border-radius: 12px;
-  background: #fff;
-  border: 1px solid #eceef1;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   line-height: 1.7;
   word-break: break-word;
 }
 
 .is-user .bubble {
-  background: #1677ff;
-  border-color: #1677ff;
-  color: #fff;
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--text-on-brand);
 }
 
 .plain-text {
@@ -424,7 +614,7 @@ body {
   height: 1em;
   margin-left: 2px;
   vertical-align: text-bottom;
-  background: #1677ff;
+  background: var(--brand);
   animation: caret-blink 1s steps(2, start) infinite;
 }
 
@@ -456,7 +646,7 @@ body {
 }
 
 .markdown code {
-  background: #f2f3f5;
+  background: var(--bg-soft);
   border-radius: 4px;
   padding: 1px 5px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
@@ -464,8 +654,8 @@ body {
 }
 
 .markdown pre {
-  background: #f6f8fa;
-  border: 1px solid #eceef1;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px;
   overflow-x: auto;
@@ -477,9 +667,9 @@ body {
 }
 
 .markdown blockquote {
-  border-left: 3px solid #dfe2e7;
+  border-left: 3px solid var(--border-strong);
   padding-left: 12px;
-  color: #5b6470;
+  color: var(--text-secondary);
 }
 
 .markdown table {
@@ -488,15 +678,15 @@ body {
 
 .markdown th,
 .markdown td {
-  border: 1px solid #dfe2e7;
+  border: 1px solid var(--border-strong);
   padding: 4px 10px;
 }
 
 .app-footer {
   flex: none;
   padding: 12px 24px 16px;
-  background: #fff;
-  border-top: 1px solid #eceef1;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
 }
 
 .composer-bar {
@@ -533,7 +723,7 @@ body {
 
 .structured-meta {
   padding-top: 4px;
-  border-top: 1px dashed #eceef1;
+  border-top: 1px dashed var(--border);
 }
 
 .confidence-label {
@@ -585,8 +775,8 @@ body {
   padding: 8px 10px;
   max-height: 220px;
   overflow: auto;
-  background: #f6f8fa;
-  border: 1px solid #eceef1;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
@@ -621,6 +811,15 @@ body {
  */
 .diag-card {
   min-width: 0;
+}
+
+/*
+ * antd 的卡片自己带一层底色（`colorBgContainer`），所以它读不到我们那套变量 ——
+ * 这里显式把它抬到"卡片"那一层（`--bg-elevated`）。不写这一条的后果是深色下
+ * 卡片与容器只差 0 级（都是 `#141414`），整页糊成一片，而**功能全对**。
+ */
+.diag-card.ant-card {
+  background: var(--bg-elevated);
 }
 
 /*
@@ -668,13 +867,13 @@ body {
 }
 
 .vt-hero.is-virtual {
-  background: #f2fbf4;
-  border-color: #b7ebc6;
+  background: var(--ok-bg);
+  border-color: var(--ok-border);
 }
 
 .vt-hero.is-platform {
-  background: #fff5f0;
-  border-color: #ffd8bf;
+  background: var(--danger-bg);
+  border-color: var(--warn-border);
 }
 
 .vt-hero-flag {
@@ -684,11 +883,11 @@ body {
 }
 
 .vt-hero.is-virtual .vt-hero-flag {
-  color: #237804;
+  color: var(--ok-ink);
 }
 
 .vt-hero.is-platform .vt-hero-flag {
-  color: #ad2102;
+  color: var(--danger-ink);
 }
 
 .vt-hero-raw {
@@ -718,7 +917,7 @@ body {
 
 .kv-label {
   font-size: 12px;
-  color: #8c8c8c;
+  color: var(--text-tertiary);
 }
 
 .kv-value {
@@ -743,14 +942,14 @@ body {
 .stat-cell {
   padding: 8px 10px;
   border-radius: 8px;
-  background: #fafbfc;
-  border: 1px solid #eceef1;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
   min-width: 0;
 }
 
 .stat-label {
   font-size: 12px;
-  color: #8c8c8c;
+  color: var(--text-tertiary);
   line-height: 1.5;
 }
 
@@ -763,12 +962,12 @@ body {
 
 /* 关键数字（虚拟线程数、输入上限）单独着色，让"该看哪几个"一眼可辨 */
 .stat-cell.is-accent {
-  background: #f0f7ff;
-  border-color: #bae0ff;
+  background: var(--brand-bg);
+  border-color: var(--brand-border);
 }
 
 .stat-cell.is-accent .stat-value {
-  color: #0958d9;
+  color: var(--brand-ink);
 }
 
 /* ---------- 载体线程复用图 ---------- */
@@ -776,8 +975,8 @@ body {
 .vt-mux {
   padding: 12px;
   border-radius: 10px;
-  background: #fafbfc;
-  border: 1px dashed #d9d9d9;
+  background: var(--bg-subtle);
+  border: 1px dashed var(--border-strong);
 }
 
 .vt-mux-group {
@@ -786,13 +985,13 @@ body {
 
 .vt-mux-label {
   font-size: 12px;
-  color: #8c8c8c;
+  color: var(--text-tertiary);
   margin-bottom: 6px;
 }
 
 .vt-mux-arrow {
   font-size: 12px;
-  color: #8c8c8c;
+  color: var(--text-tertiary);
   margin: 8px 0;
   text-align: center;
 }
@@ -814,22 +1013,22 @@ body {
 }
 
 .vt-chip.is-virtual {
-  background: #f0f7ff;
-  border-color: #bae0ff;
-  color: #0958d9;
+  background: var(--brand-bg);
+  border-color: var(--brand-border);
+  color: var(--brand-ink);
 }
 
 .vt-chip.is-carrier {
-  background: #f7f4ff;
-  border-color: #d3c7ff;
-  color: #391085;
+  background: var(--violet-bg);
+  border-color: var(--violet-border);
+  color: var(--violet-ink);
 }
 
 /* 说明性标签：不是数据，只用来解释旁边那个数字为什么长这样 */
 .vt-chip.is-plain {
-  background: #fafafa;
-  border-color: #eceef1;
-  color: #8c8c8c;
+  background: var(--bg-soft);
+  border-color: var(--border);
+  color: var(--text-tertiary);
 }
 
 /* 样本明细：N 行 × 两列，多了要能滚，不能把卡片撑成一条长柱 */
@@ -837,9 +1036,9 @@ body {
   margin-top: 6px;
   max-height: 260px;
   overflow-y: auto;
-  border: 1px solid #eceef1;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--bg-surface);
 }
 
 .sample-row {
@@ -849,7 +1048,7 @@ body {
   /* 载体线程名的 toString() 可能很长，允许换行，否则会把卡片顶宽 */
   flex-wrap: wrap;
   padding: 5px 10px;
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--border);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
 }
@@ -865,17 +1064,17 @@ body {
 
 .sample-cell.is-virtual {
   flex: 0 1 auto;
-  color: #0958d9;
+  color: var(--brand-ink);
 }
 
 .sample-cell.is-carrier {
   flex: 1 1 auto;
-  color: #391085;
+  color: var(--violet-ink);
 }
 
 .sample-arrow {
   flex: none;
-  color: #bfbfbf;
+  color: var(--text-muted);
 }
 
 /* ---------- 钉住实验：两个并排的数字就是全部结论 ---------- */
@@ -888,13 +1087,13 @@ body {
 }
 
 .pin-lane.is-bad {
-  background: #fff5f0;
-  border-color: #ffd8bf;
+  background: var(--danger-bg);
+  border-color: var(--warn-border);
 }
 
 .pin-lane.is-good {
-  background: #f2fbf4;
-  border-color: #b7ebc6;
+  background: var(--ok-bg);
+  border-color: var(--ok-border);
 }
 
 .pin-lane-head {
@@ -922,17 +1121,17 @@ body {
 }
 
 .pin-lane.is-bad .pin-latency {
-  color: #ad2102;
+  color: var(--danger-ink);
 }
 
 .pin-lane.is-good .pin-latency {
-  color: #237804;
+  color: var(--ok-ink);
 }
 
 .pin-bar-track {
   height: 8px;
   border-radius: 4px;
-  background: #f0f0f0;
+  background: var(--bg-soft);
   overflow: hidden;
 }
 
@@ -942,11 +1141,11 @@ body {
 }
 
 .pin-bar.is-bad {
-  background: #ff7875;
+  background: var(--danger-strong);
 }
 
 .pin-bar.is-good {
-  background: #95de64;
+  background: var(--ok-bar);
 }
 
 .pin-lane-note {
@@ -963,7 +1162,7 @@ body {
   height: 34px;
   border-radius: 8px;
   overflow: hidden;
-  border: 1px solid #eceef1;
+  border: 1px solid var(--border);
 }
 
 /* 段按真实 token 数按比例铺开。跟"三个数字并排"相比，这样能看出"输出预留占了窗口多大一块" */
@@ -972,15 +1171,15 @@ body {
 }
 
 .budget-seg.is-input {
-  background: #91caff;
+  background: var(--brand-soft);
 }
 
 .budget-seg.is-output {
-  background: #ffd591;
+  background: var(--budget-output);
 }
 
 .budget-seg.is-margin {
-  background: #d9d9d9;
+  background: var(--border-strong);
 }
 
 .budget-legend {
@@ -991,9 +1190,9 @@ body {
 .budget-strip {
   padding: 6px 10px;
   border-radius: 8px;
-  background: #f0f7ff;
-  border: 1px solid #bae0ff;
-  color: #0958d9;
+  background: var(--brand-bg);
+  border: 1px solid var(--brand-border);
+  color: var(--brand-ink);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
   line-height: 1.6;
@@ -1008,15 +1207,15 @@ body {
 }
 
 .budget-dot.is-input {
-  background: #91caff;
+  background: var(--brand-soft);
 }
 
 .budget-dot.is-output {
-  background: #ffd591;
+  background: var(--budget-output);
 }
 
 .budget-dot.is-margin {
-  background: #d9d9d9;
+  background: var(--border-strong);
 }
 
 /* ---------- 非流式对话记录 ---------- */
@@ -1024,8 +1223,8 @@ body {
 .async-turn {
   padding: 10px 12px;
   border-radius: 10px;
-  border: 1px solid #eceef1;
-  background: #fafbfc;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
 }
 
 .async-question {
@@ -1040,8 +1239,8 @@ body {
   margin-top: 8px;
   padding: 8px 10px;
   border-radius: 8px;
-  background: #fff;
-  border: 1px solid #eceef1;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   line-height: 1.7;
   max-height: 320px;
   overflow-y: auto;
@@ -1072,8 +1271,8 @@ body {
 }
 
 .rag-tag-clickable:hover {
-  border-color: #1677ff;
-  color: #1677ff;
+  border-color: var(--brand);
+  color: var(--brand);
 }
 
 /* 分词结果：每个 token 一个小方块，让"中文被切成二元组"这件事看得见 */
@@ -1082,8 +1281,8 @@ body {
   margin: 2px 3px;
   padding: 1px 6px;
   border-radius: 5px;
-  background: #f2f4f7;
-  border: 1px solid #e3e6eb;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   line-height: 1.6;
@@ -1099,10 +1298,10 @@ body {
    --------------------------------------------------------------------------- */
 
 .rag-chunk {
-  border: 1px solid #eceef1;
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px;
-  background: #fafbfc;
+  background: var(--bg-subtle);
 }
 
 .rag-chunk-head {
@@ -1112,9 +1311,9 @@ body {
 /* 面包屑单独一行：它是结构分块相对硬切的核心差异，不该混在正文里 */
 .rag-breadcrumb {
   font-size: 12px;
-  color: #0958d9;
-  background: #f0f6ff;
-  border-left: 3px solid #91caff;
+  color: var(--brand-ink);
+  background: var(--brand-bg);
+  border-left: 3px solid var(--brand-soft);
   padding: 3px 8px;
   border-radius: 4px;
   margin-bottom: 6px;
@@ -1122,16 +1321,16 @@ body {
 }
 
 .rag-breadcrumb.is-empty {
-  color: #8c8c8c;
-  background: #f5f5f5;
-  border-left-color: #d9d9d9;
+  color: var(--text-tertiary);
+  background: var(--bg-soft);
+  border-left-color: var(--border-strong);
 }
 
 .rag-chunk-text {
   margin: 0;
   padding: 8px 10px;
-  background: #fff;
-  border: 1px solid #eceef1;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 6px;
   max-height: 260px;
   overflow: auto;
@@ -1160,7 +1359,7 @@ body {
 .rag-hit-table td,
 .rag-metric-table th,
 .rag-metric-table td {
-  border: 1px solid #eceef1;
+  border: 1px solid var(--border);
   padding: 5px 9px;
   text-align: left;
   vertical-align: top;
@@ -1168,7 +1367,7 @@ body {
 
 .rag-hit-table th,
 .rag-metric-table th {
-  background: #fafbfc;
+  background: var(--bg-subtle);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -1193,12 +1392,12 @@ body {
 /* 关键指标（Recall / MRR）加粗，让人一眼看到主指标在哪 */
 .rag-metric-table td.is-key {
   font-weight: 600;
-  color: #0958d9;
+  color: var(--brand-ink);
 }
 
 /* 成本列用另一个色系：它和 Recall 是两类东西，不该看起来一样 */
 .rag-metric-table td.is-cost {
-  color: #ad6800;
+  color: var(--warn-ink);
 }
 
 .rag-metric-table td.is-strategy {
@@ -1207,23 +1406,23 @@ body {
 
 /* 对照组整行淡底：读差值时永远要拿它当基准 */
 .rag-metric-table tr.is-baseline td {
-  background: #fafbfc;
+  background: var(--bg-subtle);
 }
 
 .rag-metric-table td.is-dim,
 .rag-hit-table td.is-dim {
-  color: #bfbfbf;
+  color: var(--text-muted);
 }
 
 .rag-hit-table td.is-breadcrumb {
   max-width: 320px;
   overflow-wrap: anywhere;
-  color: #531dab;
+  color: var(--violet-ink);
 }
 
 .rag-hit-table td.is-excerpt {
   max-width: 420px;
-  color: #595959;
+  color: var(--text-secondary);
   overflow-wrap: anywhere;
 }
 
@@ -1244,15 +1443,15 @@ body {
 .rag-delta {
   min-width: 104px;
   padding: 6px 10px;
-  border: 1px solid #eceef1;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--bg-surface);
   text-align: center;
 }
 
 .rag-delta-label {
   font-size: 12px;
-  color: #8c8c8c;
+  color: var(--text-tertiary);
 }
 
 .rag-delta-value {
@@ -1264,15 +1463,15 @@ body {
 /* 方向由每个指标自己声明（见 DELTA_ROWS）：token 类指标"涨"是坏事，
    所以颜色不能统一按"涨=绿"来上 —— 那会稳定地把读者引向错误结论 */
 .rag-delta-value.is-good {
-  color: #389e0d;
+  color: var(--ok-ink);
 }
 
 .rag-delta-value.is-bad {
-  color: #cf1322;
+  color: var(--danger-ink);
 }
 
 .rag-delta-value.is-flat {
-  color: #8c8c8c;
+  color: var(--text-tertiary);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1308,7 +1507,7 @@ body {
 .rag-tradeoff-cap {
   flex: 0 0 84px;
   font-size: 12px;
-  color: #8c8c8c;
+  color: var(--text-tertiary);
 }
 
 .rag-bar-track {
@@ -1316,7 +1515,7 @@ body {
   min-width: 60px;
   height: 12px;
   border-radius: 6px;
-  background: #f0f0f0;
+  background: var(--bg-soft);
   overflow: hidden;
 }
 
@@ -1328,11 +1527,11 @@ body {
 
 /* 两个量纲不同，用不同颜色以免被当成同一把尺子 */
 .rag-bar.is-recall {
-  background: #1677ff;
+  background: var(--brand);
 }
 
 .rag-bar.is-cost {
-  background: #faad14;
+  background: var(--warn);
 }
 
 .rag-tradeoff-num {
@@ -1357,11 +1556,11 @@ body {
    --------------------------------------------------------------------------- */
 
 .align-card {
-  border: 1px solid #d6e4ff;
-  border-left: 4px solid #1677ff;
+  border: 1px solid var(--brand-border);
+  border-left: 4px solid var(--brand);
   border-radius: 8px;
   padding: 14px 16px;
-  background: #fbfdff;
+  background: var(--brand-bg);
 }
 
 .align-head {
@@ -1394,7 +1593,7 @@ body {
 /* 参照方整行淡底：与 /compare 那张表同一条规则 ——
    读差值时永远要拿它当基准 */
 .align-row-ref td {
-  background: #fafbfc;
+  background: var(--bg-subtle);
 }
 
 /* 被考察方加一条上边框，让"两行是一组"这件事在视觉上闭合 */
@@ -1409,23 +1608,23 @@ body {
 /* 表内的差值：与 .rag-delta-value 同一套方向配色，
    但表格单元格里不需要那么大字号 */
 .rag-inline-delta.is-good {
-  color: #389e0d;
+  color: var(--ok-ink);
   font-weight: 600;
 }
 
 .rag-inline-delta.is-bad {
-  color: #cf1322;
+  color: var(--danger-ink);
   font-weight: 600;
 }
 
 .rag-inline-delta.is-flat {
-  color: #8c8c8c;
+  color: var(--text-tertiary);
 }
 
 /* 「预算没装满」的警示：预算口径下"装进来的条数"远少于上限，
    就是"块太大装不下"的直接证据，不能用普通颜色混过去 */
 .rag-underfilled {
-  color: #d46b08;
+  color: var(--warn-ink);
 }
 
 /* 每一组自己的注意事项：用原生 details，不引入额外状态管理 ——
@@ -1433,12 +1632,12 @@ body {
 .align-details {
   margin-top: 6px;
   font-size: 12.5px;
-  color: #595959;
+  color: var(--text-secondary);
 }
 
 .align-details > summary {
   cursor: pointer;
-  color: #1677ff;
+  color: var(--brand);
   user-select: none;
 }
 
@@ -1456,10 +1655,10 @@ body {
    --------------------------------------------------------------------------- */
 
 .agent-answer {
-  border: 1px solid #d9f7be;
-  border-left: 4px solid #52c41a;
+  border: 1px solid var(--ok-border);
+  border-left: 4px solid var(--ok);
   border-radius: 8px;
-  background: #fcfffa;
+  background: var(--ok-bg);
   padding: 10px 14px;
 }
 
@@ -1472,7 +1671,7 @@ body {
 
 /* 过程时间线：一条竖线串起每一步，让"顺序"本身可见 */
 .agent-timeline {
-  border-left: 2px solid #e6ebf2;
+  border-left: 2px solid var(--border);
   margin-left: 6px;
   padding-left: 14px;
 }
@@ -1481,14 +1680,14 @@ body {
   margin-bottom: 14px;
   padding: 8px 10px;
   border-radius: 8px;
-  background: #fafbfc;
-  border: 1px solid #eceef1;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
 }
 
 /* 最后那一步（作答）用浅绿底：一眼看出"过程到此结束" */
 .agent-step.is-answer {
-  background: #fcfffa;
-  border-color: #d9f7be;
+  background: var(--ok-bg);
+  border-color: var(--ok-border);
 }
 
 .agent-step-head {
@@ -1502,9 +1701,9 @@ body {
 /* 模型的 think 段：引用块样式，与"工具返回"在视觉上分开 */
 .agent-thought {
   font-size: 13px;
-  color: #595959;
-  background: #fff;
-  border-left: 3px solid #91caff;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border-left: 3px solid var(--brand-soft);
   padding: 6px 10px;
   border-radius: 4px;
   margin-bottom: 8px;
@@ -1512,14 +1711,14 @@ body {
 }
 
 .agent-thought-label {
-  color: #8c8c8c;
+  color: var(--text-tertiary);
   margin-right: 4px;
 }
 
 .agent-tool-call {
-  border: 1px solid #eceef1;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--bg-surface);
   padding: 8px 10px;
   margin-top: 6px;
 }
@@ -1527,7 +1726,7 @@ body {
 /* 工具侧失败（会被计入熔断）标红边：与"模型参数错"在视觉上分开 ——
    后者是橙色的 stage 标签，前者是红边。这两类对排查的含义完全不同 */
 .agent-tool-call.is-failure {
-  border-left: 4px solid #ff4d4f;
+  border-left: 4px solid var(--danger);
 }
 
 .agent-tool-head {
@@ -1535,7 +1734,7 @@ body {
 }
 
 .agent-tool-label {
-  color: #8c8c8c;
+  color: var(--text-tertiary);
   font-size: 12px;
 }
 
@@ -1553,8 +1752,8 @@ body {
 .agent-tool-feedback pre {
   margin: 4px 0 0;
   padding: 8px 10px;
-  background: #fafbfc;
-  border: 1px solid #eceef1;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
   max-height: 220px;
   overflow: auto;
@@ -1582,8 +1781,8 @@ body {
    --------------------------------------------------------------------------- */
 
 .approval-card.has-pending {
-  border-color: #ffa39e;
-  border-left: 4px solid #ff4d4f;
+  border-color: var(--danger-border);
+  border-left: 4px solid var(--danger);
 }
 
 .approval-count {
@@ -1591,16 +1790,16 @@ body {
 }
 
 .approval-item {
-  border: 1px solid #ffccc7;
+  border: 1px solid var(--danger-border);
   border-radius: 8px;
-  background: #fffbfb;
+  background: var(--danger-bg);
   padding: 10px 12px;
 }
 
 /* 时间紧（剩余不足 1/4 或 15 秒）时整条加红底：这一块必须能被一眼看见 */
 .approval-item.is-urgent {
-  background: #fff1f0;
-  border-color: #ff7875;
+  background: var(--danger-bg);
+  border-color: var(--danger-strong);
 }
 
 .approval-head {
@@ -1619,14 +1818,14 @@ body {
 
 .approval-summary {
   font-size: 13px;
-  color: #434343;
+  color: var(--text-secondary);
   margin-bottom: 8px;
   overflow-wrap: anywhere;
 }
 
 .approval-hints {
-  background: #fff2f0;
-  border: 1px solid #ffccc7;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
   border-radius: 4px;
   padding: 1px 6px;
 }
@@ -1640,8 +1839,8 @@ body {
 .approval-args pre {
   margin: 4px 0 0;
   padding: 8px 10px;
-  background: #fff;
-  border: 1px solid #ffccc7;
+  background: var(--bg-surface);
+  border: 1px solid var(--danger-border);
   border-radius: 6px;
   max-height: 180px;
   overflow: auto;
@@ -1663,14 +1862,14 @@ body {
 .approval-reject-box {
   margin-top: 8px;
   padding: 8px 10px;
-  background: #fff;
-  border: 1px dashed #ffccc7;
+  background: var(--bg-surface);
+  border: 1px dashed var(--danger-border);
   border-radius: 6px;
 }
 
 /* 任务停在等人确认时的那条提示：与"失败"和"成功"两条分支在视觉上都要分得开 */
 .agent-waiting {
-  border-left: 4px solid #faad14;
+  border-left: 4px solid var(--warn);
 }
 
 /* ==========================================================================
@@ -1696,10 +1895,10 @@ body {
 .cost-headline-stats { flex: 1 1 auto; }
 
 .cost-stat { min-width: 108px; }
-.cost-stat-label { font-size: 12px; color: rgba(0, 0, 0, 0.45); }
+.cost-stat-label { font-size: 12px; color: var(--text-tertiary); }
 .cost-stat-value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.cost-stat-value.is-danger { color: #d4380d; }
-.cost-stat-sub { font-size: 12px; color: rgba(0, 0, 0, 0.45); }
+.cost-stat-value.is-danger { color: var(--danger-ink); }
+.cost-stat-sub { font-size: 12px; color: var(--text-tertiary); }
 
 /* 金额：等宽数字。金额列不对齐时，人没法快速比较两行的量级 */
 .cost-amount { font-variant-numeric: tabular-nums; font-weight: 600; }
@@ -1710,12 +1909,12 @@ body {
 }
 .cost-fallback-tag { margin-left: 4px; font-size: 11px; }
 
-.cost-needs-price { border-color: #faad14; }
+.cost-needs-price { border-color: var(--warn); }
 .cost-needs-alert { margin-bottom: 12px; }
 .cost-config-sample {
   margin: 8px 0 0;
   padding: 8px;
-  background: rgba(0, 0, 0, 0.03);
+  background: var(--bg-overlay);
   border-radius: 4px;
   font-size: 12px;
   line-height: 1.6;
@@ -1727,7 +1926,7 @@ body {
 .cost-config-notes { margin-top: 12px; }
 .cost-tool-note { font-size: 12px; margin-bottom: 8px !important; }
 .cost-note-line { font-size: 12px; margin: 8px 0 0 !important; }
-.cost-reconcile-bad { border-color: #ff4d4f; }
+.cost-reconcile-bad { border-color: var(--danger); }
 
 /* 结论边界那一段：它是这一页的"免责声明"，所以要读得下去 —— 行距比正文松一点 */
 .cost-notes { margin: 0; padding-left: 18px; }
@@ -1739,7 +1938,7 @@ body {
   见 CostPanel 里 Amount 组件的注释（第一次打开看板的人不会去悬浮一个写着"算不出"的词）
 */
 .cost-amount-unknown-box { display: inline-flex; flex-direction: column; gap: 2px; }
-.cost-amount-reason { font-size: 11px; line-height: 1.5; color: rgba(0, 0, 0, 0.45); max-width: 320px; }
+.cost-amount-reason { font-size: 11px; line-height: 1.5; color: var(--text-tertiary); max-width: 320px; }
 
 /* 业务归因输入框（Agent 面板）：它是成本看板「按业务」那一栏的唯一写入方 */
 .cost-intent-label { flex: 0 0 auto; }
@@ -1756,7 +1955,7 @@ body {
 
 /* 必填星号。它是这一页唯一一个必填项，所以要能一眼看出来 ——
    后端会拒绝空值，而"没说必填"是那条错误唯一能预防的地方 */
-.agent-required { color: #ff4d4f; margin-left: 2px; }
+.agent-required { color: var(--danger); margin-left: 2px; }
 
 /*
   三档权限并排可读。
@@ -1768,7 +1967,7 @@ body {
 .agent-permission-option { display: flex; align-items: baseline; margin-bottom: 2px; }
 /* 两段都是 <label> 里的 inline 内容：换成块级元素会把每一档折成两行 */
 .agent-permission-label { font-weight: 500; margin-right: 8px; white-space: nowrap; }
-.agent-permission-hint { font-size: 12px; color: rgba(0, 0, 0, 0.45); line-height: 1.6; }
+.agent-permission-hint { font-size: 12px; color: var(--text-tertiary); line-height: 1.6; }
 
 /* 本次运行的执行前提（三处显示同一句话：结果卡 / 运行详情 / 五层 trace）。
    用等宽数字：路径与档位名要能被逐字比对 */
@@ -1799,7 +1998,7 @@ body {
 
 /* 生效中的那一行：淡绿底色。**底色之外还有 Tag**——
    只靠颜色的话，色觉障碍读者与黑白打印都看不出哪一行是生效的 */
-.prompt-row-active > td { background: #f6ffed !important; }
+.prompt-row-active > td { background: var(--ok-bg) !important; }
 
 /* 编辑器：等宽字体不是"好看"，而是提示词里的缩进与对齐要能看出来。
    注意选择器就是 textarea 本身 —— antd 的 Input.TextArea 把 className 落在
@@ -1833,11 +2032,11 @@ body {
 
 /* ---- 差异视图 ---- */
 .prompt-diff {
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--border);
   border-radius: 6px;
   overflow: auto;
   max-height: 420px;
-  background: #fafafa;
+  background: var(--bg-soft);
 }
 .prompt-diff-line {
   display: flex;
@@ -1855,22 +2054,22 @@ body {
 .prompt-diff-no {
   flex: 0 0 34px;
   text-align: right;
-  color: rgba(0, 0, 0, 0.3);
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   user-select: none;
 }
-.prompt-diff-marker { flex: 0 0 14px; color: rgba(0, 0, 0, 0.45); user-select: none; }
+.prompt-diff-marker { flex: 0 0 14px; color: var(--text-tertiary); user-select: none; }
 .prompt-diff-text { flex: 1 1 auto; }
 
 /* 颜色只是"加速识别"，所以每一行还有 +/- 标记与行号 ——
    三样加起来才保证"哪边新增、哪边删除"在灰度下也读得出来 */
-.prompt-diff-line.is-add { background: #f6ffed; }
-.prompt-diff-line.is-add .prompt-diff-marker { color: #389e0d; }
-.prompt-diff-line.is-remove { background: #fff1f0; }
-.prompt-diff-line.is-remove .prompt-diff-marker { color: #cf1322; }
+.prompt-diff-line.is-add { background: var(--ok-bg); }
+.prompt-diff-line.is-add .prompt-diff-marker { color: var(--ok-ink); }
+.prompt-diff-line.is-remove { background: var(--danger-bg); }
+.prompt-diff-line.is-remove .prompt-diff-marker { color: var(--danger-ink); }
 .prompt-diff-line.is-gap {
-  background: #f0f0f0;
-  color: rgba(0, 0, 0, 0.45);
+  background: var(--bg-soft);
+  color: var(--text-tertiary);
   justify-content: center;
   font-style: italic;
 }
@@ -1893,8 +2092,8 @@ body {
   font-size: 12px;
   line-height: 1.6;
   padding: 6px 8px;
-  background: #fffbe6;
-  border: 1px solid #ffe58f;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
   border-radius: 4px;
 }
 .alert-sweep-summary { font-size: 12px; line-height: 1.6; }
@@ -1902,16 +2101,16 @@ body {
 /* 头部那排统计：数字等宽 —— 不等宽时"3 条"与"8 条"看起来一样宽，
    而这一页最需要一眼看出的就是"几条在等着人处理" */
 .alert-stat { min-width: 120px; }
-.alert-stat-label { font-size: 12px; color: rgba(0, 0, 0, 0.45); }
+.alert-stat-label { font-size: 12px; color: var(--text-tertiary); }
 .alert-stat-value {
   font-size: 20px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   line-height: 1.3;
 }
-.alert-stat-bad .alert-stat-value { color: #cf1322; }
-.alert-stat-warn .alert-stat-value { color: #d46b08; }
-.alert-stat-good .alert-stat-value { color: #389e0d; }
+.alert-stat-bad .alert-stat-value { color: var(--danger-ink); }
+.alert-stat-warn .alert-stat-value { color: var(--warn-ink); }
+.alert-stat-good .alert-stat-value { color: var(--ok-ink); }
 
 .alert-events-card { margin-bottom: 12px; }
 .alert-rule-code {
@@ -1927,10 +2126,10 @@ body {
 /* ---- 灰度 ---- */
 .canary-card { margin-bottom: 12px; }
 .canary-split {
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 12px;
-  background: #fafafa;
+  background: var(--bg-soft);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1938,7 +2137,7 @@ body {
 .canary-split-note { margin: 0; }
 .canary-split-caveat { font-size: 12px; line-height: 1.6; }
 .canary-controls {
-  border-top: 1px dashed #e8e8e8;
+  border-top: 1px dashed var(--border);
   padding-top: 12px;
 }
 .canary-note { flex: 1 1 auto; }
@@ -1946,7 +2145,7 @@ body {
 
 /* ---- 判据目录 ---- */
 .alert-rules-card .alert-rule-section + .alert-rule-section {
-  border-top: 1px dashed #e8e8e8;
+  border-top: 1px dashed var(--border);
   padding-top: 12px;
 }
 
@@ -2053,8 +2252,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  background: #fafafa;
-  border: 1px solid #f0f0f0;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px;
 }
@@ -2072,13 +2271,13 @@ body {
 
 .task-column-count {
   font-variant-numeric: tabular-nums;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--text-tertiary);
   font-size: 12px;
 }
 
 .task-column-hint {
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--text-tertiary);
   line-height: 1.5;
 }
 
@@ -2090,7 +2289,7 @@ body {
 
 .task-column-empty {
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.3);
+  color: var(--text-muted);
   padding: 4px 2px;
 }
 
@@ -2099,19 +2298,19 @@ body {
   position: relative;
   width: 100%;
   padding: 8px 10px;
-  background: #fff;
-  border: 1px solid #e8e8e8;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 6px;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 .task-card:hover {
-  border-color: #91caff;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+  border-color: var(--brand-soft);
+  box-shadow: 0 2px 6px var(--shadow-soft);
 }
 
 .task-card:focus-within {
-  outline: 2px solid #1677ff;
+  outline: 2px solid var(--brand);
   outline-offset: 1px;
 }
 
@@ -2181,7 +2380,7 @@ body {
 .task-card-meta {
   font-size: 12px;
   line-height: 1.5;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--text-tertiary);
   word-break: break-all;
 }
 
@@ -2200,13 +2399,13 @@ body {
 }
 
 .task-card-result {
-  background: #f6ffed;
-  color: #389e0d;
+  background: var(--ok-bg);
+  color: var(--ok-ink);
 }
 
 .task-card-cancel {
-  background: #fff7e6;
-  color: #d46b08;
+  background: var(--warn-bg);
+  color: var(--warn-ink);
 }
 
 /* 展开/收起：文字层整体不接收指针事件，所以这一个要自己收回来，并浮在点开层之上
@@ -2219,7 +2418,7 @@ body {
   background: transparent;
   font: inherit;
   font-size: 12px;
-  color: #1677ff;
+  color: var(--brand);
   cursor: pointer;
   pointer-events: auto;
   position: relative;
@@ -2231,7 +2430,7 @@ body {
 }
 
 .task-card-toggle:focus-visible {
-  outline: 2px solid #1677ff;
+  outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
 
@@ -2248,7 +2447,7 @@ body {
 }
 
 .task-confirms {
-  border-top: 1px dashed #e8e8e8;
+  border-top: 1px dashed var(--border);
   padding-top: 10px;
   display: flex;
   flex-direction: column;
@@ -2256,8 +2455,8 @@ body {
 }
 
 .task-confirm {
-  border: 1px solid #f0f0f0;
-  border-left: 3px solid #d9d9d9;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
   border-radius: 4px;
   padding: 6px 10px;
   display: flex;
@@ -2267,17 +2466,17 @@ body {
 
 /* 等答复的那一条要一眼看出来：它是这一页唯一"现在该动"的东西 */
 .task-confirm.is-waiting {
-  border-left-color: #fa8c16;
-  background: #fffbf5;
+  border-left-color: var(--warn);
+  background: var(--warn-bg);
 }
 
 .task-confirm.is-answered {
-  border-left-color: #52c41a;
+  border-left-color: var(--ok);
 }
 
 .task-confirm-desc {
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.65);
+  color: var(--text-secondary);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
@@ -2285,7 +2484,7 @@ body {
 
 .task-confirm-options {
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--text-tertiary);
 }
 
 .task-confirm-answer {
@@ -2294,7 +2493,7 @@ body {
 }
 
 .task-actions {
-  border-top: 1px dashed #e8e8e8;
+  border-top: 1px dashed var(--border);
   padding-top: 10px;
   display: flex;
   flex-direction: column;
