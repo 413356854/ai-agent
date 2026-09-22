@@ -40,7 +40,7 @@ import java.util.List;
  * 判据在 {@link #realUser}，它落在服务层而不是实体的构造器里：那条判据要读账号表，
  * 而实体的构造点里有一个是"从库里读回一行"。它对应界面上的一处做法 ——
  * 那两格是<b>搜索之后从下拉里选</b>的，不是可以随便打字的输入框
- * （名字是快照，打错一个字不会有任何约束拦下这条任务）。
+ * （落库的是账号 id，而账号表里查不到的名字不会有任何约束拦下这条任务）。
  *
  * <h2>写完就调度一次任务执行</h2>
  * 每一次任务记录更新之后都调一次 {@link AgentTaskDispatch#onTaskUpdated}（已完成 / 已取消除外，
@@ -133,10 +133,10 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	@Transactional
 	public Detail create(String publisher, String assignee, String description) {
 		// 两个名字都换成账号表里那一行自己的写法：调用方写进来的 "Admin" 落库与回执都是 "admin"
-		// （大小写与前后空格都以账号表为准）
+		// （大小写与前后空格都以账号表为准），而落库的是这两个账号的 id（姓名不落库）
 		AgentTask task = draft(realUser(publisher, "发布人"), realUser(assignee, "任务人"), description);
-		tasks.insert(task.publisher(), task.assignee(), task.description(), task.status().storedValue(),
-				task.currentExecutor(), task.currentStep());
+		tasks.insert(task.publisherId(), task.assigneeId(), task.description(), task.status().storedValue(),
+				task.currentExecutorId(), task.currentStep());
 		Long id = AgentTaskTransitions.requiredKey(tasks.lastInsertId(), "任务");
 		log.info("新建 agent 任务 #{}：{}", id, task.describe());
 		// 新发布也要调度：判断需求有没有歧义这一步在 agent 手上，不等下一个定时周期
@@ -152,7 +152,8 @@ public class DefaultAgentTaskService implements AgentTaskService {
 			case EXECUTING -> finishExecution(task, result);
 			case PENDING_ACCEPTANCE -> accept(task);
 			default -> throw new TaskConflictException(("当前状态「%s」没有可推进的事件 —— 能推进的只有"
-					+ "「执行中」（登记执行结果）与「待验收」（验收通过）；三个「待确认」在等确认项的答复，"
+					+ "「执行中」（登记执行结果）与「待验收」（验收通过）；三个「待确认」在等确认项的答复、"
+					+ "「权限不足」要答复的是 revise（「已修改任务」/「取消任务」），"
 					+ "「新发布」与三个「已确认」由 agent 任务执行处理（页面上没有按钮就是还没轮到人），"
 					+ "终态不再流转。详情里的 actions 就是现在能做的事。")
 					.formatted(task.status().label()));
@@ -213,9 +214,42 @@ public class DefaultAgentTaskService implements AgentTaskService {
 		}
 		tasks.updateCancel(id, reason.strip());
 		// 步骤与执行人保持不动：它们回答"取消的那一刻球在谁手上"，而这是复盘时要看的东西
-		transitions.move(task, AgentTaskStatus.CANCELLED, task.currentStep(), task.currentExecutor());
+		transitions.move(task, AgentTaskStatus.CANCELLED, task.currentStep(), task.currentExecutorId());
 		log.info("任务 #{} 已取消：{}", id, reason.strip());
 		dispatchAfterCommit(AgentTaskStatus.CANCELLED);
+		return detail(id);
+	}
+
+	/**
+	 * 权限不足 → 新发布：用户答复「已修改任务」。
+	 *
+	 * <p>回到「新发布」而不是就地重判：这条链上的每一步都以上一步的结论为输入
+	 * （需求歧义 → 任务点 → 计划 → 授权范围），改了任务描述或改了权限之后，
+	 * 那些结论都可能已经过时 —— 只重判授权会让后面几步继续用旧结论。
+	 *
+	 * <p>步骤 +1（这一格也是"经过了一格"），当前执行人回到任务人
+	 * （{@code executorFor(NEW, task)}：球在他手上，由他决定要不要往下走）。
+	 *
+	 * <p>上一次「权限不足」的结论<b>留在执行结果那一格里</b>，前面加一句说明：
+	 * 它是"当时为什么被打回"的唯一记录，而重走一遍之后这个理由不该只剩"已取消 / 已完成"。
+	 */
+	@Override
+	@Transactional
+	public Detail revise(Long id) {
+		AgentTask task = transitions.require(id);
+		if (task.status() != AgentTaskStatus.INSUFFICIENT_PERMISSION) {
+			throw new TaskConflictException(("当前状态「%s」不是「权限不足」，没有可重发的任务 —— "
+					+ "「已修改任务」只在权限不足时出现（权限那一关过不了，改了之后再重走一遍）；"
+					+ "详情里的 actions 就是现在能做的事。").formatted(task.status().label()));
+		}
+		String previous = task.result() == null ? "" : task.result().strip();
+		AgentTaskStatus reached = transitions.move(task, AgentTaskStatus.NEW, task.currentStep() + 1,
+				AgentTaskTransitions.executorFor(AgentTaskStatus.NEW, task));
+		transitions.setResult(task, "用户答复「已修改任务」：这条任务已回到「新发布」重新走一遍"
+				+ "（重新判需求 → 拆任务点 → 判授权）。"
+				+ (previous.isEmpty() ? "" : "\n\n上一次「权限不足」的结论（留档）：\n" + previous));
+		log.info("任务 #{} 由用户答复「已修改任务」，回到「新发布」（第 {} 步）", id, task.currentStep() + 1);
+		dispatchAfterCommit(reached);
 		return detail(id);
 	}
 
@@ -223,7 +257,7 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	 * 调度一次任务执行 —— <b>必须等这次写事务提交之后</b>。
 	 *
 	 * <h2>为什么不能就地调</h2>
-	 * 四个写动作都在事务里，而调度是<b>另一个线程</b>去查库的（见 {@code AgentTaskScheduler}）。
+	 * 五个写动作都在事务里，而调度是<b>另一个线程</b>去查库的（见 {@code AgentTaskScheduler}）。
 	 * 就地调的话，那一刻这一行还没提交，另一个连接读不到它 ——
 	 * 实测（真后端、一次发布）：创建事务里的那次调度查到 0 条待处理任务，
 	 * 于是这次调度白跑一趟，任务要等到下一个定时周期（默认 10 分钟）才动。
@@ -257,7 +291,7 @@ public class DefaultAgentTaskService implements AgentTaskService {
 		// 没登记结果也能进验收：真实链路里"跑完了但没产出"是常态，
 		// 而把它挡在这里会让那条任务永远卡在执行中 —— 界面上表现为"它还在跑"，不报错
 		log.info("任务 #{} 执行结束（第 {} 步）：现在等 {} 验收{}", task.id(), task.currentStep() + 1,
-				task.publisher(), result == null || result.isBlank() ? "（未登记执行结果）" : "");
+				named(task.publisher(), task.publisherId()), result == null || result.isBlank() ? "（未登记执行结果）" : "");
 		return moved;
 	}
 
@@ -276,12 +310,17 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	 * <p><b>「新发布」与三个「已确认」没有推进按钮</b>：那四格的下一步由任务执行器做，
 	 * 人点不动。给它们画一个"看起来能推进"的按钮比不画更坏 —— 用户会反复点，
 	 * 而每次都回一句"当前状态不允许"。
+	 *
+	 * <p>「权限不足」两个按钮：{@code revise}（「已修改任务」= 重新走一遍）与 {@code cancel}。
+	 * 没有 {@code advance}：这一格要的不是"推进当前事件"，而是"这条任务已经改过了"。
 	 */
 	private static List<Action> actionsOf(AgentTaskStatus status) {
 		return switch (status) {
 			case NEW -> List.of(new Action("cancel", "取消任务"));
 			case PENDING_REQUIREMENT, PENDING_PLAN, PENDING_AUTHORIZATION ->
 					List.of(new Action("answer", "答复确认项"), new Action("cancel", "取消任务"));
+			case INSUFFICIENT_PERMISSION ->
+					List.of(new Action("revise", "已修改任务"), new Action("cancel", "取消任务"));
 			case CONFIRMED_REQUIREMENT, CONFIRMED_PLAN, AUTHORIZED ->
 					List.of(new Action("cancel", "取消任务"));
 			case EXECUTING -> List.of(new Action("advance", "登记执行结果"), new Action("cancel", "取消任务"));
@@ -302,9 +341,9 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	 * {@code ErrorResponseAdvice} 的 400 分支，于是"任务描述超长"会以 500 的形式出现，
 	 * 用户看到的是一句"服务器出错了"。这里只做翻译，判据不在这里重写。
 	 */
-	private static AgentTask draft(String publisher, String assignee, String description) {
+	private static AgentTask draft(Account publisher, Account assignee, String description) {
 		try {
-			return AgentTask.draft(publisher, assignee, description);
+			return AgentTask.draft(publisher.id(), publisher.name(), assignee.id(), assignee.name(), description);
 		}
 		catch (IllegalArgumentException e) {
 			throw new TaskInvalidException(e.getMessage());
@@ -314,28 +353,32 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	/**
 	 * 发布人 / 任务人必须是从账号表里选出来的真实用户 —— <b>这条判据只在这里</b>。
 	 *
-	 * <p>它拦的是"随手打一个名字"：任务表存的是姓名快照（不是外键，理由见 DDL），
-	 * 所以错字不会被数据库拦下，而那样一条任务在界面上与正常任务长得一模一样，
-	 * 只是永远没有对应的人。判据落在服务层而不是实体里，是因为它要读账号表。
+	 * <p>它拦的是"随手打一个名字"：任务表存的是用户 id（不是姓名），而打错的字在账号表里
+	 * 一个都查不到 —— 那样一条任务在界面上与正常任务长得一模一样，只是永远没有对应的人。
+	 * 判据落在服务层而不是实体里，是因为它要读账号表。
 	 *
-	 * <p>返回值取账号表里那一行自己的名字：写进来的 "Admin" 落库成 "admin"，
-	 * 于是"这个名字到底指谁"不需要读的人再猜一次大小写。
+	 * <p>返回值取账号表里那一行本身（id + 姓名）：落库的是它的 id，写进来的 "Admin" 与
+	 * 回执里的姓名都按它那一行的写法（于是"这个名字到底指谁"不需要读的人再猜一次大小写）。
 	 *
 	 * <p>停用的账号<b>不算错</b>：这一列回答的是"当时是谁派的、派给谁"，
 	 * 与"他现在能不能登录"是两件事（与 {@code agent_user_role} 的成员关系同一条规矩）。
 	 */
-	private String realUser(String name, String what) {
+	private Account realUser(String name, String what) {
 		if (name == null || name.isBlank()) {
 			throw new TaskInvalidException(what + "必填 —— 发布人与任务人都要从用户列表里选一个真实用户"
 					+ "（搜索：GET /api/permissions/users/search?keyword=…）");
 		}
 		String wanted = name.strip();
 		return permissions.findAccount(wanted)
-				.map(Account::name)
 				.orElseThrow(() -> new TaskInvalidException(("账号表里没有「%s」这个人，不能当%s —— 发布人与任务人"
 						+ "都是真实用户；名字要从用户列表里搜出来选（GET /api/permissions/users/search?keyword=…），"
 						+ "打错一个字不会有任何约束拦下这条任务，它只会挂在一个不存在的人名下。")
 						.formatted(wanted, what)));
+	}
+
+	/** 日志里的姓名：账号那一行不在（姓名落空）时退回 id，而不是留一格空白。 */
+	private static String named(String name, Long id) {
+		return name == null ? "用户#" + id : name;
 	}
 
 	/** 按 id 取确认项，并核对它属于这条任务（拿别的任务的 confirmId 来答会被这里挡下）。 */

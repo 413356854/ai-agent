@@ -8,20 +8,39 @@
 --    ② 卡在哪一步（需求 / 计划 / 授权 / 执行 / 验收）；
 --    ③ 每一步当时给的是什么选项、他选/答的是什么（用户确认项）。
 --
---  【状态链：八个取值，每次推进一格】
+--  【状态链：十二个取值，每次推进一格】
 --    新发布 NEW
---      → 待确认需求 PENDING_REQUIREMENT   （第 1 步，生成一条需求确认项）
---      → 待确认计划 PENDING_PLAN          （第 2 步，生成一条计划确认项）
---      → 待授权     PENDING_AUTHORIZATION （第 3 步，生成一条授权确认项）
---      → 执行中     EXECUTING             （第 4 步，执行人是 agent）
---      → 待验收     PENDING_ACCEPTANCE    （第 5 步）
---      → 已完成     COMPLETED             （第 6 步）
+--      → 待确认需求 PENDING_REQUIREMENT   （生成一条需求确认项，等答复）
+--      → 已确认需求 CONFIRMED_REQUIREMENT （球交给 agent：再判一次歧义、拆任务点）
+--      → 待确认计划 PENDING_PLAN          （任务点 ≥ 阈值时才有这一格，等答复）
+--      → 已确认计划 CONFIRMED_PLAN        （球交给 agent：判断授权）
+--      → 待授权     PENDING_AUTHORIZATION （授权判断通过，等答复）
+--      → 已授权     AUTHORIZED            （球交给 agent：执行）
+--      → 执行中     EXECUTING             （跑完写执行结果）
+--      → 待验收     PENDING_ACCEPTANCE
+--      → 已完成     COMPLETED
+--    已确认计划 / 已授权 的判断不通过 → 权限不足 INSUFFICIENT_PERMISSION（结论写进 result，等处置）
+--    权限不足 ── 人答复「已修改任务」──→ 新发布（重新走一遍）
 --    任一非终态都可 → 已取消 CANCELLED（取消原因与状态同一次写入）
 --
---  【为什么三个"待确认"是三个状态，而不是一个「待确认」】
---  一个状态装不下"现在等的是谁、等的是什么"这两个问题的答案，
---  而这两件事决定界面上该把卡片放在哪一列、该弹什么按钮。
---  合成一个之后，唯一的表达方式是"再看看它挂了哪条确认项" —— 那是把判据散进查询。
+--  【三个"人"的列存的是用户 id，不是姓名】
+--    publisher_id / assignee_id / current_executor_id 三列都是 agent_user.id。
+--    存 id 的理由是"当时是谁"要一直指向同一个人，而姓名是可以改的：存姓名的话，
+--    账号改名之后要么这条记录挂着一个查不到的名字，要么得把老记录一起改掉 ——
+--    前者让那张卡片上是一个不存在的人，后者改掉了历史。存 id 则两条都成立：
+--    指向谁不变，显示的名字取账号表**当前**的写法（读侧 LEFT JOIN agent_user，见 AgentTaskMapper.xml）。
+--    ⚠️ 读侧一律 LEFT JOIN 而不是 INNER JOIN：账号那一行万一不在（手工清过库），
+--    任务行照样读得出来、姓名那一格落空（界面显示「未指定任务人」），
+--    比"这一行读不出来、整张看板打不开"好得多。
+--    ⚠️ 不给这三列加外键：agent_user 只停用不删除（见 permissions-schema.sql），id 不会悬空；
+--    而它属于权限域，加外键会把"任务记录能不能写"绑在另一个域的表结构上
+--    （与 agent_id 那条同一条理由）。
+--
+--  【current_executor_id 的 NULL 是有含义的】
+--    它回答"此刻球在谁手上"：有值 = 球在那个账号手上（三个"待确认"与「权限不足」是发布人、
+--    「新发布」是任务人、「待验收」是发布人）；NULL = 球在 agent 手上（三个"已确认"与"执行中"）
+--    或这件事已经结束（已完成没有执行人；已取消保持取消那一刻的值）。
+--    于是"哪个 agent 在跑"由 agent_id 回答，两列各答一个问题，不挤在一列里。
 --
 --  【为什么确认项是一张子表，而不是任务表上的一列 JSON】
 --  一次任务会有多条确认项（每步一条），每条有自己的选项集与答复。
@@ -54,46 +73,45 @@
 
 -- 一次派给 Agent 的任务
 CREATE TABLE IF NOT EXISTS agent_task (
-  id               BIGINT       NOT NULL AUTO_INCREMENT COMMENT '任务 id',
-  -- 发布人：指派出任务的人（姓名快照，不是 agent_user 的外键）
-  --
-  -- 【为什么是快照而不是外键】这一列要回答的是"当时是谁派的"，
-  -- 而账号是可以改显示名、可以停用的 —— 外键会让这条任务在账号改名后显示成新名字，
-  -- 于是"当时"这个语义丢了。与 agent_run.decided_by / granted_by 同一条规矩。
-  publisher        VARCHAR(128) NOT NULL COMMENT '发布人：指派出任务的人（姓名快照，不做外键，于是账号改名不影响"当时是谁派的"）',
-  -- 任务人：交付任务的人。**写入路径必填**（发布人 / 任务人都必须是 agent_user 里真实存在的名字，
-  -- 判据在 DefaultAgentTaskService#realUser —— 它要读账号表，所以不在实体里）。
-  -- 列本身允许 NULL：库里可能有任务人为空的行，而读侧把它显示成「未指定任务人」，
+  id                  BIGINT       NOT NULL AUTO_INCREMENT COMMENT '任务 id',
+  -- 发布人：指派出任务的人。**写入路径必填**（判据在 DefaultAgentTaskService#realUser ——
+  -- 它要读账号表，所以不在实体里）。列本身 NOT NULL：没有发布人的任务没有主语
+  publisher_id        BIGINT       NOT NULL COMMENT '发布人：指派出任务的人（agent_user.id）',
+  -- 任务人：交付任务的人。**写入路径必填**（发布人 / 任务人都必须是 agent_user 里真实存在的用户，
+  -- 判据同上），列本身允许 NULL：库里可能有任务人为空的行，而读侧把它显示成「未指定任务人」，
   -- 比"这一行读不出来，整张看板打不开"好得多
-  assignee         VARCHAR(128) NULL COMMENT '任务人：交付任务的人（写入路径必填，必须是真实存在的账号名）；NULL 显示为「未指定任务人」',
+  assignee_id         BIGINT       NULL COMMENT '任务人：交付任务的人（agent_user.id，写入路径必填）；NULL 显示为「未指定任务人」',
   -- 任务描述：这次要做什么。它同时也是生成第一条确认项的输入
-  description      TEXT         NOT NULL COMMENT '任务描述：这次要做什么（也是生成第一条确认项的输入）',
+  description         TEXT         NOT NULL COMMENT '任务描述：这次要做什么（也是生成第一条确认项的输入）',
   -- 状态取值见头注的状态链，库里的值一律是枚举名（AgentTaskStatus）。
   -- ⚠️ 读侧对认不出的取值落在 NEW 而不是"某一个看起来正常的中间态"：
   -- 落成终态会让这一行从看板的活跃列里消失，而"卡片不见了"是最难发现的一种坏法
-  status           VARCHAR(32)  NOT NULL DEFAULT 'NEW' COMMENT '任务状态：NEW / PENDING_REQUIREMENT / PENDING_PLAN / PENDING_AUTHORIZATION / EXECUTING / PENDING_ACCEPTANCE / COMPLETED / CANCELLED（认不出的取值落 NEW）',
-  -- 当前执行人：这条任务现在流转到谁手里。
-  -- EXECUTING 时写 agent（形如 agent#3，3 是 agent_id）；其余是人的名字（发布人或任务人）
-  current_executor VARCHAR(128) NULL COMMENT '当前执行人：EXECUTING 时写 agent（形如 agent#3），其余是人的名字',
+  status              VARCHAR(32)  NOT NULL DEFAULT 'NEW' COMMENT '任务状态：NEW / PENDING_REQUIREMENT / CONFIRMED_REQUIREMENT / PENDING_PLAN / CONFIRMED_PLAN / PENDING_AUTHORIZATION / INSUFFICIENT_PERMISSION / AUTHORIZED / EXECUTING / PENDING_ACCEPTANCE / COMPLETED / CANCELLED（认不出的取值落 NEW）',
+  -- 当前执行人：这条任务现在流转到谁手里（agent_user.id）。
+  -- NULL 是**有含义的**：球在 agent 手上（三个"已确认"与"执行中"），或者这件事已经结束
+  -- （已完成没有执行人；已取消保持取消那一刻的值）—— 见头注那一段
+  current_executor_id BIGINT       NULL COMMENT '当前执行人：球在谁手上（agent_user.id）；NULL = 球在 agent 手上或任务已结束',
   -- 任务当前步骤，从 1 开始：1 需求 / 2 计划 / 3 授权 / 4 执行 / 5 验收 / 6 完成。
   -- 新发布也记 1 —— 它表示"停在第 1 步还没开始"，而不是第 0 步（界面上没有第 0 步这个东西）
-  current_step     INT          NOT NULL DEFAULT 1 COMMENT '任务当前步骤：1 需求 / 2 计划 / 3 授权 / 4 执行 / 5 验收 / 6 完成（新发布也记 1）',
-  -- 任务交给哪个 Agent 应用。**不做外键**：Agent 应用表在另一个业务域里，
-  -- 而这里只需要一个引用键（与 agent_run.intent / tenant_id 同一条规矩：
-  -- 归因键的取值由业务侧定义，数据库管不了它有多少个）
+  current_step        INT          NOT NULL DEFAULT 1 COMMENT '任务当前步骤：1 需求 / 2 计划 / 3 授权 / 4 执行 / 5 验收 / 6 完成（新发布也记 1）',
+  -- 任务交给哪个 Agent 应用。**是字符串**：应用 id 由那张注册表（另一个业务域）定义，
+  -- 本仓只管引用它，所以既不做外键、也不假设它长得像数字
+  -- （与 agent_run.intent / tenant_id 同一条规矩：归因键的取值由业务侧定义，数据库管不了它有多少个）
   --
   -- 【谁写它】发布时不写（发布请求体里没有 agentId）；平台第一次接手这条任务时
   -- 用 ai.agent.task.agent-id 写入（见 DefaultAgentTaskExecution#stampAgent）。
   -- 于是"交给哪个 Agent 应用"只有一个来源 —— 那个 id 是部署方才知道的东西，
-  -- 让发布人打一个数字等于把"它对不对"变成一个人的记忆
-  agent_id         BIGINT       NULL COMMENT '交给哪个 Agent 应用（不做外键；平台第一次接手时由 ai.agent.task.agent-id 写入）',
-  -- 执行结果：执行那一步走完时登记（EXECUTING → 待验收）
-  result           TEXT         NULL COMMENT '执行结果：执行那一步走完时登记（EXECUTING → 待验收）',
+  -- 让发布人打一个字符串等于把"它对不对"变成一个人的记忆
+  agent_id            VARCHAR(128) NULL COMMENT '交给哪个 Agent 应用（应用注册表里的 id，字符串；不做外键；平台第一次接手时由 ai.agent.task.agent-id 写入）',
+  -- 执行结果：执行那一步走完时登记（EXECUTING → 待验收）。
+  -- ⚠️ 状态是 INSUFFICIENT_PERMISSION 时这一列放的是**权限判断的结论**（缺哪条目录前缀、怎么放行）——
+  -- 两者共用一列，界面按状态换标签显示（见 AgentTaskPanel）
+  result              TEXT         NULL COMMENT '执行结果：执行那一步走完时登记（EXECUTING → 待验收）；状态是 INSUFFICIENT_PERMISSION 时放的是权限判断的结论',
   -- 取消原因：用户取消时填写，与 status=CANCELLED 同一次写入。
   -- 允许 NULL 只为了非取消状态的那一行；取消时由写入路径强制非空（服务层唯一入口）
-  cancel_reason    VARCHAR(512) NULL COMMENT '取消原因：与 status=CANCELLED 同一次写入（取消时写入路径强制非空）',
-  created_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  updated_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+  cancel_reason       VARCHAR(512) NULL COMMENT '取消原因：与 status=CANCELLED 同一次写入（取消时写入路径强制非空）',
+  created_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  updated_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
   PRIMARY KEY (id)
 ) COMMENT='agent任务';
 

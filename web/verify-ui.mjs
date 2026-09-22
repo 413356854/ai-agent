@@ -2970,6 +2970,27 @@ if (EXPECT_REFLECTION) {
     /admin → zhou/.test(boardText) && /当前执行人/.test(boardText))
   expect('待验收那条带着执行结果', /已补上说明段落/.test(boardText))
 
+  // ---- 三个"人"各给两份：库里那份是用户 id，显示那份是关联查询出来的姓名 ----
+  //
+  // 库里存的是 `agent_user.id`（姓名可以改，而"当时是谁派的、派给谁"要一直指向同一个人），
+  // 所以响应体必须同时给 id 与姓名。只断姓名的话，一个"把 id 那两格漏掉"的实现照样全绿；
+  // 只断 id 的话，一个"把 id 直接显示给用户"的实现也全绿 —— 两条一起断才钉得住这个契约。
+  const boardJson = await (await page.request.get(`${URL}/api/agent-tasks`)).json()
+  const cardById = id => boardJson.columns.flatMap(c => c.tasks).find(t => t.id === id)
+  const idCard = cardById(3)
+  expect('★ 卡片上三个"人"都带 id 与姓名两份（库里存 id，界面显示姓名）',
+    idCard.publisherId === 1 && idCard.publisher === 'admin'
+    && idCard.assigneeId === 2 && idCard.assignee === 'zhou'
+    && idCard.currentExecutorId === 1 && idCard.currentExecutor === 'admin',
+    JSON.stringify({ p: `${idCard.publisherId}/${idCard.publisher}`,
+      a: `${idCard.assigneeId}/${idCard.assignee}`,
+      e: `${idCard.currentExecutorId}/${idCard.currentExecutor}` }))
+  // 球在 agent 手上的那一格：执行人 id 是空的，而显示的那份由后端按 agentId 拼出来
+  const agentCard = cardById(5)
+  expect('★ 球在 agent 手上时执行人 id 为空、显示的是 agent#…（后端按 agentId 拼的字）',
+    agentCard.currentExecutorId === null && agentCard.currentExecutor === `agent#${agentCard.agentId}`,
+    JSON.stringify({ id: agentCard.currentExecutorId, label: agentCard.currentExecutor }))
+
   // ---- 长文字默认夹住：夹掉了才出现「展开全文」，点开能看到剩下的字 ----
   //
   // 这一条要断的是几何：断言"文字还在 DOM 里"毫无意义（`overflow: hidden` 之下它一直在，
@@ -3044,6 +3065,21 @@ if (EXPECT_REFLECTION) {
     initialCounts.executing + ' 条')
   expect('★ 那一列里的四张卡片各带自己的状态标签（同列靠标签区分）',
     (await executingColumn.locator('.task-card').count()) === 4, initialCounts.executing + ' 条')
+
+  // ---- 「待处理」那一列收**四个**状态：三个"待确认" + 「权限不足」 ----
+  //
+  // 它们等的东西不同（答复确认项 / 处置一次权限不足），但对看板是同一个答案：球都在人手上。
+  // 单开一列的话那一列多数时候是空的，而"现在有几件事在等我"反而要拼两个列名才答得出。
+  // 「权限不足」那张卡片还要能一眼看出它记的是**结论**而不是执行结果 ——
+  // 两者共用 `result` 字段，标签按状态换（写成"执行结果"会读成"这次跑过了"）。
+  const pendingColumn = page.locator('.task-column[data-column="pending"]')
+  const pendingText = await pendingColumn.innerText()
+  expect('★ 「待处理」列收四个状态，列头把「权限不足」也写出来',
+    ['待确认需求', '待确认计划', '待授权', '权限不足'].every(label => pendingText.includes(label)),
+    initialCounts.pending + ' 条')
+  expect('★ 权限不足那张卡片写的是「权限不足：…」而不是「执行结果：…」，并带着结论原文',
+    /权限不足：/.test(pendingText) && !/执行结果：/.test(pendingText)
+    && /没有角色就是没有任何目录授权/.test(pendingText))
 
   // 「已取消」与「已完成」同列：那一条必须在**已完成**那一列里，且带着取消原因 ——
   // 两者唯一的区别就是状态标签与这条原因（结论与结局同列这件事的判据）
@@ -3248,6 +3284,76 @@ if (EXPECT_REFLECTION) {
     `completed ${initialCounts.completed}→${afterCancel.completed}`)
   // 关掉详情弹窗：后面几节要切模式，留一个开着的弹窗在那里只是在制造噪声
   await cancelDetail.locator('.ant-modal-footer .ant-btn').click()
+
+  // ---- 「权限不足」：判断不通过那一格的两个动作（已修改任务 / 取消任务） ----
+  //
+  // 这一格等的**不是**确认项的答复，而是"取消还是重走一遍" —— 所以它的按钮、文案、
+  // 点完之后回到哪一列都与「待确认」那三条不同。三件事都要验：
+  //   ① 结论显示出来了（它是用户决定"改什么"的唯一依据）；
+  //   ② 给的是 revise 与 cancel，**没有**「答复确认项」；
+  //   ③ 点「已修改任务」之后卡片真的回到「新任务」列（步骤 +1）。
+  const deniedCard = page.locator('.task-column[data-column="pending"] .task-card[data-task-id="12"]')
+  const deniedBefore = await taskColumnCounts()
+  const deniedStepBefore = (await (await page.request.get(`${URL}/api/agent-tasks/12`)).json()).task.currentStep
+  await deniedCard.click()
+  const deniedDetail = page.locator('.ant-modal:visible', { hasText: '确认项' })
+  await waitFor(async () => /权限不足/.test(await deniedDetail.innerText()), 8000)
+  const deniedText = await deniedDetail.innerText()
+  expect('★ 权限不足的详情说清"这次执行没有开始"，并把后端给的结论原样显示出来',
+    /权限不足：这次执行没有开始/.test(deniedText) && /没有角色就是没有任何目录授权/.test(deniedText),
+    deniedText.replace(/\n/g, ' ').slice(0, 100))
+  expect('★ 权限不足给的是「已修改任务」与「取消任务」，没有「答复确认项」',
+    (await deniedDetail.getByRole('button', { name: '已修改任务', exact: true }).count()) === 1
+    && (await deniedDetail.getByRole('button', { name: '取消任务', exact: true }).count()) === 1
+    && (await deniedDetail.getByRole('button', { name: '答复确认项', exact: true }).count()) === 0)
+  // ★ 这一格在**等人**，不在等 agent：少了这一条，一个把"没有 advance/answer"当成
+  // "等 agent"的实现会照样全绿，而它给用户的指引完全相反（让人干等一台不会动的机器）
+  expect('★ 权限不足那一格不写"这一步由 agent 任务执行做"（它在等人处置）',
+    !/这一步由 agent 任务执行做/.test(deniedText))
+
+  await deniedDetail.getByRole('button', { name: '已修改任务', exact: true }).click()
+  const revisedShown = await waitFor(async () =>
+    /已答复「已修改任务」/.test(await page.locator('.task-panel').innerText()), 8000)
+  const afterRevise = await taskColumnCounts()
+  expect('★ 点「已修改任务」之后卡片回到「新任务」列（整条链重走一遍，不是就地重试）',
+    revisedShown && afterRevise.new === deniedBefore.new + 1 && afterRevise.pending === deniedBefore.pending - 1,
+    `new ${deniedBefore.new}→${afterRevise.new} / pending ${deniedBefore.pending}→${afterRevise.pending}`)
+  const revised = await (await page.request.get(`${URL}/api/agent-tasks/12`)).json()
+  expect('★ 重发之后：状态是「新发布」、步骤 +1，上一次的「权限不足」结论留在记录里',
+    revised.task.status === 'NEW' && revised.task.currentStep === deniedStepBefore + 1
+    && /上一次「权限不足」的结论（留档）/.test(revised.task.result ?? ''),
+    `${revised.task.status} / 第 ${deniedStepBefore}→${revised.task.currentStep} 步`)
+  // 关掉它再往下走：下面的 runAgent 会点看板上的「刷新」，而开着的弹窗会挡住那次点击
+  // （失败信息是 Playwright 的点击超时 + "ant-modal-wrap intercepts pointer events"，
+  // 看起来像"刷新按钮坏了"）
+  await deniedDetail.locator('.ant-modal-footer .ant-btn').click()
+  await waitFor(async () => (await page.locator('.ant-modal:visible').count()) === 0, 5000)
+
+  // ---- 判断不通过那条路：任务人没有目录授权 ⇒ 「权限不足」，且**不生成授权确认项** ----
+  //
+  // 这一条用接口造任务而不是走发布弹窗：这一节验的是判定与落点，而"发布弹窗那两格选人"
+  // 上面已经单独验过了。任务人刻意选 zhou（账号表里那个**没有角色**的账号）：
+  // 没有角色 ⇒ 没有任何目录前缀 ⇒ 这次要动的目录不在授权范围内 ⇒ 判不通过。
+  // 描述里带「小任务」让假后端拆出 2 个任务点（< 阈值 5）⇒ 跳过计划确认，直接进判断那一格。
+  const deniedCreate = await page.request.post(`${URL}/api/agent-tasks`, {
+    data: { publisher: 'admin', assignee: 'zhou', description: '自检：小任务 —— 任务人没有目录授权的那一条' },
+  })
+  expect('（准备）发布一条任务人是 zhou（没有角色）的任务', deniedCreate.ok(),
+    `HTTP ${deniedCreate.status()}`)
+  const deniedId = (await deniedCreate.json()).task.id
+  const deniedRound = await runAgent(`?id=${deniedId}`)
+  const judged = await (await page.request.get(`${URL}/api/agent-tasks/${deniedId}`)).json()
+  expect('★ 授权判断不通过：任务停在「权限不足」而不是「待授权」，结论里点名缺的是目录前缀',
+    judged.task.status === 'INSUFFICIENT_PERMISSION'
+    && /zhou/.test(judged.task.result ?? '') && /目录前缀/.test(judged.task.result ?? ''),
+    `${deniedRound.moved.map(m => `${m.from}→${m.to}`).join(' / ')}`)
+  expect('★ 判断不通过时不生成授权确认项（那一格还没轮到人批）',
+    judged.confirms.every(confirm => confirm.type !== 'AUTHORIZATION'),
+    judged.confirms.map(confirm => confirm.type).join(' / ') || '（一条确认项都没有）')
+  const afterJudge = await taskColumnCounts()
+  expect('★ 判断不通过那条卡片落在「待处理」列里（与三条"待确认"同列）',
+    afterJudge.pending === afterRevise.pending + 1 && afterJudge.executing === afterRevise.executing,
+    `pending ${afterRevise.pending}→${afterJudge.pending} / executing ${afterRevise.executing}→${afterJudge.executing}`)
 
   // 收尾复位：与权限那一节同一条纪律（自检跑两遍，第二遍不该继承第一遍改出来的状态）
   const taskReset = await page.request.post(`${URL}/api/agent-tasks/__reset`)

@@ -53,6 +53,20 @@ public class PermissionResolver {
 	}
 
 	/**
+	 * 按 id 解析。id 为空或账号不存在时为空。
+	 *
+	 * <p>与 {@link #account(String)} 并列而不是合成一个：调用方手上是 id 还是名字由它自己知道，
+	 * 拿 id 去走名字那条路（先查名字再比 id）会变成两次查询，而且中间隔着一次改名就查不到了。
+	 * 任务记录存的是 id（见 {@code agent_task.assignee_id}），所以它走这一条。
+	 */
+	public Optional<Account> accountById(Long id) {
+		if (id == null) {
+			return Optional.empty();
+		}
+		return Optional.ofNullable(store.findAccountById(id));
+	}
+
+	/**
 	 * 解析一个账号的完整权限。
 	 *
 	 * @return 账号不存在或已停用时为空
@@ -61,12 +75,9 @@ public class PermissionResolver {
 		return account(accountName).filter(Account::usable).map(this::permissionsOf);
 	}
 
-	/** 按 id 解析（恢复路径用：库里存的是名字，而名字是可以改的）。 */
+	/** 按 id 解析（恢复路径用：库里存的是 id，而名字是可以改的）。 */
 	public Optional<UserPermissions> resolveById(Long accountId) {
-		if (accountId == null) {
-			return Optional.empty();
-		}
-		return Optional.ofNullable(store.findAccountById(accountId)).filter(Account::usable).map(this::permissionsOf);
+		return accountById(accountId).filter(Account::usable).map(this::permissionsOf);
 	}
 
 	/** 把已经取到的账号装配成权限对象（调用方已经确认过它存在且可用）。 */

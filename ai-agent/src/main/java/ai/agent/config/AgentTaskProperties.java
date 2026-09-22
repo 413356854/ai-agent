@@ -1,6 +1,7 @@
 package ai.agent.config;
 
 import ai.agent.entity.agent.AgentPermissionLevel;
+import ai.agent.entity.agent.task.AgentTask;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
@@ -34,11 +35,12 @@ import java.util.stream.Collectors;
  *
  * @param enabled 总开关。关掉时定时触发与"记录更新即调度"都不再执行任何任务
  *            （任务照常留在原状态，界面上的卡片不动）
- * @param agentId <b>本应用在 Agent 应用注册表里的 id</b>：任务开始执行（平台第一次接手）时，
+ * @param agentId <b>本应用在 Agent 应用注册表里的 id</b>（字符串）：任务开始执行（平台第一次接手）时，
  *            它被写进 {@code agent_task.agent_id}。发布人不填那一列 —— 它要回答的是
  *            "这条任务交给哪个 Agent 应用"，而那个 id 是部署方才知道的东西。
  *            ⚠️ 那张注册表在另一个业务域里，本仓不校验这个 id 存不存在（判据与
- *            {@code agent_run.intent} 同一条：归因键的取值由业务侧定义）
+ *            {@code agent_run.intent} 同一条：归因键的取值由业务侧定义）；
+ *            只校验"填了没有、超没超列宽"—— 空值会让卡片上那一格什么都不是
  * @param fixedDelay 定时触发的间隔（默认 {@code 10m}）。它是<b>兜底</b>：
  *            正常情况下任务由"记录一更新就调度"推动，这个周期只负责捞起
  *            "上一次判定失败、或调度时进程正在重启"而漏掉的那些
@@ -50,15 +52,21 @@ import java.util.stream.Collectors;
  * @param permissionLevel 执行时用的权限档位（枚举名，也认中文标签）。取值见上面的说明
  */
 @ConfigurationProperties(prefix = "ai.agent.task")
-public record AgentTaskProperties(boolean enabled, long agentId, Duration fixedDelay, int maxTasksPerRound,
+public record AgentTaskProperties(boolean enabled, String agentId, Duration fixedDelay, int maxTasksPerRound,
 		int planConfirmThreshold, String permissionLevel) {
 
 	public AgentTaskProperties {
-		if (agentId < 1) {
-			// 0 / 负数不是"没配"，而是"配了一个不存在的应用 id"：它会被写进库里，
-			// 卡片上显示成 agent#0，而按它反查 Agent 应用永远查不到 —— 一个不报错的错
-			throw new IllegalArgumentException("ai.agent.task.agent-id 必须是正整数（本应用在 Agent 应用注册表里的 id），"
-					+ "实际是 " + agentId + "。它会在任务开始执行时写进 agent_task.agent_id");
+		agentId = agentId == null ? null : agentId.strip();
+		if (agentId == null || agentId.isEmpty()) {
+			// 空值不是"没配"，而是"配了一个什么都没有的应用 id"：它会被写进库里，
+			// 卡片上显示成 agent#，而按它反查 Agent 应用永远查不到 —— 一个不报错的错
+			throw new IllegalArgumentException("ai.agent.task.agent-id 必填（本应用在 Agent 应用注册表里的 id），"
+					+ "它会在任务开始执行时写进 agent_task.agent_id");
+		}
+		if (agentId.length() > AgentTask.MAX_AGENT_ID_CHARS) {
+			throw new IllegalArgumentException("ai.agent.task.agent-id 过长（%d 字符 > 上限 %d）—— "
+					+ "agent_task.agent_id 是 VARCHAR(%d)"
+					.formatted(agentId.length(), AgentTask.MAX_AGENT_ID_CHARS, AgentTask.MAX_AGENT_ID_CHARS));
 		}
 		if (fixedDelay == null || fixedDelay.isZero() || fixedDelay.isNegative()) {
 			// 与 AgentApprovalProperties.timeout 同一条规矩：0/负数在这里的含义是"没有周期"，
@@ -84,7 +92,7 @@ public record AgentTaskProperties(boolean enabled, long agentId, Duration fixedD
 
 	/** 装配用的缺省值（测试与手工构造用；配置里这几个键都要写）。 */
 	public static AgentTaskProperties defaults() {
-		return new AgentTaskProperties(true, 1, Duration.ofMinutes(10), 20, 5, "FULL_ACCESS");
+		return new AgentTaskProperties(true, "1", Duration.ofMinutes(10), 20, 5, "FULL_ACCESS");
 	}
 
 	private static void requireKnownLevel(String raw) {

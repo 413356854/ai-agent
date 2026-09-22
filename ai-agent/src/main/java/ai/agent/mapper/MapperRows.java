@@ -323,14 +323,19 @@ public final class MapperRows {
 	 * {@link AgentTaskStatus#parse} 里，理由见那个方法。
 	 * {@code cancel_reason} 与 {@code result} 为 null 是**正常状态**（未取消 / 未执行完），
 	 * 不编默认值 —— 编一个会让"还没有结果"与"结果就是那个默认值"变成同一件事。
+	 *
+	 * <p>三个姓名（{@code publisher_name} / {@code assignee_name} / {@code current_executor_name}）
+	 * 是 SQL 关联 {@code agent_user} 查出来的，表里没有它们 —— 所以它们可能为 null
+	 * （账号那一行不在时），而 id 才是库里真正存的那一份（见 {@link AgentTask} 的类注释）。
 	 */
-	public record AgentTaskRow(Long id, String publisher, String assignee, String description, String status,
-			String currentExecutor, Integer currentStep, Long agentId, String result, String cancelReason,
-			Instant createdAt, Instant updatedAt) {
+	public record AgentTaskRow(Long id, Long publisherId, String publisherName, Long assigneeId, String assigneeName,
+			String description, String status, Long currentExecutorId, String currentExecutorName, Integer currentStep,
+			String agentId, String result, String cancelReason, Instant createdAt, Instant updatedAt) {
 
 		public AgentTask toDomain() {
-			return new AgentTask(id, publisher, assignee, description, AgentTaskStatus.parse(status), currentExecutor,
-					nz(currentStep), agentId, result, cancelReason, createdAt, updatedAt);
+			return new AgentTask(id, publisherId, publisherName, assigneeId, assigneeName, description,
+					AgentTaskStatus.parse(status), currentExecutorId, currentExecutorName, nz(currentStep), agentId,
+					result, cancelReason, createdAt, updatedAt);
 		}
 	}
 

@@ -5,12 +5,22 @@ import java.time.Instant;
 /**
  * <b>一条 agent 任务</b> —— 谁派的、派给谁、现在到哪一步、这一步在等谁。
  *
+ * <h2>★ 三个"人"存的是用户 id，姓名是读出来的</h2>
+ * {@code publisherId} / {@code assigneeId} / {@code currentExecutorId} 是 {@code agent_user.id}
+ * （库里就是这三列），而 {@code publisher} / {@code assignee} / {@code currentExecutor}
+ * 是读侧按 id 关联账号表查出来的<b>姓名</b>，不落库（见 {@code AgentTaskMapper.xml}）。
+ * 两者一起带着走是刻意的：界面要显示的永远是姓名，而"当时是谁"只能由 id 回答 ——
+ * 只带 id 会让每个调用点各自去查一次账号表，只带姓名则账号改名之后就找不到人。
+ *
+ * <p>⚠️ 姓名允许为空：账号那一行不在时（手工清过库）关联查询落空，
+ * 而那一格显示成「未指定任务人」比"这一行读不出来、整张看板打不开"好得多。
+ *
  * <h2>发布人 / 任务人 / 当前执行人：三个字段的分工</h2>
  * <ul>
- *   <li>{@code publisher} 发布人：指派出任务的人 —— 这一次从开始到结束都是他；</li>
- *   <li>{@code assignee} 任务人：交付任务的人 —— 也是开始时的执行人；</li>
- *   <li>{@code currentExecutor} 当前执行人：**这一条现在流转到谁手里** ——
- *       三个"待确认"里是发布人（等他的答复），执行中时是 agent（形如 {@code agent#3}）。
+ *   <li>{@code publisherId} 发布人：指派出任务的人 —— 这一次从开始到结束都是他；</li>
+ *   <li>{@code assigneeId} 任务人：交付任务的人 —— 也是开始时的执行人；</li>
+ *   <li>{@code currentExecutorId} 当前执行人：**这一条现在流转到谁手里** ——
+ *       球在人手上时是他的 id，球在 agent 手上（三个"已确认"与"执行中"）或事情已经结束时为空。
  *       它与前两列是两类东西：前两列是"这件事的人"，它是"此刻的球在谁手上"。</li>
  * </ul>
  *
@@ -18,31 +28,39 @@ import java.time.Instant;
  * 与 {@code Account} 同一条做法：非空、长度、步骤下界都在这里一次写完，
  * 于是所有构造点（HTTP 写入口、从库里读回、将来的导入）共用同一份判据。
  *
- * <h2>发布人 / 任务人：写入路径要求两个都是真实账号，读侧只要求发布人非空</h2>
- * "是不是账号表里真实存在的名字"这条判据不在这里 —— 它要读账号表，所以落在服务层的唯一写入口
- * （{@code DefaultAgentTaskService#realUser}）。读侧<b>不</b>要求任务人非空：库里允许
- * 任务人为空的行（列可为 NULL），而"读到一行就抛"的后果是整张看板打不开，
- * 比把那一格显示成「未指定任务人」坏得多。
+ * <h2>发布人 / 任务人：写入路径要求两个都是真实账号，读侧只要求发布人 id 非空</h2>
+ * "是不是账号表里真实存在的用户"这条判据不在这里 —— 它要读账号表，所以落在服务层的唯一写入口
+ * （{@code DefaultAgentTaskService#realUser}）。读侧<b>不</b>要求任务人存在：
+ * 库里允许任务人为空的行（列可为 NULL），而"读到一行就抛"的后果是整张看板打不开。
  *
  * @param id 主键；未落库时为 {@code null}
- * @param publisher 发布人（非空；姓名快照，不是账号外键，理由见 DDL）
- * @param assignee 任务人（新发布必填，且必须是账号表里存在的名字；库里可能有早期留下的空行）
+ * @param publisherId 发布人的用户 id（非空；指向 {@code agent_user.id}）
+ * @param publisher 发布人的姓名（读侧关联查询得到；账号那一行不在时为空）
+ * @param assigneeId 任务人的用户 id（新发布必填；库里可能有早期留下的空行）
+ * @param assignee 任务人的姓名（读侧关联查询得到；为空时界面显示「未指定任务人」）
  * @param description 任务描述（非空）
  * @param status 状态（链见 {@link AgentTaskStatus}）
- * @param currentExecutor 当前执行人；没人接手时为空
+ * @param currentExecutorId 当前执行人的用户 id；球在 agent 手上或任务已结束时为空
+ * @param currentExecutor 当前执行人的姓名（读侧关联查询得到）
  * @param currentStep 任务当前步骤，从 1 开始
- * @param agentId 交给哪个 Agent 应用；<b>发布时为空</b>，由平台在第一次接手这条任务时写入
- *        （见 {@code AgentTaskProperties#agentId}）
+ * @param agentId 交给哪个 Agent 应用（应用注册表里的 id，字符串）；<b>发布时为空</b>，
+ *        由平台在第一次接手这条任务时写入（见 {@code AgentTaskProperties#agentId}）
  * @param result 执行结果；还没执行完时为空
  * @param cancelReason 取消原因；未取消时为空（取消时必填，判据在服务层的唯一写入口）
  * @param createdAt 落库时间（未落库时为 {@code null}）
  * @param updatedAt 最近一次变更时间（未落库时为 {@code null}）
  */
-public record AgentTask(Long id, String publisher, String assignee, String description, AgentTaskStatus status,
-		String currentExecutor, int currentStep, Long agentId, String result, String cancelReason,
-		Instant createdAt, Instant updatedAt) {
+public record AgentTask(Long id, Long publisherId, String publisher, Long assigneeId, String assignee,
+		String description, AgentTaskStatus status, Long currentExecutorId, String currentExecutor, int currentStep,
+		String agentId, String result, String cancelReason, Instant createdAt, Instant updatedAt) {
 
-	/** 与 DDL 的 {@code publisher VARCHAR(128)} / {@code current_executor VARCHAR(128)} 对齐。 */
+	/** 与 DDL 的 {@code agent_id VARCHAR(128)} 对齐。 */
+	public static final int MAX_AGENT_ID_CHARS = 128;
+
+	/**
+	 * 姓名的应用级上限。真正的宽度在账号表那边（{@code agent_user.name VARCHAR(64)}），
+	 * 这里给一倍余量只作兜底 —— 姓名是读出来的一格，不该因为对方列宽变了就把整张看板读挂。
+	 */
 	public static final int MAX_NAME_CHARS = 128;
 
 	/**
@@ -56,15 +74,17 @@ public record AgentTask(Long id, String publisher, String assignee, String descr
 	public static final int MAX_REASON_CHARS = 512;
 
 	public AgentTask {
-		publisher = required(publisher, "发布人", MAX_NAME_CHARS);
-		assignee = blankToNull(assignee, "任务人", MAX_NAME_CHARS);
+		publisherId = requiredId(publisherId, "发布人");
+		publisher = blankToNull(publisher);
+		assignee = blankToNull(assignee);
 		description = required(description, "任务描述", MAX_DESCRIPTION_CHARS);
 		status = status == null ? AgentTaskStatus.NEW : status;
-		currentExecutor = blankToNull(currentExecutor, "当前执行人", MAX_NAME_CHARS);
+		currentExecutor = blankToNull(currentExecutor);
 		if (currentStep < 1) {
 			throw new IllegalArgumentException("任务步骤从 1 开始，实际是 " + currentStep
 					+ "（新发布也记 1 —— 它表示「停在第 1 步还没开始」，界面上没有第 0 步这个东西）");
 		}
+		agentId = blankToNull(agentId, "Agent 应用 id", MAX_AGENT_ID_CHARS);
 		result = blankToNull(result, "执行结果", MAX_DESCRIPTION_CHARS);
 		cancelReason = blankToNull(cancelReason, "取消原因", MAX_REASON_CHARS);
 	}
@@ -78,26 +98,67 @@ public record AgentTask(Long id, String publisher, String assignee, String descr
 	 * 发布人不填它，值由平台在第一次接手这条任务时写入。
 	 * 调用方没有机会把它们拼错，也没有机会把 agentId 塞进来。
 	 *
-	 * <p>发布人与任务人都<b>必填</b>（空字符串在这里就被拒）：
-	 * "这两个名字在账号表里存不存在"是服务层的事（它才拿得到账号表），
+	 * <p>发布人与任务人<b>都要给全</b>（id 与姓名，空字符串在这里就被拒）：
+	 * "这两个用户在账号表里存不存在"是服务层的事（它才拿得到账号表），
 	 * 而"有没有填"是这一层就能拦下的。
 	 */
-	public static AgentTask draft(String publisher, String assignee, String description) {
-		String normalizedAssignee = required(assignee, "任务人", MAX_NAME_CHARS);
-		return new AgentTask(null, publisher, normalizedAssignee, description, AgentTaskStatus.NEW,
-				normalizedAssignee, 1, null, null, null, null, null);
+	public static AgentTask draft(Long publisherId, String publisher, Long assigneeId, String assignee,
+			String description) {
+		return new AgentTask(null, publisherId, publisher, requiredId(assigneeId, "任务人"),
+				required(assignee, "任务人姓名", MAX_NAME_CHARS), description, AgentTaskStatus.NEW, assigneeId,
+				assignee, 1, null, null, null, null, null);
 	}
 
-	/** 执行中时的当前执行人写法（形如 {@code agent#3}；这条任务还没被平台接手时是 {@code agent}）。 */
-	public static String agentRef(Long agentId) {
+	/** agent 执行时"当前执行人"的写法（形如 {@code agent#my-app}；没配 agent id 时是 {@code agent}）。 */
+	public static String agentRef(String agentId) {
 		return agentId == null ? "agent" : "agent#" + agentId;
+	}
+
+	/**
+	 * 「当前执行人」那一格该显示的字。它是<b>后端给的文案</b>，与 {@code statusLabel} / {@code answerLabel}
+	 * 同一条规矩：前端不自己拼一份，两处各拼一次迟早不一致。
+	 *
+	 * <p>三种落点：
+	 * <ul>
+	 *   <li>那一列有值（球在某个账号手上）→ 关联查询出来的姓名（账号那一行不在时退回 id）；</li>
+	 *   <li>那一列为空而任务没结束 → 球在 agent 手上，给 {@link #agentRef()}；</li>
+	 *   <li>任务已结束、或这列空而 agent 也还没接手过 → 空串（界面显示「（无）」）。</li>
+	 * </ul>
+	 *
+	 * <p>第二条成立的前提是发布人 id 非空（列 NOT NULL）：三个"待确认"、「权限不足」与「待验收」
+	 * 的球都在发布人手上，所以非终态里"这一列为空"只可能是球在 agent 手上那四格
+	 * （见 {@code AgentTaskTransitions#executorFor}）。
+	 */
+	public String executorLabel() {
+		if (currentExecutorId != null) {
+			return currentExecutor == null ? "用户#" + currentExecutorId : currentExecutor;
+		}
+		if (status.terminal() || agentId == null) {
+			return "";
+		}
+		return agentRef(agentId);
 	}
 
 	/** 一行说明（日志用）。 */
 	public String describe() {
 		return "#" + (id == null ? "(未落库)" : id) + " " + status.label() + " · 步骤 " + currentStep
-				+ " · " + publisher + " → " + (assignee == null ? "(未指定任务人)" : assignee)
-				+ " · 当前执行人 " + (currentExecutor == null ? "(无)" : currentExecutor);
+				+ " · " + who(publisherId, publisher, "发布人") + " → " + who(assigneeId, assignee, "未指定任务人")
+				+ " · 当前执行人 " + (executorLabel().isEmpty() ? "(无)" : executorLabel());
+	}
+
+	/** 日志里一个人的写法：有姓名就用姓名，账号查不到（姓名落空）时退回 id。 */
+	private static String who(Long id, String name, String whenMissing) {
+		if (id == null) {
+			return "（" + whenMissing + "）";
+		}
+		return name == null ? "用户#" + id : name;
+	}
+
+	private static Long requiredId(Long value, String what) {
+		if (value == null) {
+			throw new IllegalArgumentException(what + "不能为空（任务记录里存的是用户 id）");
+		}
+		return value;
 	}
 
 	private static String required(String value, String what, int max) {
@@ -105,6 +166,10 @@ public record AgentTask(Long id, String publisher, String assignee, String descr
 			throw new IllegalArgumentException(what + "不能为空");
 		}
 		return fit(value.strip(), what, max);
+	}
+
+	private static String blankToNull(String value) {
+		return value == null || value.isBlank() ? null : value.strip();
 	}
 
 	private static String blankToNull(String value, String what, int max) {

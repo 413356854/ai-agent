@@ -44,8 +44,8 @@ public class TaskSchemaCheck implements InitializingBean {
 	private static final Map<String, List<String>> REQUIRED = new LinkedHashMap<>();
 
 	static {
-		REQUIRED.put("agent_task", List.of("id", "publisher", "assignee", "description", "status",
-				"current_executor", "current_step", "agent_id", "result", "cancel_reason"));
+		REQUIRED.put("agent_task", List.of("id", "publisher_id", "assignee_id", "description", "status",
+				"current_executor_id", "current_step", "agent_id", "result", "cancel_reason"));
 		REQUIRED.put("agent_task_confirm", List.of("id", "task_id", "step_index", "confirm_type", "description",
 				"option_set", "answer"));
 	}

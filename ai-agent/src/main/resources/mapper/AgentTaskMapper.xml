@@ -9,20 +9,29 @@
 
   ⚠️ 插入与取键是两条语句、两次调用（LAST_INSERT_ID() 是连接级的），
   理由与三条实测的弯路见 AgentTaskMapper 的类注释。
+
+  ⚠️ 三个"人"的列存的是 agent_user.id，姓名**由这里关联查询出来**（publisher_name /
+  assignee_name / current_executor_name）—— 表里没有姓名列，所以读侧必须带这三个 LEFT JOIN，
+  少一个那一格就会静默变成空串（界面显示「未指定任务人」，看起来像真的没指派）。
+  ⚠️ LEFT 而不是 INNER：账号那一行万一不在（手工清过库），任务行照样读得出来，代价只是姓名那一格为空；
+  INNER JOIN 会让那条任务从看板上消失，而"卡片不见了"是这一页最难发现的一种坏法。
 -->
 <mapper namespace="ai.agent.mapper.AgentTaskMapper">
 
 	<resultMap id="agentTaskRow" type="ai.agent.mapper.MapperRows$AgentTaskRow">
 		<constructor>
 			<idArg column="id" javaType="java.lang.Long"/>
-			<arg column="publisher" javaType="java.lang.String"/>
-			<arg column="assignee" javaType="java.lang.String"/>
+			<arg column="publisher_id" javaType="java.lang.Long"/>
+			<arg column="publisher_name" javaType="java.lang.String"/>
+			<arg column="assignee_id" javaType="java.lang.Long"/>
+			<arg column="assignee_name" javaType="java.lang.String"/>
 			<arg column="description" javaType="java.lang.String"/>
 			<arg column="status" javaType="java.lang.String"/>
-			<arg column="current_executor" javaType="java.lang.String"/>
+			<arg column="current_executor_id" javaType="java.lang.Long"/>
+			<arg column="current_executor_name" javaType="java.lang.String"/>
 			<!-- 计数列用包装类型：构造器映射对基本类型会在实例化时匹配失败（见 MapperRows 的类注释） -->
 			<arg column="current_step" javaType="java.lang.Integer"/>
-			<arg column="agent_id" javaType="java.lang.Long"/>
+			<arg column="agent_id" javaType="java.lang.String"/>
 			<arg column="result" javaType="java.lang.String"/>
 			<arg column="cancel_reason" javaType="java.lang.String"/>
 			<arg column="created_at" javaType="java.time.Instant"
@@ -32,9 +41,20 @@
 		</constructor>
 	</resultMap>
 
+	<!-- 一条任务的全部列（含三个人的姓名）。别名与 resultMap 里的 column 逐字对应 -->
 	<sql id="taskColumns">
-		id, publisher, assignee, description, status, current_executor, current_step, agent_id, result,
-		cancel_reason, created_at, updated_at
+		t.id, t.publisher_id, publisher_user.name AS publisher_name,
+		t.assignee_id, assignee_user.name AS assignee_name,
+		t.current_executor_id, executor_user.name AS current_executor_name,
+		t.description, t.status, t.current_step, t.agent_id, t.result, t.cancel_reason, t.created_at, t.updated_at
+	</sql>
+
+	<!-- 三个 LEFT JOIN 是"姓名从哪来"的唯一出处（理由见文件头） -->
+	<sql id="taskFrom">
+		FROM agent_task t
+		LEFT JOIN agent_user publisher_user ON publisher_user.id = t.publisher_id
+		LEFT JOIN agent_user assignee_user ON assignee_user.id = t.assignee_id
+		LEFT JOIN agent_user executor_user ON executor_user.id = t.current_executor_id
 	</sql>
 
 	<!--
@@ -42,8 +62,8 @@
 	  于是"这条任务交给哪个 Agent 应用"只有一个来源，发布人给不了它。
 	-->
 	<insert id="insert">
-		INSERT INTO agent_task (publisher, assignee, description, status, current_executor, current_step)
-		VALUES (#{publisher}, #{assignee}, #{description}, #{status}, #{currentExecutor}, #{currentStep})
+		INSERT INTO agent_task (publisher_id, assignee_id, description, status, current_executor_id, current_step)
+		VALUES (#{publisherId}, #{assigneeId}, #{description}, #{status}, #{currentExecutorId}, #{currentStep})
 	</insert>
 
 	<select id="lastInsertId" resultType="java.lang.Long">
@@ -51,7 +71,9 @@
 	</select>
 
 	<select id="findById" resultMap="agentTaskRow">
-		SELECT <include refid="taskColumns"/> FROM agent_task WHERE id = #{id}
+		SELECT <include refid="taskColumns"/>
+		<include refid="taskFrom"/>
+		WHERE t.id = #{id}
 	</select>
 
 	<!--
@@ -62,26 +84,28 @@
 	-->
 	<select id="findNextPending" resultMap="agentTaskRow">
 		SELECT <include refid="taskColumns"/>
-		  FROM agent_task
-		 WHERE status IN
+		<include refid="taskFrom"/>
+		 WHERE t.status IN
 		<foreach item="status" collection="statuses" open="(" separator="," close=")">#{status}</foreach>
 		<!-- 这一轮已经失败过的不再取：它没被改动过，所以下一个查询还会排在最前面 -->
 		<if test="excluded != null and !excluded.isEmpty()">
-		   AND id NOT IN
+		   AND t.id NOT IN
 			<foreach item="id" collection="excluded" open="(" separator="," close=")">#{id}</foreach>
 		</if>
-		 ORDER BY updated_at, id
+		 ORDER BY t.updated_at, t.id
 		 LIMIT 1
 	</select>
 
 	<!-- 看板一次取全量。排序的兜底见 AgentTaskMapper#list 的注释（updated_at 是秒精度，同秒用 id 倒序） -->
 	<select id="list" resultMap="agentTaskRow">
-		SELECT <include refid="taskColumns"/> FROM agent_task ORDER BY updated_at DESC, id DESC
+		SELECT <include refid="taskColumns"/>
+		<include refid="taskFrom"/>
+		ORDER BY t.updated_at DESC, t.id DESC
 	</select>
 
 	<update id="updateProgress">
 		UPDATE agent_task
-		   SET status = #{status}, current_executor = #{currentExecutor}, current_step = #{currentStep}
+		   SET status = #{status}, current_executor_id = #{currentExecutorId}, current_step = #{currentStep}
 		 WHERE id = #{id}
 	</update>
 

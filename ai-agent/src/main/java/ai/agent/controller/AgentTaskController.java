@@ -27,18 +27,19 @@ import java.util.Map;
  *
  * <h2>端点与它回答的问题</h2>
  * <table border="1">
- *   <caption>六个端点</caption>
+ *   <caption>七个端点</caption>
  *   <tr><th>端点</th><th>回答什么</th></tr>
  *   <tr><td>{@code GET /api/agent-tasks}</td><td>"现在有哪些任务、各自在哪一列"（看板一次取回）</td></tr>
  *   <tr><td>{@code GET /api/agent-tasks/{id}}</td><td>"这条任务走到哪了、每一步是谁怎么答的、现在能做什么"</td></tr>
  *   <tr><td>{@code POST /api/agent-tasks}</td><td>"发布一条任务"</td></tr>
- *   <tr><td>{@code POST …/{id}/advance}</td><td>"推进当前事件"（发起需求确认 / 登记执行结果 / 验收通过）</td></tr>
+ *   <tr><td>{@code POST …/{id}/advance}</td><td>"推进当前事件"（登记执行结果 / 验收通过）</td></tr>
  *   <tr><td>{@code POST …/{id}/confirms/{confirmId}/answer}</td><td>"答复这条确认项"</td></tr>
+ *   <tr><td>{@code POST …/{id}/revise}</td><td>"已修改任务"（权限不足 → 新发布，整条链重走一遍）</td></tr>
  *   <tr><td>{@code POST …/{id}/cancel}</td><td>"取消任务"（必须给原因）</td></tr>
  * </table>
  *
  * <h2>为什么写动作是 POST 而不是 PUT</h2>
- * 它们不是"把资源替换成请求体里这一份"，而是"请执行这个事件"（推进、答复、取消）——
+ * 它们不是"把资源替换成请求体里这一份"，而是"请执行这个事件"（推进、答复、重发、取消）——
  * 同一次请求重放两次的后果也不同（第二次会被状态机挡下并回 409，而不是得到一个相同结果）。
  *
  * <h2>为什么每个写动作返回的是"改完之后的那一份"</h2>
@@ -124,6 +125,17 @@ public class AgentTaskController {
 		return write(tasks.answer(id, confirmId, request == null ? null : request.answer()));
 	}
 
+	/**
+	 * 「已修改任务」：权限不足 → 新发布。
+	 *
+	 * <p><b>没有请求体</b>：这一格要的是一次选择（取消还是重走一遍），而不是一段说明 ——
+	 * 界面上那两个按钮就是全部输入。要写"改了什么"的话，那是任务描述与权限配置该回答的事。
+	 */
+	@PostMapping(path = "/{id}/revise")
+	public Map<String, Object> revise(@PathVariable Long id) {
+		return write(tasks.revise(id));
+	}
+
 	@PostMapping(path = "/{id}/cancel", consumes = MediaType.APPLICATION_JSON_VALUE)
 	public Map<String, Object> cancel(@PathVariable Long id, @RequestBody CancelRequest request) {
 		return write(tasks.cancel(id, request == null ? null : request.reason()));
@@ -168,15 +180,31 @@ public class AgentTaskController {
 		return body;
 	}
 
+	/**
+	 * 一条任务装配成响应体。
+	 *
+	 * <p>三个"人"各给两份：{@code publisherId} / {@code assigneeId} / {@code currentExecutorId}
+	 * 是库里存的那一份（用户 id），{@code publisher} / {@code assignee} / {@code currentExecutor}
+	 * 是读侧关联账号表查出来的姓名、也就是界面直接显示的那一份。两份都给是因为它们回答的
+	 * 不是同一个问题："当时是谁"要能落到一个不会变的 id 上，而屏幕上要显示的是姓名
+	 * （姓名可以改，见 {@code db/task-schema.sql}）。
+	 *
+	 * <p>⚠️ {@code currentExecutor} 是<b>文案</b>而不是库里的原值：球在 agent 手上时它给的是
+	 * {@code agent#<agentId>}（那一列此刻是空的）。理由与 {@code statusLabel} 同一条 ——
+	 * 用户看到的字由后端给，前端不自己拼一份，否则两处说法迟早不一致。
+	 */
 	private static Map<String, Object> task(AgentTask task) {
 		Map<String, Object> row = new LinkedHashMap<>();
 		row.put("id", task.id());
-		row.put("publisher", task.publisher());
+		row.put("publisherId", task.publisherId());
+		row.put("publisher", task.publisher() == null ? "" : task.publisher());
+		row.put("assigneeId", task.assigneeId());
 		row.put("assignee", task.assignee() == null ? "" : task.assignee());
 		row.put("description", task.description());
 		row.put("status", task.status().name());
 		row.put("statusLabel", task.status().label());
-		row.put("currentExecutor", task.currentExecutor() == null ? "" : task.currentExecutor());
+		row.put("currentExecutorId", task.currentExecutorId());
+		row.put("currentExecutor", task.executorLabel());
 		row.put("currentStep", task.currentStep());
 		row.put("agentId", task.agentId());
 		// 结果与取消原因刻意保留 null：它们的"还没有"是有含义的，
@@ -213,9 +241,10 @@ public class AgentTaskController {
 	/**
 	 * 发布任务的请求体：三个字段<b>都必填</b>。
 	 *
-	 * <p>{@code publisher} / {@code assignee} 是人的名字，而它们必须是账号表里存在的真实用户 ——
+	 * <p>{@code publisher} / {@code assignee} 是人的<b>登录名</b>（不是用户 id）：
+	 * 它们必须是账号表里真实存在的用户，落库的是查出来的那两个 id ——
 	 * 判据在服务层（{@code DefaultAgentTaskService#realUser}），它读得到账号表；
-	 * 这里只拦"根本没传"。{@code assignee} 不再是可空的"先建任务、后指派"：
+	 * 这里只拦"根本没传"。{@code assignee} 不是可空的"先建任务、后指派"：
 	 * 一条没有任务人的任务，第一步（需求确认）就不知道该问谁。
 	 *
 	 * <p><b>没有 agentId</b>：那一列由平台在第一次接手这条任务时写入

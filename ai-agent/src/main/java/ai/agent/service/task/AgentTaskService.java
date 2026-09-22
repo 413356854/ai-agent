@@ -9,7 +9,7 @@ import java.util.List;
 /**
  * agent 任务的读写契约（应用管理区 · agent任务）。
  *
- * <h2>四个写动作，各对应链上的一段</h2>
+ * <h2>五个写动作，各对应链上的一段</h2>
  * <table border="1">
  *   <caption>动作与它推着链走的那一格</caption>
  *   <tr><th>动作</th><th>允许的状态</th><th>之后到哪</th></tr>
@@ -18,6 +18,7 @@ import java.util.List;
  *       <td>执行中 / 待验收</td>
  *       <td>待验收（登记执行结果，人工兜底）/ 已完成</td></tr>
  *   <tr><td>{@link #answer}</td><td>三个"待确认"</td><td>对应的"已确认"那一格（已确认需求 / 已确认计划 / 已授权）</td></tr>
+ *   <tr><td>{@link #revise}</td><td>权限不足</td><td>新发布（用户答复「已修改任务」，整条链重走一遍）</td></tr>
  *   <tr><td>{@link #cancel}</td><td>任一非终态</td><td>已取消（写取消原因）</td></tr>
  * </table>
  *
@@ -27,11 +28,14 @@ import java.util.List;
  * "新发布 → 待确认需求"这一步现在由执行器先判断需求有没有歧义再决定，
  * 人工那条路会让同一条任务有两个不同的第一条确认项。
  *
- * <h2>为什么"推进"与"答复"是两个动作而不是一个</h2>
+ * <h2>为什么"推进"、"答复"与"重发"是三个动作而不是一个</h2>
  * 回答一个问题（{@code answer}）与报告一件事发生了（{@code advance}）在链上填的格子不同：
  * 前者必须对上当步的那条确认项，后者没有对象可对。合成一个之后，
  * "这一条请求到底是答复还是推进"要靠请求体里有没有 confirmId 去猜 ——
  * 而猜错的形态是"答复被当成推进执行了"（一次静默的状态跳格）。
+ * {@code revise} 与两者都不同：它是这条链上<b>唯一往回走</b>的一步（回到新发布重新走一遍），
+ * 拿 {@code advance} 兼职的后果是"登记执行结果"与"重新发布"共用一个入口，
+ * 而两者对同一条任务的影响完全不同（一个往前走、一个从头来）。
  *
  * <h2>为什么每个写动作返回 {@link Detail} 而不是一个 ok</h2>
  * 与 {@code PermissionController} 同一条取舍：返回 {@code {"ok":true}} 之后界面只能重新拉一次，
@@ -51,7 +55,8 @@ public interface AgentTaskService {
 	 *
 	 * <p>发布人与任务人<b>都是必填的真实用户</b>：两个名字都要在账号表里存在
 	 * （界面上的做法是搜索后从下拉里选，见 {@code PermissionController#searchUsers}）——
-	 * 任务记录存的是姓名快照，错字不会被任何数据库约束拦下。
+	 * 落库的是查出来的两个用户 id（见 {@code agent_task.publisher_id}），
+	 * 而账号表里查不到的名字不会有任何约束拦下这条任务。
 	 *
 	 * <p><b>没有 agentId 这个入参</b>：它由平台在第一次接手这条任务时写入
 	 * （见 {@code AgentTaskProperties#agentId}）。
@@ -63,6 +68,15 @@ public interface AgentTaskService {
 
 	/** 答复一条确认项；答完按状态链推进并生成下一条确认项。 */
 	Detail answer(Long id, Long confirmId, String answer);
+
+	/**
+	 * 答复「已修改任务」：权限不足 → 新发布，整条链重走一遍。
+	 *
+	 * <p>这一格等的是"用户改了任务或改了权限"，而这件事没法从这个接口的入参里判断 ——
+	 * 它由用户在界面上答复（按钮就是「已修改任务」）。判据只有一条：当前状态必须是
+	 * {@link AgentTaskStatus#INSUFFICIENT_PERMISSION}。
+	 */
+	Detail revise(Long id);
 
 	/** 取消任务。取消原因必填 —— 一条没有原因的取消记录，事后只能靠回忆。 */
 	Detail cancel(Long id, String reason);
@@ -83,13 +97,18 @@ public interface AgentTaskService {
 	 * 它们对看板是同一件事：球在 agent 手上，人不该去点它 ——
 	 * 分成四列的话，一眼看去像是"有四件事在等人"，而实际上没有一件在等人。
 	 * 四个状态的进度差别靠卡片上的状态标签表达。
+	 *
+	 * <p>{@link #PENDING} 一列收**四个**状态（三个"待确认"与"权限不足"）：它们等的东西不同
+	 * （答复确认项 / 处置一次权限不足），但对看板的答案是同一个 —— <b>有四件事在等人，球都在人手上</b>。
+	 * 「权限不足」单开一列的话，那一列在多数时候是空的，而"现在有几件事在等我"这个唯一的问题
+	 * 反而要被两个列名拼起来才答得出。两者的区别靠卡片上的状态标签与动作（答复确认项 / 已修改任务）表达。
 	 */
 	enum Column {
 
 		NEW_TASK("new", "新任务", List.of(AgentTaskStatus.NEW)),
 
 		PENDING("pending", "待处理", List.of(AgentTaskStatus.PENDING_REQUIREMENT, AgentTaskStatus.PENDING_PLAN,
-				AgentTaskStatus.PENDING_AUTHORIZATION)),
+				AgentTaskStatus.PENDING_AUTHORIZATION, AgentTaskStatus.INSUFFICIENT_PERMISSION)),
 
 		EXECUTING("executing", "执行中", List.of(AgentTaskStatus.CONFIRMED_REQUIREMENT,
 				AgentTaskStatus.CONFIRMED_PLAN, AgentTaskStatus.AUTHORIZED, AgentTaskStatus.EXECUTING)),
@@ -164,9 +183,9 @@ public interface AgentTaskService {
 	/**
 	 * 一个可做的动作。
 	 *
-	 * @param key 动作标识：{@code advance} / {@code answer} / {@code cancel}
-	 * @param label 按钮上那句话（同一动作在不同状态下说法不同：新发布是「发起需求确认」，
-	 *        执行中是「登记执行结果」）
+	 * @param key 动作标识：{@code advance} / {@code answer} / {@code revise} / {@code cancel}
+	 * @param label 按钮上那句话（同一动作在不同状态下说法不同：执行中是「登记执行结果」，
+	 *        待验收是「验收通过」，权限不足是「已修改任务」）
 	 */
 	record Action(String key, String label) {
 	}

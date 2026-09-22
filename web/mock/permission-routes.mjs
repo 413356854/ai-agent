@@ -131,6 +131,15 @@ export function findMockAccount(name) {
   return state.users.find(u => u.name.toLowerCase() === wanted)
 }
 
+/**
+ * 按 id 取一个账号 —— **导出给 task-routes 用**：任务记录里存的是用户 id
+ * （`agent_task.publisher_id` / `assignee_id` / `current_executor_id`），
+ * 卡片上显示的姓名要按 id 查回来（与真后端读侧的三个 LEFT JOIN 同一件事）。
+ */
+export function findMockAccountById(id) {
+  return id == null ? undefined : state.users.find(u => u.id === Number(id))
+}
+
 /** 现有全部登录名（400 的报错里要能说清"可用的是谁"）。 */
 export function mockAccountNames() {
   return state.users.map(u => u.name)
@@ -175,6 +184,53 @@ function permissionsOf(user) {
   const tools = allTools ? AVAILABLE_TOOLS : [...new Set(roles.flatMap(r => r.tools.map(t => t.toolName)))]
   const directories = roles.flatMap(r => r.directories)
   return { roles, allTools, tools, directories }
+}
+
+/**
+ * 一个账号当前实际拥有的权限（并集）+ 它可不可用 —— **导出给 task-routes 用**。
+ *
+ * <p>任务的授权判断（真后端是 `TaskFileAuthorization`）读的就是这份数据：
+ * 账号表与角色表只有一份，两边各写一份的话，"假后端说这个人有目录授权、真端点说没有"
+ * 只会表现为自检里一句看不懂的结论差异。
+ *
+ * @returns 账号不存在时 null；否则 `{name, usable, allTools, toolNames, dirPrefixes}`
+ */
+export function mockPermissionsOf(name) {
+  return permissionsViewOf(findMockAccount(name))
+}
+
+/**
+ * 同一个东西，按**用户 id** 取。
+ *
+ * <p>任务那一边走这一条：真后端的 `TaskFileAuthorization.judge` 拿的是
+ * `agent_task.assignee_id`（用户 id），不是姓名 —— 姓名是可以改的。
+ *
+ * @returns 账号不存在时 null；否则与 {@link mockPermissionsOf} 同形
+ */
+export function mockPermissionsOfId(userId) {
+  return permissionsViewOf(findMockAccountById(userId))
+}
+
+function permissionsViewOf(user) {
+  if (!user) return null
+  const permissions = permissionsOf(user)
+  return {
+    name: user.name,
+    usable: user.status === 'ENABLED',
+    allTools: permissions.allTools,
+    toolNames: permissions.tools,
+    dirPrefixes: permissions.directories.map(d => d.prefix),
+  }
+}
+
+/**
+ * 某条目录前缀覆盖不覆盖一个目录（与真后端 `RoleDirectory.covers` 同一套判据）。
+ *
+ * <p>导出给 task-routes：判据（怎么比路径）留在这里，结论怎么写（哪些话要说给用户）
+ * 留任务那一侧 —— 与真后端"`RoleDirectory` 管比较、`TaskFileAuthorization` 管措辞"同一分工。
+ */
+export function mockCoversDirectory(prefix, dir) {
+  return covers(prefix, dir)
 }
 
 function verdictFor(accountName, toolName, dir) {

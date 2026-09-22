@@ -21,6 +21,8 @@ export interface UseTasksResult {
   create: (payload: { publisher: string; assignee: string; description: string }) => Promise<boolean>
   advance: (id: number, result?: string) => Promise<boolean>
   answer: (id: number, confirmId: number, answer: string) => Promise<boolean>
+  /** 答复「已修改任务」：权限不足 → 新发布（整条链重走一遍）。 */
+  revise: (id: number) => Promise<boolean>
   cancel: (id: number, reason: string) => Promise<boolean>
 }
 
@@ -137,6 +139,12 @@ export function useTasks(active: boolean): UseTasksResult {
       return `已答复「${text}」—— 任务 #${id} 现在是「${r.task.statusLabel}」（第 ${r.task.currentStep} 步）`
     }), [mutate])
 
+  const revise = useCallback(async (id: number) =>
+    mutate('重新发布任务', async () => {
+      const r = await taskApi.revise(id)
+      return `已答复「已修改任务」—— 任务 #${id} 回到「${r.task.statusLabel}」（第 ${r.task.currentStep} 步），会重新走一遍`
+    }), [mutate])
+
   const cancel = useCallback(async (id: number, reason: string) =>
     mutate('取消任务', async () => {
       const r = await taskApi.cancel(id, reason)
@@ -166,6 +174,7 @@ export function useTasks(active: boolean): UseTasksResult {
     create,
     advance,
     answer,
+    revise,
     cancel,
   }
 }

@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------
  * 与 permission-routes / prompt-routes 同一条纪律：**有写端点，就必须有 __reset**
  * ---------------------------------------------------------------------------
- * 这一组有四个写端点（发布 / 推进 / 答复 / 取消），界面自检要验的正是
+ * 这一组有五个写端点（发布 / 推进 / 答复 / 重发 / 取消），界面自检要验的正是
  * "点一下之后卡片真的换了列、确认项真的多了一条"。所以状态是**进程内可变**的，
  * 并且必须提供 `POST /api/agent-tasks/__reset` —— 否则自检跑第二遍时会继承第一遍改出来的任务。
  *
@@ -16,7 +16,8 @@
  *      而"两个人在看同一张看板"正是这个码最常见的来源；
  *   2. 缺参数（没发布人 / 空答复 / 取消不写原因）→ 400 带一句能照做的话。
  * 另外整条状态链（新发布 → 待确认需求 → 已确认需求 → 待确认计划 → 已确认计划 →
- * 待授权 → 已授权 → 执行中 → 待验收 → 已完成）与"答复之后落到哪一格"必须逐条照搬 ——
+ * 待授权 → 已授权 → 执行中 → 待验收 → 已完成，以及授权判断不通过时的「权限不足」）
+ * 与"答复之后落到哪一格"必须逐条照搬 ——
  * 假后端不实现的话，"卡片会不会换列"这件事在自检里永远走不到，而那是这一页的全部内容。
  *
  * ---------------------------------------------------------------------------
@@ -26,7 +27,10 @@
  * 判定调模型、执行跑 Agent 运行。假后端不调模型、也不跑运行，而是给一套**可判定的规则**：
  *   - 描述里带「需要补充」→ 判成"有歧义"（真后端这一步是模型判定）；
  *   - 描述里带「小任务」→ 拆出 2 个任务点（走"跳过计划确认"那条路），否则拆出 5 个
- *     （阈值 5 与真后端的 `ai.agent.task.plan-confirm-threshold` 一致）。
+ *     （阈值 5 与真后端的 `ai.agent.task.plan-confirm-threshold` 一致）；
+ *   - **授权判断**（真后端是 `TaskFileAuthorization`）：任务人角色的目录前缀覆盖不覆盖
+ *     这次要动的工作目录（常量 `TASK_WORKSPACE`）—— 不通过就进「权限不足」，
+ *     通过才生成授权确认项。任务人的角色数据读的是 permission-routes 那一份（账号表只有一份）。
  * 而且**不自动跑**：跟着写端点自动推的话，"发布之后卡片落在哪一列"会取决于推的时机，
  * 自检就没法断言了。所以用 `__run-agent` 显式推一轮（一轮 = 把所有待 agent 的任务推到推不动为止，
  * 与真后端"串行、一次一条、按变更时间"的结果一致）。
@@ -35,10 +39,16 @@
  * 初始数据刻意覆盖**每一列**
  * ---------------------------------------------------------------------------
  * 五列都要有卡片，看板的分组才验得出来；「执行中」那一列刻意放**四张**：
- * 已确认需求 / 已确认计划 / 已授权 / 执行中 —— 四个状态归并到一列是这一版新增的判据，
+ * 已确认需求 / 已确认计划 / 已授权 / 执行中 —— 四个状态归并到一列是这一版的判据，
  * 只放一张就看不出这件事。「已完成」那一列放**两条**：一条验收通过的、一条已取消的
  * （这一列也收两个状态），已取消那条带着取消原因，自检要断言"原因显示在卡片上"
  * （它是两者唯一的区别）。
+ * 「待处理」那一列放**四条**（三个"待确认" + 「权限不足」）：前者等的是确认项的答复、
+ * 后者等的是"取消还是重走一遍"，两种动作在同一列里靠卡片上的状态标签与详情里的按钮区分。
+ *
+ * ⚠️ 任务人是 `zhou`（没有角色）的卡片只出现在**授权判断之前**的状态上
+ * （新发布 / 待确认需求 / 待确认计划）或「权限不足」那一格 —— 他没有目录授权，
+ * 按这套判据走不到「已授权」「执行中」这些格子上。
  *
  * ---------------------------------------------------------------------------
  * 发布任务：两个名字都要在账号表里，agentId 不由发布人给
@@ -46,10 +56,18 @@
  * `publisher` 与 `assignee` **都必填**，且都要能在 permission-routes 那份账号表里找到
  * （`realUser`，与真后端 `DefaultAgentTaskService#realUser` 是同一句话）——
  * 账号表只有一份，两份会让"假后端说这个人是真的、真端点说不存在"只表现为自检里一句 400。
+ * 落库的是查出来的那两个账号 **id**（`agent_task.publisher_id` / `assignee_id`），
+ * 姓名不落库：卡片上显示的姓名是按 id 查回来的（与真后端读侧那三个 LEFT JOIN 同一件事）。
  * 请求体里的 `agentId` **不被采纳**：它是平台第一次接手这条任务时写进去的（`AGENT_ID`）。
  */
 
-import { findMockAccount, mockAccountNames } from './permission-routes.mjs'
+import {
+  findMockAccount,
+  findMockAccountById,
+  mockAccountNames,
+  mockCoversDirectory,
+  mockPermissionsOfId,
+} from './permission-routes.mjs'
 
 const STATUS_LABELS = {
   NEW: '新发布',
@@ -58,6 +76,7 @@ const STATUS_LABELS = {
   PENDING_PLAN: '待确认计划',
   CONFIRMED_PLAN: '已确认计划',
   PENDING_AUTHORIZATION: '待授权',
+  INSUFFICIENT_PERMISSION: '权限不足',
   AUTHORIZED: '已授权',
   EXECUTING: '执行中',
   PENDING_ACCEPTANCE: '待验收',
@@ -74,13 +93,19 @@ const CONFIRM_LABELS = {
 /**
  * 列的定义与顺序，与真后端 `AgentTaskService.Column` 逐条一致（前端按 key 画）。
  *
+ * ⚠️ 「待处理」一列收**四个**状态（三个"待确认" + 权限不足）：它们等的东西不同
+ * （答复确认项 / 处置一次权限不足），但对看板是同一个答案 —— 球都在人手上。
  * ⚠️ 「已完成」一列收**两个**状态（已完成与已取消）：两者都是"这件事结束了"，
  * 而给已取消单开一列会让最边缘的结局占掉一整列宽度。区别靠卡片上的状态标签与取消原因表达。
  * ⚠️ 「执行中」一列收**四个**状态：它们对看板是同一件事 —— 球在 agent 手上，人不必点它。
  */
 const COLUMNS = [
   { key: 'new', label: '新任务', statuses: ['NEW'] },
-  { key: 'pending', label: '待处理', statuses: ['PENDING_REQUIREMENT', 'PENDING_PLAN', 'PENDING_AUTHORIZATION'] },
+  {
+    key: 'pending',
+    label: '待处理',
+    statuses: ['PENDING_REQUIREMENT', 'PENDING_PLAN', 'PENDING_AUTHORIZATION', 'INSUFFICIENT_PERMISSION'],
+  },
   {
     key: 'executing',
     label: '执行中',
@@ -98,8 +123,9 @@ const AGENT_STATUSES = ['NEW', 'CONFIRMED_REQUIREMENT', 'CONFIRMED_PLAN', 'AUTHO
  *
  * <p>平台第一次接手一条任务时把它写进 `agent_id`（真后端是
  * `DefaultAgentTaskExecution#stampAgent`），发布人不填这一列。
+ * 它与真后端一样是**字符串**（那一列是 VARCHAR(128)：应用 id 由注册表定义，本仓不假设它像数字）。
  */
-const AGENT_ID = 1
+const AGENT_ID = '1'
 
 /** 三种确认各自默认的选项集（与真后端的缺省按钮同源，见 AgentTaskTransitions#defaultOptions）。 */
 const DEFAULT_OPTIONS = {
@@ -120,9 +146,10 @@ function isAmbiguous(description) {
  * 发布人 / 任务人必须是从账号表里选出来的真实用户 —— 与真后端
  * `DefaultAgentTaskService#realUser` 同一条判据（含同一句话）。
  *
- * <p>名字取账号表里那一行自己的写法：界面把 "Admin" 打进来时，卡片上显示的是 "admin"。
+ * <p>返回的是账号表里那一行本身：落库用它**自己的 id**，卡片上显示它**自己的姓名**
+ * （界面把 "Admin" 打进来时，落库指向 id=1、显示的是 "admin"）。
  *
- * @returns {{name: string}|{error: string}}
+ * @returns {{account: object}|{error: string}}
  */
 function realUser(raw, what) {
   const wanted = raw == null ? '' : String(raw).trim()
@@ -137,7 +164,7 @@ function realUser(raw, what) {
       + `打错一个字不会有任何约束拦下这条任务，它只会挂在一个不存在的人名下。`
       + `假后端现有账号：${mockAccountNames().join('、')}` }
   }
-  return { name: account.name }
+  return { account }
 }
 
 function breakdownOf(description) {
@@ -146,97 +173,179 @@ function breakdownOf(description) {
     : ['读取现状', '列出要改的点', '逐个改动', '跑一遍自检', '整理改动清单']
 }
 
+/**
+ * 这条任务要动的工作目录。
+ *
+ * <p>真后端由模型按任务描述判（`TaskBreakdown.workspaceDir`），假后端固定成一个常量：
+ * 授权判断要回答的是"目录在不在任务人角色的前缀里"，而不是"这个目录是怎么得出来的"。
+ * 它刻意取成与 `permission-routes` 里两个角色都授权过的那个前缀**同一条**，
+ * 于是"有角色的账号能过、没有角色的账号过不了"这两条路都能在自检里走到。
+ */
+const TASK_WORKSPACE = 'D:\\work\\demo'
+
+/**
+ * 授权判断 —— 与真后端 `TaskFileAuthorization.judge` 同一套判据与同一套措辞。
+ *
+ * <p>真后端在这里读的是任务记录里的任务人 **id**（`agent_task.assignee_id`）+
+ * `PermissionResolver` 解析出的角色目录前缀；假后端读的是同一个 id + `mockPermissionsOfId`
+ * （同一份账号与角色数据）。判据只有一条：**这次要动的工作目录必须落在任务人角色的目录前缀里**。
+ * 工具清单只写进结论作提示（真后端也一样：它不参与通过 / 不通过）。
+ *
+ * @returns {{allowed: boolean, reason: string}}
+ */
+function judgeAuthorization(assigneeId) {
+  const permissions = mockPermissionsOfId(assigneeId)
+  if (!permissions) {
+    return {
+      allowed: false,
+      reason: `账号表里没有 id=${assigneeId} 这个人（任务人），判断不了目录「${TASK_WORKSPACE}」的授权 —— `
+        + '他可能已被删掉，请重新指派任务人。',
+    }
+  }
+  if (!permissions.usable) {
+    return {
+      allowed: false,
+      reason: `任务人「${permissions.name}」已停用（status=DISABLED）—— 停用的账号一律没有权限，`
+        + `目录「${TASK_WORKSPACE}」因此不在授权范围内。启用这个账号，或把任务人换成别人。`,
+    }
+  }
+  const matched = permissions.dirPrefixes.find(prefix => mockCoversDirectory(prefix, TASK_WORKSPACE))
+  const tools = grantedWriteTools(permissions)
+  if (matched) {
+    return {
+      allowed: true,
+      reason: `目录「${TASK_WORKSPACE}」在任务人「${permissions.name}」的角色授权范围内（按前缀「${matched}」放行）。`
+        + `任务人角色授予的写文件工具：${tools}。`,
+    }
+  }
+  const authorized = permissions.dirPrefixes.length ? JSON.stringify(permissions.dirPrefixes) : '无'
+  const why = permissions.dirPrefixes.length
+    ? `目录「${TASK_WORKSPACE}」不在任务人「${permissions.name}」的任何角色目录前缀里。`
+    : `任务人「${permissions.name}」没有任何角色 —— 没有角色就是没有任何目录授权。`
+  return {
+    allowed: false,
+    reason: `${why}已授权的目录前缀：${authorized}。任务人角色授予的写文件工具：${tools}。`
+      + `要放行这条任务：在「权限管理」里给这个人的角色加一条覆盖「${TASK_WORKSPACE}」的目录前缀，`
+      + '或者把这条任务要动的目录改到已授权的范围内。',
+  }
+}
+
+/** 任务人角色授予的写文件工具（只作提示，不参与判定；`ALL` 的角色说"全部工具"）。 */
+function grantedWriteTools(permissions) {
+  if (permissions.allTools) return '全部工具'
+  const granted = permissions.toolNames.filter(name => name === 'write_file' || name === 'edit_file')
+  return granted.length ? granted.join('、') : '无'
+}
+
 function planText(actions) {
   return '请确认执行计划（假后端：真后端这一步由模型按任务生成）：\n先读取现状，再按清单逐项改，最后跑一遍自检。'
     + `\n\n拆出来的任务点：\n${actions.map((a, i) => `${i + 1}. ${a}`).join('\n')}`
 }
 
-function authorizationText(actions) {
+function authorizationText(actions, permissionNote) {
   return '请确认授权范围（假后端：真后端这一步由模型按任务生成）：\n允许在工作目录内读写文件、执行自检命令。'
+    + (permissionNote ? `\n\n权限核对：${permissionNote}` : '')
     + `\n\n这次要做的事：\n${actions.map((a, i) => `${i + 1}. ${a}`).join('\n')}`
 }
 
 /**
  * 初始状态。每次 __reset 都从这里重建（深拷贝，避免被就地改坏）。
  *
- * ⚠️ 卡片上的发布人 / 任务人**用的是账号表里真实存在的名字**（admin / zhou / li，见
- * permission-routes 的初始数据）：发布一条任务时那两个名字要过一遍账号表，
- * 而看板上摆着一批"不是账号的人"会让这份假数据自相矛盾 ——
- * 自检也就验不出"下拉里选的人与卡片上显示的是同一个"。
+ * ⚠️ 三个"人"的列存的是**账号表里的用户 id**（admin=1 / zhou=2 / li=3，见 permission-routes
+ * 的初始数据）：发布一条任务时那两个名字要过一遍账号表、落库的是查出来的 id，
+ * 而看板上摆着一批"不是账号的 id"会让这份假数据自相矛盾 ——
+ * 自检也就验不出"下拉里选的人与卡片上显示的是同一个人"。
  * li 是**停用**账号，它出现在一条已取消的任务上：停用与"当时是谁派的、派给谁"是两件事。
+ * `currentExecutorId` 为 null 的含义与真后端一致：球在 agent 手上，或这件事已经结束。
  */
 function initialState() {
   return {
     tasks: [
-      // 新发布：还没有确认项，等 agent 判需求（真后端由定时任务调度）
+      // 新发布：还没有确认项，等 agent 判需求（真后端由定时任务调度）。
+      // 任务人刻意用**有目录授权**的 admin（他那个角色授权了 D:\work\demo，见 TASK_WORKSPACE）：
+      // 自检要把这一条一路推到「待授权」，而权限不足那一条路由下面 id 12（任务人 zhou 没有角色）走
       {
-        id: 1, publisher: 'admin', assignee: 'zhou', description: '整理 9 月项目周报：按周汇总进展与风险',
-        status: 'NEW', currentExecutor: 'zhou', currentStep: 1, agentId: AGENT_ID, result: null, cancelReason: null,
+        id: 1, publisherId: 1, assigneeId: 1, description: '整理 9 月项目周报：按周汇总进展与风险',
+        status: 'NEW', currentExecutorId: 1, currentStep: 1, agentId: AGENT_ID, result: null, cancelReason: null,
       },
       // 待确认需求：需求确认项还没答
       {
-        id: 2, publisher: 'zhou', assignee: 'admin', description: '把检索评测的对比数据整理成一页结论',
-        status: 'PENDING_REQUIREMENT', currentExecutor: 'zhou', currentStep: 1, agentId: AGENT_ID, result: null,
+        id: 2, publisherId: 2, assigneeId: 1, description: '把检索评测的对比数据整理成一页结论',
+        status: 'PENDING_REQUIREMENT', currentExecutorId: 2, currentStep: 1, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
       // 待确认计划：第 1 步已答、agent 拆出 5 个任务点，第 3 步在等
       {
-        id: 3, publisher: 'admin', assignee: 'zhou', description: '给工具调用那一页补一份失败分类的说明',
-        status: 'PENDING_PLAN', currentExecutor: 'admin', currentStep: 3, agentId: null, result: null,
+        id: 3, publisherId: 1, assigneeId: 2, description: '给工具调用那一页补一份失败分类的说明',
+        status: 'PENDING_PLAN', currentExecutorId: 1, currentStep: 3, agentId: null, result: null,
         cancelReason: null,
       },
       // 待授权：计划已答、agent 问到了授权这一格，第 5 步在等
       {
-        id: 4, publisher: 'zhou', assignee: 'admin', description: '把成本看板的单价表换成新合同价',
-        status: 'PENDING_AUTHORIZATION', currentExecutor: 'zhou', currentStep: 5, agentId: AGENT_ID, result: null,
+        id: 4, publisherId: 2, assigneeId: 1, description: '把成本看板的单价表换成新合同价',
+        status: 'PENDING_AUTHORIZATION', currentExecutorId: 2, currentStep: 5, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
-      // 已确认需求：需求答完了，球在 agent 手上（等它拆任务点）
+      // 已确认需求：需求答完了，球在 agent 手上（等它拆任务点）—— 执行人那一格因此是空的
       {
-        id: 5, publisher: 'admin', assignee: 'zhou', description: '清理 dev 分支上过期的实验脚本',
-        status: 'CONFIRMED_REQUIREMENT', currentExecutor: 'agent#1', currentStep: 2, agentId: AGENT_ID, result: null,
+        id: 5, publisherId: 1, assigneeId: 2, description: '清理 dev 分支上过期的实验脚本',
+        status: 'CONFIRMED_REQUIREMENT', currentExecutorId: null, currentStep: 2, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
       // 已确认计划：计划批了，等 agent 问授权
       {
-        id: 6, publisher: 'zhou', assignee: 'admin', description: '给告警规则那一页补三条自检断言',
-        status: 'CONFIRMED_PLAN', currentExecutor: 'agent#1', currentStep: 4, agentId: AGENT_ID, result: null,
+        id: 6, publisherId: 2, assigneeId: 1, description: '给告警规则那一页补三条自检断言',
+        status: 'CONFIRMED_PLAN', currentExecutorId: null, currentStep: 4, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
       // 已授权：可以开跑了，等 agent 动
+      // 任务人是 admin：这一格在授权判断**之后**，任务人必须是有目录授权的那个
+      // （任务人没有角色的话，这条任务早在上一格就被判成「权限不足」了）
       {
-        id: 7, publisher: 'admin', assignee: 'zhou', description: '把 README 里的端口说明改成环境变量法',
-        status: 'AUTHORIZED', currentExecutor: 'agent#1', currentStep: 6, agentId: AGENT_ID, result: null,
+        id: 7, publisherId: 1, assigneeId: 1, description: '把 README 里的端口说明改成环境变量法',
+        status: 'AUTHORIZED', currentExecutorId: null, currentStep: 6, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
       // 执行中：agent 正在跑
       {
-        id: 8, publisher: 'zhou', assignee: 'admin', description: '把语料快照脚本的输出目录改成可配置',
-        status: 'EXECUTING', currentExecutor: 'agent#1', currentStep: 7, agentId: AGENT_ID, result: null,
+        id: 8, publisherId: 2, assigneeId: 1, description: '把语料快照脚本的输出目录改成可配置',
+        status: 'EXECUTING', currentExecutorId: null, currentStep: 7, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
       // 待验收：执行结果已经写回来了，等发布人点头
       {
-        id: 9, publisher: 'admin', assignee: 'zhou', description: '给成本看板补一条"算不出来"的说明',
-        status: 'PENDING_ACCEPTANCE', currentExecutor: 'admin', currentStep: 8, agentId: AGENT_ID,
+        id: 9, publisherId: 1, assigneeId: 1, description: '给成本看板补一条"算不出来"的说明',
+        status: 'PENDING_ACCEPTANCE', currentExecutorId: 1, currentStep: 8, agentId: AGENT_ID,
         result: '【产出】已补上说明段落。\n\n【改动】成功的才算数：\n- edit_file {"path":"web/src/components/CostPanel.tsx"}',
         cancelReason: null,
       },
       // 已完成。描述刻意写长：它要盖住"卡片上的文字默认夹住"这件事 ——
       // 一列里所有描述都只有一行时，「展开全文」永远不出现，界面自检也就断不到它
       {
-        id: 10, publisher: 'zhou', assignee: 'admin',
+        id: 10, publisherId: 2, assigneeId: 1,
         description: '把 CI 的端口说明改成环境变量法：两套服务各用一对变量，'
           + '并写清"代理指错了端口"与"服务没起来"这两种失败长得完全一样、该先查哪一个',
-        status: 'COMPLETED', currentExecutor: '', currentStep: 9, agentId: AGENT_ID,
+        status: 'COMPLETED', currentExecutorId: null, currentStep: 9, agentId: AGENT_ID,
         result: '【产出】已改成 CI_MOCK_PORT / CI_UI_PORT 两行说明。', cancelReason: null,
       },
       // 已取消：这一列只在有卡片时出现，所以假数据里必须有一条。
       // 任务人是停用账号 li：停用与"当时派给谁"是两件事（与真后端 realUser 的注释同一条）
       {
-        id: 11, publisher: 'admin', assignee: 'li', description: '调研换一个向量库（先搁置）',
-        status: 'CANCELLED', currentExecutor: 'li', currentStep: 1, agentId: null, result: null,
+        id: 11, publisherId: 1, assigneeId: 3, description: '调研换一个向量库（先搁置）',
+        status: 'CANCELLED', currentExecutorId: 3, currentStep: 1, agentId: null, result: null,
         cancelReason: '需求方撤回了这条调研，等定下来再重新发布',
+      },
+      // 权限不足：授权判断不通过（任务人 zhou 没有任何角色 ⇒ 没有任何目录授权），
+      // 等用户选「已修改任务」或「取消任务」。结论落在 result 上（与执行结果同一个字段），
+      // 界面按状态换标签显示 —— 这一格一次都没跑，"执行结果"四个字会读成"跑过了"
+      {
+        id: 12, publisherId: 1, assigneeId: 2, description: '把周报模板里的统计口径换成新版',
+        status: 'INSUFFICIENT_PERMISSION', currentExecutorId: 1, currentStep: 3, agentId: AGENT_ID,
+        result: '任务人「zhou」没有任何角色 —— 没有角色就是没有任何目录授权。'
+          + `已授权的目录前缀：无。任务人角色授予的写文件工具：无。`
+          + `要放行这条任务：在「权限管理」里给这个人的角色加一条覆盖「${TASK_WORKSPACE}」的目录前缀，`
+          + '或者把这条任务要动的目录改到已授权的范围内。',
+        cancelReason: null,
       },
     ],
     confirms: [
@@ -256,7 +365,7 @@ function initialState() {
       { id: 24, taskId: 8, stepIndex: 3, type: 'PLAN', description: '请确认执行计划（假后端：真后端这一步由模型按任务生成）', options: DEFAULT_OPTIONS.PLAN, answer: '同意' },
       { id: 25, taskId: 8, stepIndex: 5, type: 'AUTHORIZATION', description: '请确认授权范围（假后端：真后端这一步由模型按任务生成）', options: DEFAULT_OPTIONS.AUTHORIZATION, answer: '授权' },
     ],
-    nextTaskId: 12,
+    nextTaskId: 13,
     nextConfirmId: 26,
   }
 }
@@ -267,15 +376,39 @@ let state = initialState()
 /*  视图                                                                */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 当前执行人那一格该显示的字 —— 与真后端 `AgentTask.executorLabel()` 同一套判据：
+ * 那一列有值（球在某个账号手上）→ 按 id 查出姓名；那一列为空而任务没结束、agent 也接手过 →
+ * `agent#<agentId>`；其余（任务已结束 / 还没有 agent 接手）→ 空串。
+ */
+function executorLabel(task) {
+  const executor = findMockAccountById(task.currentExecutorId)
+  if (executor) return executor.name
+  if (task.currentExecutorId != null) return `用户#${task.currentExecutorId}`
+  const terminal = task.status === 'COMPLETED' || task.status === 'CANCELLED'
+  return !terminal && task.agentId != null ? `agent#${task.agentId}` : ''
+}
+
+/**
+ * 一条任务装配成响应体。
+ *
+ * <p>三个"人"各给两份：`…Id` 是库里存的那一份，姓名是按 id 从账号表里查回来的那一份
+ * （与真后端读侧那三个 LEFT JOIN 同一件事）—— 界面上显示的是姓名那一份。
+ */
 function taskView(task) {
+  const publisher = findMockAccountById(task.publisherId)
+  const assignee = findMockAccountById(task.assigneeId)
   return {
     id: task.id,
-    publisher: task.publisher,
-    assignee: task.assignee ?? '',
+    publisherId: task.publisherId,
+    publisher: publisher ? publisher.name : '',
+    assigneeId: task.assigneeId,
+    assignee: assignee ? assignee.name : '',
     description: task.description,
     status: task.status,
     statusLabel: STATUS_LABELS[task.status] ?? task.status,
-    currentExecutor: task.currentExecutor ?? '',
+    currentExecutorId: task.currentExecutorId,
+    currentExecutor: executorLabel(task),
     currentStep: task.currentStep,
     agentId: task.agentId ?? null,
     result: task.result ?? null,
@@ -306,12 +439,17 @@ function confirmView(confirm) {
  *
  * ⚠️ 等 agent 的那四格（新发布 / 已确认需求 / 已确认计划 / 已授权）只有「取消任务」：
  * 下一步由 agent 做，人点不动 —— 给它们画一个"看起来能推进"的按钮比不画更坏。
+ * ⚠️ 「权限不足」给的是 `revise`（「已修改任务」）与「取消任务」：它等的不是"推进当前事件"，
+ * 而是"这条任务已经改过了"（回到新发布重走一遍）。按钮上的字由这里给，界面不自己拼。
  */
 function actionsOf(status) {
   if (status === 'COMPLETED' || status === 'CANCELLED') return []
   if (status === 'NEW') return [{ key: 'cancel', label: '取消任务' }]
   if (status === 'EXECUTING') return [{ key: 'advance', label: '登记执行结果' }, { key: 'cancel', label: '取消任务' }]
   if (status === 'PENDING_ACCEPTANCE') return [{ key: 'advance', label: '验收通过' }, { key: 'cancel', label: '取消任务' }]
+  if (status === 'INSUFFICIENT_PERMISSION') {
+    return [{ key: 'revise', label: '已修改任务' }, { key: 'cancel', label: '取消任务' }]
+  }
   if (status === 'CONFIRMED_REQUIREMENT' || status === 'CONFIRMED_PLAN' || status === 'AUTHORIZED') {
     return [{ key: 'cancel', label: '取消任务' }]
   }
@@ -354,37 +492,85 @@ function openConfirmation(task, type, step, description) {
   })
 }
 
-/** 进入"等 agent"的一格：步骤 +1，当前执行人换成 agent（与 AgentTaskTransitions#enterAgent 一致）。 */
+/** 进入"等 agent"的一格：步骤 +1，当前执行人写空（agent 不是账号，与 AgentTaskTransitions#enterAgent 一致）。 */
 function enterAgent(task, status) {
   task.status = status
   task.currentStep += 1
-  task.currentExecutor = task.agentId != null ? `agent#${task.agentId}` : 'agent'
+  task.currentExecutorId = null
 }
 
 /** 进入"等确认项答复"的一格：步骤 +1，当前执行人回到发布人，并生成那一步的确认项。 */
 function enterPending(task, status, type, description) {
   task.status = status
   task.currentStep += 1
-  task.currentExecutor = task.publisher
+  task.currentExecutorId = task.publisherId
   openConfirmation(task, type, task.currentStep, description)
+}
+
+/**
+ * 进入「权限不足」：步骤 +1，当前执行人回到发布人，结论写进 result ——
+ * 与真后端 `AgentTaskTransitions#enterPermissionDenied` 逐条一致。
+ */
+function enterPermissionDenied(task, reason) {
+  task.status = 'INSUFFICIENT_PERMISSION'
+  task.currentStep += 1
+  task.currentExecutorId = task.publisherId
+  task.result = reason
+}
+
+/**
+ * 判断授权那一格：先判权限，通过才生成授权确认项 ——
+ * 与真后端 `DefaultAgentTaskExecution#askForAuthorization` 一致（两条路都从这里进）。
+ */
+function enterAuthorization(task, actions) {
+  const verdict = judgeAuthorization(task.assigneeId)
+  if (!verdict.allowed) {
+    enterPermissionDenied(task, verdict.reason)
+    return
+  }
+  enterPending(task, 'PENDING_AUTHORIZATION', 'AUTHORIZATION', authorizationText(actions, verdict.reason))
 }
 
 function advance(task, result) {
   if (task.status === 'EXECUTING') {
     task.status = 'PENDING_ACCEPTANCE'
     task.currentStep += 1
-    task.currentExecutor = task.publisher
+    task.currentExecutorId = task.publisherId
     if (result != null && String(result).trim()) task.result = String(result).trim()
     return null
   }
   if (task.status === 'PENDING_ACCEPTANCE') {
     task.status = 'COMPLETED'
     task.currentStep += 1
-    task.currentExecutor = ''
+    task.currentExecutorId = null
     return null
   }
   return `当前状态「${STATUS_LABELS[task.status]}」没有可推进的事件 —— 能推进的只有「执行中」（登记执行结果）`
-    + '与「待验收」（验收通过）；三个「待确认」在等确认项的答复，「新发布」与三个「已确认」由 agent 任务执行处理。'
+    + '与「待验收」（验收通过）；三个「待确认」在等确认项的答复、「权限不足」要答复的是 revise'
+    + '（「已修改任务」/「取消任务」），「新发布」与三个「已确认」由 agent 任务执行处理。'
+}
+
+/**
+ * 权限不足 → 新发布：用户答复「已修改任务」。
+ *
+ * <p>与真后端 `DefaultAgentTaskService#revise` 一致：步骤 +1、执行人回到任务人，
+ * 上一次「权限不足」的结论留在 result 里（它是"当时为什么被打回"的唯一记录）。
+ *
+ * @returns 出错时返回一句给界面的话；成功返回 null
+ */
+function revise(task) {
+  if (task.status !== 'INSUFFICIENT_PERMISSION') {
+    return `当前状态「${STATUS_LABELS[task.status]}」不是「权限不足」，没有可重发的任务 —— `
+      + '「已修改任务」只在权限不足时出现（权限那一关过不了，改了之后再重走一遍）。'
+  }
+  const previous = task.result == null ? '' : String(task.result).trim()
+  task.status = 'NEW'
+  task.currentStep += 1
+  task.currentExecutorId = task.assigneeId ?? task.publisherId
+  task.result = '用户答复「已修改任务」：这条任务已回到「新发布」重新走一遍'
+    + '（重新判需求 → 拆任务点 → 判授权）。'
+    + (previous ? `\n\n上一次「权限不足」的结论（留档）：\n${previous}` : '')
+  return null
 }
 
 function answer(task, confirmId, text) {
@@ -429,7 +615,7 @@ function runAgentStep(task) {
     if (isAmbiguous(task.description)) {
       // 第 1 步不递增：新发布与待确认需求都停在第 1 步
       task.status = 'PENDING_REQUIREMENT'
-      task.currentExecutor = task.publisher
+      task.currentExecutorId = task.publisherId
       openConfirmation(task, 'REQUIREMENT', task.currentStep,
         '请补充：这条任务描述里没有说清交付物与验收标准。')
       return
@@ -448,20 +634,28 @@ function runAgentStep(task) {
       enterPending(task, 'PENDING_PLAN', 'PLAN', planText(actions))
     }
     else {
-      enterPending(task, 'PENDING_AUTHORIZATION', 'AUTHORIZATION', authorizationText(actions))
+      // 任务点少于阈值：跳过计划确认，直接判授权（与真后端 reviewConfirmed 的那条路一致）
+      enterAuthorization(task, actions)
     }
     return
   }
   if (task.status === 'CONFIRMED_PLAN') {
-    enterPending(task, 'PENDING_AUTHORIZATION', 'AUTHORIZATION', authorizationText(breakdownOf(task.description)))
+    enterAuthorization(task, breakdownOf(task.description))
     return
   }
   if (task.status === 'AUTHORIZED') {
+    // 开跑之前再判一次授权（真后端在 run() 里用**这一次**的工作区目录再判一次）：
+    // 两次判定的目录来自两次模型判定，可能不是同一个
+    const verdict = judgeAuthorization(task.assigneeId)
+    if (!verdict.allowed) {
+      enterPermissionDenied(task, verdict.reason)
+      return
+    }
     enterAgent(task, 'EXECUTING')
     // 真后端这里是"跑一次 Agent 运行"：假后端直接给一份形状相同的执行结果
     task.status = 'PENDING_ACCEPTANCE'
     task.currentStep += 1
-    task.currentExecutor = task.publisher
+    task.currentExecutorId = task.publisherId
     task.result = '【产出】假后端：这一步在真后端是一次 Agent 运行，产出由模型汇总。'
       + '\n\n【改动】这次运行没有写操作（只调用了只读工具，或没有调用工具）'
       + '\n\n【运行】runId=（假后端不产生运行记录） · 1 步 · 0 次工具调用 · 0 tokens · 0ms · 停因 ANSWERED'
@@ -498,6 +692,12 @@ function runAgentRound(id, maxSteps) {
 
 /**
  * @returns true 表示这条请求已被本模块处理（调用方不要再往后走）
+ *
+ * ⚠️ 同步分支里**不能写成 `return json(res, …)`**：`json()` 没有返回值（undefined），
+ * 那个 return 会让分派方以为这条请求没被处理，于是又往同一个响应写一次 404 头 ——
+ * 报错是 `ERR_HTTP_HEADERS_SENT`，而现象是**假后端整个进程退出**（自检里表现为"页面打不开"）。
+ * 所以同步的失败分支一律写成"先 json(...)，再 return true"。
+ * （`readBody(...)` 的回调里无所谓：那个 return 的返回值没人看。）
  */
 export function handleTaskRoutes(req, res, url, json) {
   const { pathname } = url
@@ -537,7 +737,7 @@ export function handleTaskRoutes(req, res, url, json) {
     json(res, {
       columns,
       total: state.tasks.length,
-      howToAdvance: 'POST /api/agent-tasks/{id}/advance | /confirms/{confirmId}/answer | /cancel',
+      howToAdvance: 'POST /api/agent-tasks/{id}/advance | /confirms/{confirmId}/answer | /revise | /cancel',
     })
     return true
   }
@@ -545,7 +745,10 @@ export function handleTaskRoutes(req, res, url, json) {
   const detailMatch = pathname.match(/^\/api\/agent-tasks\/(\d+)$/)
   if (detailMatch && req.method === 'GET') {
     const task = state.tasks.find(t => t.id === Number(detailMatch[1]))
-    if (!task) return json(res, { ok: false, error: `任务不存在：#${detailMatch[1]}` }, 400)
+    if (!task) {
+      json(res, { ok: false, error: `任务不存在：#${detailMatch[1]}` }, 400)
+      return true
+    }
     json(res, detailView(task))
     return true
   }
@@ -561,12 +764,12 @@ export function handleTaskRoutes(req, res, url, json) {
       }
       const task = {
         id: state.nextTaskId++,
-        publisher: publisher.name,
-        assignee: assignee.name,
+        publisherId: publisher.account.id,
+        assigneeId: assignee.account.id,
         description: String(b.description).trim(),
         status: 'NEW',
         // 与真后端 AgentTask.draft 一致：当前执行人就是任务人（球在他手上）
-        currentExecutor: assignee.name,
+        currentExecutorId: assignee.account.id,
         currentStep: 1,
         // 发布人不填 agentId（真后端的请求体里没有这个字段）：平台接手时才写，
         // 见 runAgentStep 的第一行
@@ -583,7 +786,10 @@ export function handleTaskRoutes(req, res, url, json) {
   const advanceMatch = pathname.match(/^\/api\/agent-tasks\/(\d+)\/advance$/)
   if (advanceMatch && req.method === 'POST') {
     const task = state.tasks.find(t => t.id === Number(advanceMatch[1]))
-    if (!task) return json(res, { ok: false, error: `任务不存在：#${advanceMatch[1]}` }, 400)
+    if (!task) {
+      json(res, { ok: false, error: `任务不存在：#${advanceMatch[1]}` }, 400)
+      return true
+    }
     readBody(req, res, json, b => {
       const conflict = advance(task, b ? b.result : null)
       if (conflict) return json(res, { ok: false, error: conflict }, 409)
@@ -595,7 +801,10 @@ export function handleTaskRoutes(req, res, url, json) {
   const answerMatch = pathname.match(/^\/api\/agent-tasks\/(\d+)\/confirms\/(\d+)\/answer$/)
   if (answerMatch && req.method === 'POST') {
     const task = state.tasks.find(t => t.id === Number(answerMatch[1]))
-    if (!task) return json(res, { ok: false, error: `任务不存在：#${answerMatch[1]}` }, 400)
+    if (!task) {
+      json(res, { ok: false, error: `任务不存在：#${answerMatch[1]}` }, 400)
+      return true
+    }
     readBody(req, res, json, b => {
       const outcome = answer(task, Number(answerMatch[2]), b ? b.answer : null)
       if (outcome && outcome.conflict) return json(res, { ok: false, error: outcome.conflict }, 409)
@@ -605,10 +814,30 @@ export function handleTaskRoutes(req, res, url, json) {
     return true
   }
 
+  // 「已修改任务」：权限不足 → 新发布。**没有请求体**（这一格要的是一次选择，不是一段说明）
+  const reviseMatch = pathname.match(/^\/api\/agent-tasks\/(\d+)\/revise$/)
+  if (reviseMatch && req.method === 'POST') {
+    const task = state.tasks.find(t => t.id === Number(reviseMatch[1]))
+    if (!task) {
+      json(res, { ok: false, error: `任务不存在：#${reviseMatch[1]}` }, 400)
+      return true
+    }
+    const conflict = revise(task)
+    if (conflict) {
+      json(res, { ok: false, error: conflict }, 409)
+      return true
+    }
+    json(res, { ok: true, ...detailView(task) })
+    return true
+  }
+
   const cancelMatch = pathname.match(/^\/api\/agent-tasks\/(\d+)\/cancel$/)
   if (cancelMatch && req.method === 'POST') {
     const task = state.tasks.find(t => t.id === Number(cancelMatch[1]))
-    if (!task) return json(res, { ok: false, error: `任务不存在：#${cancelMatch[1]}` }, 400)
+    if (!task) {
+      json(res, { ok: false, error: `任务不存在：#${cancelMatch[1]}` }, 400)
+      return true
+    }
     readBody(req, res, json, b => {
       const reason = b && b.reason ? String(b.reason).trim() : ''
       if (!reason) {

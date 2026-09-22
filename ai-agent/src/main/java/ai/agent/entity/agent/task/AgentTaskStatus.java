@@ -6,7 +6,7 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * 任务状态 —— 一条链上的十一个取值（库里的值一律写枚举名，见 {@link #storedValue}）。
+ * 任务状态 —— 一条链上的十二个取值（库里的值一律写枚举名，见 {@link #storedValue}）。
  *
  * <h2>状态链</h2>
  * <pre>
@@ -15,11 +15,13 @@ import java.util.Optional;
  *     → 已确认需求 CONFIRMED_REQUIREMENT （等任务执行器：再判一次歧义、拆任务点）
  *     → 待确认计划 PENDING_PLAN          （任务点 ≥ 5 时才有这一格，等计划确认项的答复）
  *     → 已确认计划 CONFIRMED_PLAN        （等任务执行器：判断授权）
- *     → 待授权     PENDING_AUTHORIZATION （等授权确认项的答复）
+ *     → 待授权     PENDING_AUTHORIZATION （授权判断通过，等授权确认项的答复）
  *     → 已授权     AUTHORIZED            （等任务执行器：执行）
  *     → 执行中     EXECUTING             （任务执行器正在跑；跑完写执行结果）
  *     → 待验收     PENDING_ACCEPTANCE
  *     → 已完成     COMPLETED
+ *   已确认计划 / 已授权 ──判断授权不通过──▶ 权限不足 INSUFFICIENT_PERMISSION
+ *   权限不足 ──人答复「已修改任务」──▶ 新发布（重新走一遍）
  *   任一非终态 → 已取消 CANCELLED（取消原因与状态同一次写入）
  * </pre>
  *
@@ -29,6 +31,12 @@ import java.util.Optional;
  * 两类的区别决定界面上的按钮：等待答复的状态有「答复确认项」，
  * 等 agent 的状态没有可点的动作（只有「取消任务」）——
  * 一个"看起来能推进、点下去其实什么都没发生"的按钮比没有按钮更坏。
+ *
+ * <h2>「权限不足」为什么是一个状态，而不是"取消 + 一条说明"</h2>
+ * 它等的是一个<b>只有人能做</b>的选择：取消这条任务，还是去把人/权限/要动的目录改好再重走一遍
+ * （见 {@code AgentTaskService.Action} 的 {@code revise}）。做成"直接取消"的话，
+ * 唯一能表达"我这就去改权限"的入口就没有了，而那条任务会以"已取消"结束 ——
+ * 事后看只剩一条取消记录，看不出它其实是在等一次权限修正。
  *
  * <h2>为什么"已确认需求 / 已确认计划 / 已授权"是三个独立状态</h2>
  * 它们都是"人已经答完了、球在 agent 手上"，但<b>agent 要做的事完全不同</b>：
@@ -57,6 +65,8 @@ public enum AgentTaskStatus {
 	CONFIRMED_PLAN("已确认计划"),
 
 	PENDING_AUTHORIZATION("待授权"),
+
+	INSUFFICIENT_PERMISSION("权限不足"),
 
 	AUTHORIZED("已授权"),
 

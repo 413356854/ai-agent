@@ -30,12 +30,15 @@ public interface AgentTaskMapper {
 	/**
 	 * 建任务。返回受影响行数；新 id 用 {@link #lastInsertId()} 取。
 	 *
+	 * <p>发布人 / 任务人传的是<b>用户 id</b>（{@code agent_user.id}），姓名不落库 ——
+	 * 读侧关联查询出来（见 {@code AgentTaskMapper.xml}）。
+	 *
 	 * <p><b>不写 {@code agent_id}</b>：发布人不填那一列，它由平台在第一次接手这条任务时
 	 * 用 {@link #updateAgentId} 写入（见 {@code AgentTaskProperties#agentId}）。
 	 */
-	int insert(@Param("publisher") String publisher, @Param("assignee") String assignee,
+	int insert(@Param("publisherId") Long publisherId, @Param("assigneeId") Long assigneeId,
 			@Param("description") String description, @Param("status") String status,
-			@Param("currentExecutor") String currentExecutor, @Param("currentStep") int currentStep);
+			@Param("currentExecutorId") Long currentExecutorId, @Param("currentStep") int currentStep);
 
 	/**
 	 * 刚插入那一行的自增主键。
@@ -87,9 +90,13 @@ public interface AgentTaskMapper {
 	 * <p>它们必须是同一条 SQL：拆成三条会有"状态已经变了、执行人还没变"的中间态，
 	 * 而那时界面若正好刷新，看到的是"待确认需求，但执行人还是任务人"——
 	 * 一张卡片的两个字段各说一套，没人能从界面上看出哪一个是旧的。
+	 *
+	 * <p>{@code currentExecutorId} 传 {@code null} 是有含义的：球在 agent 手上
+	 * （三个"已确认"与"执行中"）或没有执行人（已完成），见
+	 * {@code AgentTaskTransitions#executorFor}。
 	 */
 	int updateProgress(@Param("id") Long id, @Param("status") String status,
-			@Param("currentExecutor") String currentExecutor, @Param("currentStep") int currentStep);
+			@Param("currentExecutorId") Long currentExecutorId, @Param("currentStep") int currentStep);
 
 	/** 登记执行结果（{@code EXECUTING → 待验收} 那一步）。 */
 	int updateResult(@Param("id") Long id, @Param("result") String result);
@@ -101,7 +108,7 @@ public interface AgentTaskMapper {
 	 * 把 agent_id 一起写进去就意味着每次推进都要带上它 ——
 	 * 而调用点手上那份任务记录可能是几步之前读的，一次推进就会把这一列写回旧值。
 	 */
-	int updateAgentId(@Param("id") Long id, @Param("agentId") long agentId);
+	int updateAgentId(@Param("id") Long id, @Param("agentId") String agentId);
 
 	/** 取消：状态与取消原因同一次写入（写原因单独一条 SQL 会留下"取消了但没写原因"的窗口）。 */
 	int updateCancel(@Param("id") Long id, @Param("cancelReason") String cancelReason);

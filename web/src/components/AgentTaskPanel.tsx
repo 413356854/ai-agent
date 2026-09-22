@@ -23,10 +23,17 @@ const { Text, Paragraph } = Typography
  *       后者有一条在等他答 —— 两个状态挨着，说反了会让用户去找一个不存在的按钮；</li>
  *   <li><b>取消原因要显示出来</b>：取消是这一页唯一"没有下文"的结局，
  *       原因不显示的话，那条卡片与"被误操作取消的"看起来完全一样；</li>
- *   <li><b>发布人 / 任务人只能从用户列表里选</b>：库里存的是姓名快照，打错一个字不会有任何约束
- *       拦下那条任务 —— 所以那两格是搜索选择器（`UserPicker`），而 <b>agentId 根本不在表单里</b>：
+ *   <li><b>发布人 / 任务人只能从用户列表里选</b>：那两个名字在发出去的时候核一遍账号表，
+ *       而库里存的是核出来的用户 id（姓名是读侧关联查询出来的）——
+ *       所以那两格是搜索选择器（`UserPicker`），而 <b>agentId 根本不在表单里</b>：
  *       它由平台在第一次接手这条任务时写入（配置项 `ai.agent.task.agent-id`）。</li>
  * </ol>
+ *
+ * <h2>「权限不足」那一格：原因要显示，两个按钮要说清各做什么</h2>
+ * 它的结论与执行结果落在同一个字段（`task.result`），所以卡片与详情都要<b>按状态换标签</b>：
+ * 写成"执行结果"会让人以为这次跑过了 —— 而它一次都没开始。
+ * 两个按钮各是一次选择：`revise`（「已修改任务」）= 任务或权限已经改好，放回「新发布」重走一遍；
+ * `cancel` = 这条不做了。按钮同样来自后端的 `actions`，这里只负责画出来。
  *
  * <h2>为什么按钮来自后端的 actions，而不是这里 if 状态</h2>
  * 哪几个动作现在可用是一条状态机判断（后端 {@code DefaultAgentTaskService#actionsOf}）。
@@ -161,6 +168,13 @@ function TaskCard({ task, onOpen }: { task: AgentTaskCard; onOpen: () => void })
   /** 每张卡片自己的展开态：看板上同时摆着十几张，共用一个状态会让它们一起展开。 */
   const [expanded, setExpanded] = useState(false)
   const open = overflow && expanded
+  /**
+   * 这一格放的是权限不足的结论，而不是执行结果。
+   *
+   * <p>两者在**同一个字段**里（`task.result`），标签按状态换 —— 这一格一次都没跑，
+   * 标成"执行结果"会让人以为跑过了。样式也跟着换（原来是绿色成功底）。
+   */
+  const denied = task.status === 'INSUFFICIENT_PERMISSION'
 
   return (
     <div className={`task-card is-${task.status.toLowerCase()}`} data-task-id={task.id}>
@@ -172,9 +186,11 @@ function TaskCard({ task, onOpen }: { task: AgentTaskCard; onOpen: () => void })
         <span className="task-card-text">
           <Clamped text={task.description} className="task-card-title" maxHeight={66}
             open={open} onOverflow={(_region, more) => setOverflow(more)} />
-          {/* 执行结果与取消原因都只在自己那一段出现：没有的时候不画一行空白 */}
+          {/* 执行结果 / 权限不足的结论 / 取消原因都只在自己那一段出现：没有的时候不画一行空白。
+              三者的标签由这里给（后端只给字段值）：「权限不足」与「执行结果」共用 result */}
           {task.result && (
-            <Clamped text={`执行结果：${task.result}`} className="task-card-result" maxHeight={84}
+            <Clamped text={`${denied ? '权限不足' : '执行结果'}：${task.result}`}
+              className={denied ? 'task-card-reason' : 'task-card-result'} maxHeight={84}
               open={open} onOverflow={(_region, more) => setOverflow(more)} />
           )}
           {task.cancelReason && (
@@ -185,9 +201,10 @@ function TaskCard({ task, onOpen }: { task: AgentTaskCard; onOpen: () => void })
         <span className="task-card-meta">
           {task.publisher} → {task.assignee || '（未指派任务人）'}
         </span>
+        {/* 当前执行人那一格的字由后端给（姓名，或球在 agent 手上时的 agent#…），这里不自己拼 ——
+            再拼一份的话，两处说法迟早不一致（与状态标签同一条规矩） */}
         <span className="task-card-meta">
           第 {task.currentStep} 步 · 当前执行人 {task.currentExecutor || '（无）'}
-          {task.agentId != null ? ` · agent#${task.agentId}` : ''}
         </span>
         <span className="task-card-foot">
           <Tag color={statusColor(task.status)}>{task.statusLabel}</Tag>
@@ -207,6 +224,9 @@ function statusColor(status: string): string {
   if (status === 'COMPLETED') return 'green'
   if (status === 'CANCELLED') return 'default'
   if (status === 'EXECUTING') return 'processing'
+  // 「权限不足」与三个「待确认」同列（都在等人），但它等的不是答复而是一次处置 ——
+  // 同色会让它在那一列里混成"又一条待确认"，而它要的动作完全不同
+  if (status === 'INSUFFICIENT_PERMISSION') return 'red'
   if (status.startsWith('PENDING')) return 'orange'
   // 「已确认需求 / 已确认计划 / 已授权」与「执行中」同列：球都在 agent 手上。
   // 用同一个颜色是刻意的 —— 这四格对用户是同一件事（不必点，等它跑）
@@ -232,18 +252,21 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
   const pending = data?.confirms.find(confirm => !confirm.answered)
   const actions = data?.actions ?? []
   const advanceAction = actions.find(action => action.key === 'advance')
+  const reviseAction = actions.find(action => action.key === 'revise')
   const canAnswer = actions.some(action => action.key === 'answer')
   const canCancel = actions.some(action => action.key === 'cancel')
   // 「登记执行结果」那一步要多一个输入框：结果不是选项，得让人写
   const needsResult = task?.status === 'EXECUTING'
+  /** 这一格的结论是"权限不足"，不是执行结果 —— 两者共用 `result`，标签按状态换。 */
+  const denied = task?.status === 'INSUFFICIENT_PERMISSION'
   /**
    * 这一步在等 agent，人现在点不动。
    *
-   * <p>判据是"有动作、但既不能答复也不能推进" —— **不列状态名**：
+   * <p>判据是"有动作、但既不能答复也不能推进，也不能重发" —— **不列状态名**：
    * 状态有哪些、哪几个由 agent 处理是后端的定义（`AgentTaskStatus.awaitingAgent()`），
    * 前端再抄一份清单，就会在后端新增一格时漏掉它，而漏掉的表现是这一格什么都不显示。
    */
-  const awaitingAgent = actions.length > 0 && !advanceAction && !canAnswer
+  const awaitingAgent = actions.length > 0 && !advanceAction && !reviseAction && !canAnswer
 
   const close = () => {
     setResultText(''); setFreeText(''); setCancelOpen(false)
@@ -275,15 +298,37 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
             <Text type="secondary">当前执行人：{task.currentExecutor || '（无）'}</Text>
             {/* 为空只表示"还没有 agent 接手过它"（发布时为空、平台第一次接手时才写）。
                 刻意不写「未指定」：这一列没有人能填，那句话会让人以为是自己漏填了 */}
-            <Text type="secondary">agent：{task.agentId != null ? `#${task.agentId}` : '（还没有 agent 接手）'}</Text>
+            <Text type="secondary">agent：{task.agentId ?? '（还没有 agent 接手）'}</Text>
           </Flex>
-          {task.result && <Alert type="success" showIcon title="执行结果" description={task.result} />}
+          {task.result && (denied
+            ? (
+              // 权限不足：这一格一次都没跑，所以不能用"执行结果"那个绿色成功框 ——
+              // 结论（缺哪条目录前缀、怎么放行）由后端给，这里原样显示，不自己拼一份
+              <Alert
+                type="error"
+                showIcon
+                title="权限不足：这次执行没有开始"
+                description={<div className="diag-note">
+                  <p>{task.result}</p>
+                  <p>
+                    两条路：「已修改任务」= 任务或权限已经改好，把它放回「新发布」重新走一遍
+                    （重新判需求 → 拆任务点 → 判授权）；「取消任务」= 这条不做了。
+                  </p>
+                </div>}
+              />
+            )
+            : <Alert type="success" showIcon title="执行结果" description={task.result} />)}
           {task.cancelReason && <Alert type="warning" showIcon title="取消原因" description={task.cancelReason} />}
 
           <div className="task-confirms">
             <Text strong>确认项（每一步是谁怎么答的）</Text>
+            {/* 没有确认项有两种原因，说反了会让用户去找一条不存在的待办：
+                新发布的任务还没生成过确认项（等 agent 判需求有没有歧义），
+                而权限不足的任务可能是判断发生在生成授权确认项**之前** */}
             {data.confirms.length === 0
-              ? <div className="task-column-empty">还没有确认项 —— 「新发布」的任务等 agent 判断需求有没有歧义</div>
+              ? <div className="task-column-empty">{denied
+                ? '这条任务没有确认项 —— 授权判断在生成授权确认项之前就没通过（上一条结论里写着缺什么）'
+                : '还没有确认项 —— 「新发布」的任务等 agent 判断需求有没有歧义'}</div>
               : data.confirms.map(confirm => <ConfirmRow key={confirm.id} confirm={confirm} />)}
           </div>
 
@@ -326,7 +371,7 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
                 </Space.Compact>
               </Flex>
             )}
-            {(advanceAction || canCancel) && (
+            {(advanceAction || reviseAction || canCancel) && (
               <Space size={8} wrap>
                 {advanceAction && needsResult && (
                   <Input.TextArea
@@ -340,6 +385,14 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
                   <Button type="primary" disabled={tasks.busy}
                     onClick={() => void tasks.advance(task.id, needsResult ? resultText : undefined)}>
                     {advanceAction.label}
+                  </Button>
+                )}
+                {/* 「已修改任务」：按钮上那句话由后端给（它同时是这一格的语义），这里只画出来。
+                    点了就回「新发布」重走一遍，所以文案必须让人看清这不是"再试一次原样执行" */}
+                {reviseAction && (
+                  <Button type="primary" disabled={tasks.busy}
+                    onClick={() => void tasks.revise(task.id)}>
+                    {reviseAction.label}
                   </Button>
                 )}
                 {canCancel && (
@@ -414,7 +467,8 @@ function NewTaskModal({ open, onClose, tasks }: {
     >
       <Flex vertical gap={10}>
         {/* 发布人 / 任务人两格都是**搜索选择器**，不是能打字的输入框：
-            名字在库里存的是快照，打错一个字不会有任何约束拦下那条任务。
+            发出去的时候要把名字核到账号表上（落库的是查出来的用户 id），
+            而账号表里查不到的名字不会有任何约束拦下那条任务。
             这个组件与页头的「模拟登录」共用（见 UserPicker 的文件头） */}
         <UserPicker value={publisher} onChange={name => setPublisher(name)}
           placeholder="发布人（必填）—— 搜索登录名，从候选里选一个真实用户" />

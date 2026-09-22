@@ -2396,9 +2396,10 @@ body {
   font-size: 14px;
 }
 
-/* 执行结果是一份多行产出（假数据里就带换行），按原样断行显示；取消原因同理 */
+/* 执行结果是一份多行产出（假数据里就带换行），按原样断行显示；取消原因与权限不足的结论同理 */
 .task-card-result,
-.task-card-cancel {
+.task-card-cancel,
+.task-card-reason {
   white-space: pre-wrap;
 }
 
@@ -2417,7 +2418,8 @@ body {
 }
 
 .task-card-result,
-.task-card-cancel {
+.task-card-cancel,
+.task-card-reason {
   font-size: 12px;
   padding: 2px 6px;
   border-radius: 4px;
@@ -2426,6 +2428,19 @@ body {
 .task-card-result {
   background: var(--ok-bg);
   color: var(--ok-ink);
+}
+
+/* 权限不足的结论与执行结果共用 `task.result`，但底色不能是"成功"那一套：
+   这一格一次都没跑，它记的是"为什么没跑起来"（见 AgentTaskPanel 的 TaskCard） */
+.task-card-reason {
+  background: var(--danger-bg);
+  color: var(--danger-ink);
+}
+
+/* 权限不足那张卡片：左侧一条警示边。「待处理」那一列收四种状态，它要能和三条"待确认"一眼分开 ——
+   两者的动作完全不同（答复确认项 / 已修改任务），而卡片上的差别本来只有右下角那个状态标签 */
+.task-card.is-insufficient_permission {
+  border-left: 3px solid var(--danger);
 }
 
 .task-card-cancel {

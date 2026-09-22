@@ -23,20 +23,40 @@
  * 而不是把用户填的内容当成错的。400 才是"请求里少填了东西"。
  */
 
-/** 看板上的一张卡片（也是详情里的任务本体）。 */
+/**
+ * 看板上的一张卡片（也是详情里的任务本体）。
+ *
+ * 三个"人"各给两份：`publisherId` / `assigneeId` / `currentExecutorId` 是库里存的那一份
+ * （用户 id，`agent_user.id`），`publisher` / `assignee` / `currentExecutor` 是后端关联账号表
+ * 查出来的姓名 —— **界面显示的是姓名那一份**，id 那一份是"这条记录指向谁"的原始依据
+ * （姓名可以改，id 不会变）。
+ */
 export interface AgentTaskCard {
   id: number
+  /** 发布人的用户 id。 */
+  publisherId: number
+  /** 发布人姓名（后端关联查询得到）—— 卡片上显示的就是它。 */
   publisher: string
-  /** 任务人。发布时必填（一个真实账号的登录名）—— 这条链的第一步就是问他的。 */
+  /** 任务人的用户 id；库里任务人为空的行是 `null`。 */
+  assigneeId: number | null
+  /** 任务人姓名。发布时必填；空串 = 那一行没有任务人，界面显示「未指派任务人」。 */
   assignee: string
   description: string
   /**
-   * NEW / PENDING_REQUIREMENT / PENDING_PLAN / PENDING_AUTHORIZATION / CONFIRMED_REQUIREMENT /
-   * CONFIRMED_PLAN / AUTHORIZED / EXECUTING / PENDING_ACCEPTANCE / COMPLETED / CANCELLED。
+   * NEW / PENDING_REQUIREMENT / PENDING_PLAN / PENDING_AUTHORIZATION / INSUFFICIENT_PERMISSION /
+   * CONFIRMED_REQUIREMENT / CONFIRMED_PLAN / AUTHORIZED / EXECUTING / PENDING_ACCEPTANCE /
+   * COMPLETED / CANCELLED。
    */
   status: string
   statusLabel: string
-  /** 这一条现在流转到谁手里：人 或 `agent#<id>`；任务结束后为空串。 */
+  /** 当前执行人的用户 id；球在 agent 手上（三个"已确认"与"执行中"）或任务已结束时为 `null`。 */
+  currentExecutorId: number | null
+  /**
+   * 那一格该显示的字，**由后端给**：姓名 / `agent#<agentId>`（球在 agent 手上）/ 空串（没人）。
+   *
+   * <p>它不只是库里那一列的原值 —— 球在 agent 手上时那一列是空的，`agent#…` 是后端按
+   * `agentId` 拼出来的。前端不再自己拼一份（与 `statusLabel` 同一条规矩）。
+   */
   currentExecutor: string
   /**
    * 任务当前步骤，从 1 开始 —— 它是"这条任务经过了几格"（每次落进新状态 +1），
@@ -44,12 +64,17 @@ export interface AgentTaskCard {
    */
   currentStep: number
   /**
-   * 交给哪个 Agent 应用。**发布时是 `null`**（发布请求体里没有这个字段）——
-   * 它由平台在第一次接手这条任务时写入（后端 `ai.agent.task.agent-id`）。
+   * 交给哪个 Agent 应用（应用注册表里的 id，**字符串**）。**发布时是 `null`**
+   * （发布请求体里没有这个字段）—— 它由平台在第一次接手这条任务时写入（后端 `ai.agent.task.agent-id`）。
    * 为 `null` 只表示"还没有 agent 接手过它"。
    */
-  agentId: number | null
-  /** 执行结果；还没执行完时为 null。 */
+  agentId: string | null
+  /**
+   * 执行结果；还没执行完时为 null。
+   *
+   * <p>⚠️ 状态是 `INSUFFICIENT_PERMISSION` 时它是**权限不足的结论**
+   * （缺哪一条目录前缀、已授权的是哪些、怎么放行），页面按状态换一个标签显示它。
+   */
   result: string | null
   /** 取消原因；没取消时为 null。 */
   cancelReason: string | null
@@ -75,7 +100,12 @@ export interface AgentTaskConfirm {
   answered: boolean
 }
 
-/** 现在能做的动作。`key` 取值：`advance` / `answer` / `cancel`（后端是唯一判据）。 */
+/**
+ * 现在能做的动作。`key` 取值：`advance` / `answer` / `revise` / `cancel`（后端是唯一判据）。
+ *
+ * <p>`revise` 只有一个状态会给（`INSUFFICIENT_PERMISSION`），按钮上是「已修改任务」：
+ * 它把任务放回「新发布」整条链重走一遍。
+ */
 export interface AgentTaskAction {
   key: string
   label: string
@@ -161,8 +191,9 @@ export const taskApi = {
   detail: (id: number) => send<AgentTaskDetail>('GET', `/${id}`),
 
   /**
-   * 发布任务。`publisher` 与 `assignee` 都是**必填的真实账号名**（后端会核一遍账号表，
-   * 不存在 → 400）—— 它们只能来自 `permissionApi.searchUsers` 的候选，不是随便打的名字。
+   * 发布任务。`publisher` 与 `assignee` 是**真实账号的登录名**（后端会核一遍账号表，
+   * 不存在 → 400），落库的是查出来的那两个用户 id —— 它们只能来自
+   * `permissionApi.searchUsers` 的候选，不是随便打的名字。
    * **没有 agentId**：那一列由平台在第一次接手这条任务时写入。
    */
   create: (payload: { publisher: string; assignee: string; description: string }) =>
@@ -175,6 +206,12 @@ export const taskApi = {
   /** 答复一条确认项。`answer` 是用户选的选项或自由回复（必填，判据在后端）。 */
   answer: (id: number, confirmId: number, answer: string) =>
     send<AgentTaskWriteResult>('POST', `/${id}/confirms/${confirmId}/answer`, { answer }),
+
+  /**
+   * 答复「已修改任务」：`INSUFFICIENT_PERMISSION` → 新发布（整条链重走一遍）。
+   * **没有请求体** —— 这一格要的是一次选择（取消还是重走一遍），不是一段说明。
+   */
+  revise: (id: number) => send<AgentTaskWriteResult>('POST', `/${id}/revise`),
 
   /** 取消任务。`reason` 必填 —— 一条没有原因的取消记录事后只能靠回忆。 */
   cancel: (id: number, reason: string) =>

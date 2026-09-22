@@ -52,9 +52,11 @@ import java.util.UUID;
  *   <li><b>已确认需求</b>：再判一次（用户的答复本身就是新输入），然后拆任务点。
  *       任务点达到阈值就把计划交给用户确认（那些点是他要读的东西）；
  *       没到阈值就直接进授权 —— 拆出来的东西少到一眼看得完，再让人点一次"同意计划"只是多一次点击；</li>
- *   <li><b>已确认计划</b>：计划批了，接下来问"允许我动手吗"（授权确认项）；</li>
+ *   <li><b>已确认计划</b>：计划批了，先<b>判断授权</b>（{@link TaskFileAuthorization}：任务人角色的目录前缀
+ *       覆盖不覆盖这次要动的目录）—— 通过才问"允许我动手吗"（授权确认项），不通过直接进「权限不足」；</li>
  *   <li><b>已授权</b>：真的跑（{@link ResumableAgentService}，与「Agent 工具调用」那一页同一个入口），
- *       跑完把"改了什么、产出是什么"汇总进执行结果，转到待验收。</li>
+ *       跑完把"改了什么、产出是什么"汇总进执行结果，转到待验收。开跑之前还会再判一次授权
+ *       （判据与"已确认计划"那一格同一份，但目录以这一次的判定为准，理由见 {@link #run}）。</li>
  * </ol>
  */
 @Component
@@ -86,17 +88,21 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 	/** 汇总"改动"要用它：一把工具是不是写类，判据在工具自己的风险声明里，不在这里列名字。 */
 	private final ToolRegistry tools;
 
+	/** 判断授权：这次要动的目录在不在任务人角色的目录前缀里（判据与措辞都在它那边）。 */
+	private final TaskFileAuthorization fileAuthorization;
+
 	private final AgentTaskProperties properties;
 
 	public DefaultAgentTaskExecution(AgentTaskMapper tasks, AgentTaskConfirmMapper confirms,
 			AgentTaskTransitions transitions, AgentTaskAnalyst analyst, ResumableAgentService agent,
-			ToolRegistry tools, AgentTaskProperties properties) {
+			ToolRegistry tools, TaskFileAuthorization fileAuthorization, AgentTaskProperties properties) {
 		this.tasks = tasks;
 		this.confirms = confirms;
 		this.transitions = transitions;
 		this.analyst = analyst;
 		this.agent = agent;
 		this.tools = tools;
+		this.fileAuthorization = fileAuthorization;
 		this.properties = properties;
 	}
 
@@ -146,8 +152,9 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 	 * <p>只在为空时写：判定失败后重跑、或恢复之后再接手，都不覆盖已经写下的那个值 ——
 	 * 一条任务先后换过两个执行方的话，卡片上只会剩最后一个，而"当时是谁跑的"就查不到了。
 	 *
-	 * <p>写完<b>重新读一遍</b>：当前执行人由 {@code AgentTask.agentRef(agentId)} 算出来，
-	 * 手里这份还是写之前的那一份（它的 agentId 是 null，会拼出不带 id 的 {@code agent}）。
+	 * <p>写完<b>重新读一遍</b>：卡片上那个 {@code agent#…} 是读侧按 {@code agent_id} 拼出来的
+	 * （{@code AgentTask#executorLabel()}），手里这份还是写之前的那一份（它的 agentId 是 null，
+	 * 会拼出不带 id 的 {@code agent}）。
 	 */
 	private AgentTask stampAgent(AgentTask task) {
 		if (task.agentId() != null) {
@@ -200,14 +207,13 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 			return transitions.enterPending(task, AgentTaskStatus.PENDING_PLAN, ConfirmType.PLAN,
 					planText(breakdown, actions));
 		}
-		log.info("任务 #{} 拆出 {} 个任务点（< 阈值 {}）：跳过计划确认，直接问授权", task.id(), actions.size(),
+		log.info("任务 #{} 拆出 {} 个任务点（< 阈值 {}）：跳过计划确认，直接判授权", task.id(), actions.size(),
 				properties.planConfirmThreshold());
-		return transitions.enterPending(task, AgentTaskStatus.PENDING_AUTHORIZATION, ConfirmType.AUTHORIZATION,
-				authorizationText(breakdown, actions));
+		return askForAuthorization(task, breakdown, actions);
 	}
 
 	// ------------------------------------------------------------------
-	//  已确认计划 → 待授权
+	//  已确认计划 → 待授权 / 权限不足
 	// ------------------------------------------------------------------
 
 	/**
@@ -219,8 +225,31 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 	 */
 	private AgentTaskStatus askAuthorization(AgentTask task) {
 		AgentTaskAnalyst.TaskBreakdown breakdown = analyst.breakdown(task.description(), answered(task.id()));
+		return askForAuthorization(task, breakdown, normalizedActions(breakdown));
+	}
+
+	/**
+	 * <b>判断授权</b>那一格 —— 两条路都从这里进（"跳过计划确认"的那条与"已确认计划"那条）。
+	 *
+	 * <h2>先判权限，再问人</h2>
+	 * 判断不通过时<b>不生成授权确认项</b>：让人批一件任务人自己没有权限做的事，
+	 * 批完之后 agent 会在文件工具那一层撞墙（或者更糟：完全权限档位下直接写进去）。
+	 * 所以先把"任务人角色的目录前缀覆盖不覆盖这次要动的目录"判掉
+	 * （{@link TaskFileAuthorization}，判据与措辞都在那边），不通过就进「权限不足」等人处置。
+	 *
+	 * <p>通过的结论会写进授权确认项的正文：人批的是"要动什么"，而"平台已经核过哪一条目录前缀"
+	 * 也是他决定批不批的依据 —— 只写一句"允许我动手吗"等于让人闭着眼睛点。
+	 */
+	private AgentTaskStatus askForAuthorization(AgentTask task, AgentTaskAnalyst.TaskBreakdown breakdown,
+			List<String> actions) {
+		TaskFileAuthorization.Verdict verdict = fileAuthorization.judge(task.assigneeId(), breakdown.workspaceDir());
+		if (!verdict.allowed()) {
+			log.info("任务 #{} 的授权判断不通过（任务人「{}」）：{}", task.id(), assigneeName(task), verdict.reason());
+			return transitions.enterPermissionDenied(task, verdict.reason());
+		}
+		log.info("任务 #{} 的授权判断通过（任务人「{}」）：{}", task.id(), assigneeName(task), verdict.reason());
 		return transitions.enterPending(task, AgentTaskStatus.PENDING_AUTHORIZATION, ConfirmType.AUTHORIZATION,
-				authorizationText(breakdown, normalizedActions(breakdown)));
+				authorizationText(breakdown, actions, verdict.reason()));
 	}
 
 	// ------------------------------------------------------------------
@@ -244,6 +273,12 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 	 * </ul>
 	 * 所以它停在"执行中"，并把失败原因写进执行结果那一格（卡片上看得见）：
 	 * 人可以用「登记执行结果」把它推到待验收，或者直接取消再发一条。
+	 *
+	 * <h2>开跑之前再判一次授权</h2>
+	 * 判据与"已确认计划"那一格是同一份（{@link TaskFileAuthorization}），判的是<b>这一次要用的目录</b>：
+	 * 两次工作区目录来自两次模型判定（这一次多了一条授权答复），可能不是同一个目录，
+	 * 而"已确认计划"那一次判的只是前一次给出目录。真正要动的目录没被授权就不开跑 ——
+	 * 那样会绕过整整一道授权判断，而卡片上写着"已授权"。
 	 */
 	private AgentTaskStatus run(AgentTask task) {
 		List<AgentTaskConfirm> history = answered(task.id());
@@ -251,6 +286,13 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 		List<String> actions = normalizedActions(breakdown);
 		String instruction = instruction(task, history, actions);
 		RunPermission permission = permission(breakdown);
+
+		TaskFileAuthorization.Verdict verdict = fileAuthorization.judge(task.assigneeId(), permission.workspaceDir());
+		if (!verdict.allowed()) {
+			log.info("任务 #{} 开跑之前的授权判断不通过（任务人「{}」，工作区 {}）：{}", task.id(), assigneeName(task),
+					permission.workspaceDir(), verdict.reason());
+			return transitions.enterPermissionDenied(task, verdict.reason());
+		}
 
 		// 步骤 +1：从"已授权"进"执行中"（执行人换成 agent）
 		transitions.enterAgent(task, AgentTaskStatus.EXECUTING);
@@ -418,6 +460,11 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 				.toList();
 	}
 
+	/** 日志里任务人的写法：账号那一行不在（姓名落空）时退回 id，而不是留一格空白。 */
+	private static String assigneeName(AgentTask task) {
+		return task.assignee() == null ? "用户#" + task.assigneeId() : task.assignee();
+	}
+
 	/**
 	 * 确认项正文：模型没给出可用正文时退回任务描述。
 	 *
@@ -444,16 +491,23 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 	}
 
 	/**
-	 * 授权确认项的正文：授权范围 + 这次要做的事。
+	 * 授权确认项的正文：<b>平台核过的权限</b> + 授权范围 + 这次要做的事。
 	 *
 	 * <p>任务点必须跟着一起出现：跳过计划确认的那条路上（任务点少于阈值），
 	 * 用户是<b>第一次</b>看到这份清单 —— 授权让人批的是"要动什么"，
 	 * 只写一句"允许我动手吗"等于让人闭着眼睛点。
+	 *
+	 * @param permissionNote 平台刚核过的目录授权结论（{@code TaskFileAuthorization} 给的那句话）：
+	 *        它与"要动什么"并列，因为"这条目录前缀已经核过"同样是批不批的依据
 	 */
-	private static String authorizationText(AgentTaskAnalyst.TaskBreakdown breakdown, List<String> actions) {
+	private static String authorizationText(AgentTaskAnalyst.TaskBreakdown breakdown, List<String> actions,
+			String permissionNote) {
 		StringBuilder sb = new StringBuilder();
 		String scope = breakdown.authorizationScope() == null ? "" : breakdown.authorizationScope().strip();
 		sb.append(scope.isEmpty() ? "请确认授权范围（模型没有给出授权正文）" : "请确认授权范围：\n" + scope);
+		if (permissionNote != null && !permissionNote.isBlank()) {
+			sb.append("\n\n权限核对：").append(permissionNote.strip());
+		}
 		if (!actions.isEmpty()) {
 			sb.append("\n\n这次要做的事：\n");
 			for (int i = 0; i < actions.size(); i++) {

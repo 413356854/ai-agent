@@ -69,24 +69,25 @@ public class AgentTaskTransitions {
 
 	/** 换状态、当前执行人与步骤（同一条 SQL，理由见 {@code AgentTaskMapper#updateProgress}）。 */
 	@Transactional
-	public AgentTaskStatus move(AgentTask task, AgentTaskStatus to, int step, String executor) {
-		if (tasks.updateProgress(task.id(), to.storedValue(), executor, step) != 1) {
+	public AgentTaskStatus move(AgentTask task, AgentTaskStatus to, int step, Long executorId) {
+		if (tasks.updateProgress(task.id(), to.storedValue(), executorId, step) != 1) {
 			throw new TaskInvalidException("任务不存在：#" + task.id());
 		}
 		log.info("任务 #{}：{} → {}（第 {} 步，当前执行人 {}）", task.id(), task.status().label(), to.label(), step,
-				executor == null ? "(无)" : executor);
+				executorId == null ? "(空 —— 球在 agent 手上，或这件事已经结束)" : who(task, executorId));
 		return to;
 	}
 
 	/**
-	 * 进入一个"等 agent 动手"的状态：步骤 +1，当前执行人换成 agent。
+	 * 进入一个"等 agent 动手"的状态：步骤 +1，当前执行人写空。
 	 *
-	 * <p>执行人由 {@link #executorFor} 算，不在调用点拼 —— 两处各拼一次的后果是
-	 * 某一条链上写着任务人的名字，而那一格明明在等 agent。
+	 * <p>写空是刻意的：agent 不是账号，这一列存的是 {@code agent_user.id}。
+	 * "是哪个 agent 在跑"由 {@code agent_task.agent_id} 回答，卡片上的 {@code agent#…}
+	 * 是读侧按它拼出来的（见 {@link AgentTask#executorLabel()}）。
 	 */
 	@Transactional
 	public AgentTaskStatus enterAgent(AgentTask task, AgentTaskStatus to) {
-		return move(task, to, task.currentStep() + 1, AgentTask.agentRef(task.agentId()));
+		return move(task, to, task.currentStep() + 1, null);
 	}
 
 	/**
@@ -115,6 +116,24 @@ public class AgentTaskTransitions {
 		AgentTaskStatus moved = move(task, AgentTaskStatus.PENDING_REQUIREMENT, step,
 				executorFor(AgentTaskStatus.PENDING_REQUIREMENT, task));
 		openConfirmation(task, ConfirmType.REQUIREMENT, step, description);
+		return moved;
+	}
+
+	/**
+	 * 进入「权限不足」：步骤 +1，当前执行人回到发布人，<b>判断结论写进执行结果那一格</b>。
+	 *
+	 * <p>结论必须跟着状态一起落库：那一格是用户决定"取消还是去改权限"的唯一依据，
+	 * 只把状态改成「权限不足」的话，卡片上只有一个红标签 —— 用户不知道该改什么。
+	 * 它与状态是同一次写入（{@link #move} 与 {@link #setResult} 共用一个事务），
+	 * 分开写会出现一张"权限不足但没有原因"的卡片，而那看起来像系统出了故障。
+	 *
+	 * @param reason 判断结论（由 {@code TaskFileAuthorization} 给：缺哪一条目录前缀、已授权的是哪些）
+	 */
+	@Transactional
+	public AgentTaskStatus enterPermissionDenied(AgentTask task, String reason) {
+		AgentTaskStatus moved = move(task, AgentTaskStatus.INSUFFICIENT_PERMISSION, task.currentStep() + 1,
+				executorFor(AgentTaskStatus.INSUFFICIENT_PERMISSION, task));
+		setResult(task, reason);
 		return moved;
 	}
 
@@ -153,11 +172,11 @@ public class AgentTaskTransitions {
 	 * 那一条每次状态推进都跑，而调用点手上那份任务记录可能是几步之前读的。
 	 */
 	@Transactional
-	public void setAgentId(AgentTask task, long agentId) {
+	public void setAgentId(AgentTask task, String agentId) {
 		if (tasks.updateAgentId(task.id(), agentId) != 1) {
 			throw new TaskInvalidException("任务不存在：#" + task.id());
 		}
-		log.info("任务 #{} 交给 Agent 应用 #{}（由平台在接手这条任务时写入）", task.id(), agentId);
+		log.info("任务 #{} 交给 Agent 应用「{}」（由平台在接手这条任务时写入）", task.id(), agentId);
 	}
 
 	// ------------------------------------------------------------------
@@ -171,24 +190,53 @@ public class AgentTaskTransitions {
 	 * "状态已经变了、执行人还没变"的中间态 —— 一张卡片的两个字段各说一套，
 	 * 没人能从界面上看出哪一个是旧的。
 	 *
-	 * <p>五种落点，各自的含义：
+	 * <p>返回的是<b>用户 id</b>（写进 {@code agent_task.current_executor_id}），
+	 * 而 {@code null} 是有含义的两种：球在 agent 手上（agent 不是账号，那一列存不下它），
+	 * 或这件事已经结束。五种落点：
 	 * <ul>
 	 *   <li>{@link AgentTaskStatus#NEW} —— 任务人（没指派时是发布人），球在他手上，由他决定要不要往下走；</li>
-	 *   <li>三个"待确认"与"待验收" —— 发布人（等他答复 / 等他验收）；</li>
-	 *   <li>三个"已确认"与"执行中" —— agent（形如 {@code agent#3}，没配 agent 时是 {@code agent}）；</li>
+	 *   <li>三个"待确认"、「权限不足」与"待验收" —— 发布人（等他答复 / 等他处置 / 等他验收）；</li>
+	 *   <li>三个"已确认"与"执行中" —— agent（空；卡片上的 {@code agent#…} 由
+	 *       {@link AgentTask#executorLabel()} 按 {@code agent_id} 拼出来）；</li>
 	 *   <li>{@link AgentTaskStatus#COMPLETED} —— 没有执行人（没有事件在谁手上了），
-	 *       留着名字会让那张卡片读起来像还卡着；</li>
+	 *       留着 id 会让那张卡片读起来像还卡着；</li>
 	 *   <li>{@link AgentTaskStatus#CANCELLED} —— 由取消那条路单独处理（保持不动，见 {@code cancel}）。</li>
 	 * </ul>
 	 */
-	public static String executorFor(AgentTaskStatus status, AgentTask task) {
+	public static Long executorFor(AgentTaskStatus status, AgentTask task) {
 		return switch (status) {
-			case NEW -> task.assignee() == null ? task.publisher() : task.assignee();
-			case PENDING_REQUIREMENT, PENDING_PLAN, PENDING_AUTHORIZATION, PENDING_ACCEPTANCE -> task.publisher();
-			case CONFIRMED_REQUIREMENT, CONFIRMED_PLAN, AUTHORIZED, EXECUTING -> AgentTask.agentRef(task.agentId());
+			case NEW -> task.assigneeId() == null ? task.publisherId() : task.assigneeId();
+			case PENDING_REQUIREMENT, PENDING_PLAN, PENDING_AUTHORIZATION, INSUFFICIENT_PERMISSION,
+					PENDING_ACCEPTANCE -> task.publisherId();
+			case CONFIRMED_REQUIREMENT, CONFIRMED_PLAN, AUTHORIZED, EXECUTING -> null;
 			case COMPLETED -> null;
-			case CANCELLED -> task.currentExecutor();
+			case CANCELLED -> task.currentExecutorId();
 		};
+	}
+
+	/**
+	 * 日志里"当前执行人"的写法：能在手上这份任务记录里认出这个人就写姓名，认不出来就写 id。
+	 *
+	 * <p>手上这份记录只带三个人的姓名（发布人 / 任务人 / 当前执行人），
+	 * 而新执行人总是其中之一（见 {@link #executorFor}）—— 认不出来的情况只有
+	 * "那一列本来就是这个 id"（取消时保持不动的那种）。
+	 */
+	private static String who(AgentTask task, Long executorId) {
+		if (executorId.equals(task.publisherId())) {
+			return named(task.publisher(), executorId);
+		}
+		if (executorId.equals(task.assigneeId())) {
+			return named(task.assignee(), executorId);
+		}
+		if (executorId.equals(task.currentExecutorId())) {
+			return named(task.currentExecutor(), executorId);
+		}
+		return "用户#" + executorId;
+	}
+
+	/** 姓名可能为空（账号那一行不在）—— 那时退回 id，而不是在日志里留一格空白。 */
+	private static String named(String name, Long id) {
+		return name == null ? "用户#" + id : name;
 	}
 
 	/**
