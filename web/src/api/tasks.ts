@@ -49,13 +49,16 @@ export interface AgentTaskCard {
    */
   status: string
   statusLabel: string
-  /** 当前执行人的用户 id；球在 agent 手上（三个"已确认"与"执行中"）或任务已结束时为 `null`。 */
+  /** 当前执行人的用户 id；球在 agent 手上（三个"已确认"）或任务已结束时为 `null`。 */
   currentExecutorId: number | null
   /**
    * 那一格该显示的字，**由后端给**：姓名 / `agent#<agentId>`（球在 agent 手上）/ 空串（没人）。
    *
    * <p>它不只是库里那一列的原值 —— 球在 agent 手上时那一列是空的，`agent#…` 是后端按
    * `agentId` 拼出来的。前端不再自己拼一份（与 `statusLabel` 同一条规矩）。
+   *
+   * <p>「执行中」那一格写的是**任务人**：那一格确实是 agent 在跑（"是哪个 agent"看 `agentId`），
+   * 而跑失败时它停在执行中等任务人处置 —— 那一列是看板按人筛选的依据（`board(userId)`）。
    */
   currentExecutor: string
   /**
@@ -124,7 +127,16 @@ export interface AgentTaskColumn {
 /** `GET /api/agent-tasks` 的响应。列的顺序由后端定，前端按顺序画。 */
 export interface AgentTaskBoard {
   columns: AgentTaskColumn[]
+  /** 这次返回的任务总数；筛过之后它是**筛完**的条数（不是全库的条数）。 */
   total: number
+  /**
+   * 后端回显的筛选依据：这一份是"与这个用户有关、且该由他看见"的那些（用户 id），
+   * **不传就是不筛**（`null`）。界面不自己推一份 —— 它要与后端实际做了什么一致。
+   *
+   * <p>⚠️ 它**不是**卡片上那个 `currentExecutorId`（那一格是"此刻球在谁手上"）：
+   * 两者刻意不同 —— 新发布与已完成时那一格是空的/任务人，而发布人照样在自己的列表里看得见它。
+   */
+  userId: number | null
   howToAdvance: string
 }
 
@@ -186,7 +198,18 @@ async function send<T>(method: string, path: string, payload?: unknown): Promise
 }
 
 export const taskApi = {
-  board: () => send<AgentTaskBoard>('GET', ''),
+  /**
+   * 看板。`userId` 是**当前登录的人**（`useMockLogin` 记下的那个用户 id）：
+   * 传了就是"与他有关、且该由他看见的那些"，**不传（没登录）就是不筛** —— 全量。
+   *
+   * <p>判断按状态挑列（后端 `AgentTaskStatus#party()`），不是某一列上的等值比较：
+   * 新发布 / 已完成 / 已取消 —— 他是发布人**或**任务人都算（刚发出来、已经结束、被取消的，
+   * 两个人都该在自己的列表里找得到）；待确认需求 / 待验收 —— 只认发布人（那两件只有他能做）；
+   * 其余状态（含待确认计划 / 待授权 / 权限不足 / 执行中）—— 只认任务人（球在他手上）。
+   * 球在 agent 手上的三格（三个"已确认"）与谁都不相关，两张列表里都不出现。
+   */
+  board: (userId?: number | null) => send<AgentTaskBoard>(
+    'GET', userId == null ? '' : `?userId=${userId}`),
 
   detail: (id: number) => send<AgentTaskDetail>('GET', `/${id}`),
 

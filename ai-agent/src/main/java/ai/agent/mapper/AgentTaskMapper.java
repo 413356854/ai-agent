@@ -85,6 +85,43 @@ public interface AgentTaskMapper {
 	List<MapperRows.AgentTaskRow> list();
 
 	/**
+	 * <b>与某个人有关、而且该由他看见的任务</b>（界面上的"我的任务"）。
+	 *
+	 * <h2>★ 关联的不是一列，而是"按状态看哪一列"</h2>
+	 * 同一个"有他"的判断，在链上的几段落在不同的列上：
+	 * <ul>
+	 *   <li>{@code NEW} / {@code COMPLETED} / {@code CANCELLED} —— 发布人<b>或</b>任务人都算
+	 *       （刚发出来还没指派给谁做、已经结束的、被取消的：三个人里的谁都应该在自己的列表里找得到它）；</li>
+	 *   <li>{@code PENDING_REQUIREMENT} / {@code PENDING_ACCEPTANCE} —— 只有<b>发布人</b>
+	 *       （答复需求与验收是他一个人的事，任务人在那两格插不上手）；</li>
+	 *   <li>其余状态 —— 只有<b>任务人</b>（计划 / 授权 / 权限不足 / 执行中都在他手上）。</li>
+	 * </ul>
+	 * 所以这条查询是"按状态挑列"的 OR，而不是某一列上的等值比较 ——
+	 * 写成 {@code current_executor_id = ?} 会在三处漏掉卡片（新发布与终态最明显：
+	 * 发布人看不到自己刚发的那条、任务人也看不到它结束了）。
+	 *
+	 * <p>球在 agent 手上的三格（三个"已确认"，那一列是空的）<b>与谁都不相关</b>，
+	 * 两张列表里都不出现 —— 那时没有人的名字挂在这件事上。
+	 *
+	 * <p>{@code statuses} 由调用方给（{@code AgentTaskStatus} 的那几组），SQL 里不写状态名：
+	 * 状态链只有一份定义，抄进 SQL 之后加一个状态就会漏在这里，而漏掉的表现是
+	 * "那条任务在谁的列表里都不出现" —— 静默。
+	 *
+	 * <p>没有为它加索引：判断横跨两列且按状态分组，单列索引用不上（MySQL 至多退化成 index merge），
+	 * 而任务表是**人手工发起**的规模（与 {@link #list()} 同一条理由 —— 真长到需要按列分页时，
+	 * 该改的是这一页的形态）。
+	 *
+	 * @param userId 那个人的用户 id（发布人 / 任务人的 {@code agent_user.id}）
+	 * @param terminalStatuses 第一组（发布人 **或** 任务人）：{@code NEW} / {@code COMPLETED} / {@code CANCELLED}
+	 * @param publisherStatuses 第二组（只有发布人）：{@code PENDING_REQUIREMENT} / {@code PENDING_ACCEPTANCE}
+	 * @param assigneeStatuses 第三组（只有任务人）：其余全部状态
+	 */
+	List<MapperRows.AgentTaskRow> listForUser(@Param("userId") Long userId,
+			@Param("terminalStatuses") List<String> terminalStatuses,
+			@Param("publisherStatuses") List<String> publisherStatuses,
+			@Param("assigneeStatuses") List<String> assigneeStatuses);
+
+	/**
 	 * 推进状态：状态、当前执行人、当前步骤三列一起换。
 	 *
 	 * <p>它们必须是同一条 SQL：拆成三条会有"状态已经变了、执行人还没变"的中间态，

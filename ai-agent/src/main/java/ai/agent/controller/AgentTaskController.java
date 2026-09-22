@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.ArrayList;
@@ -29,7 +30,8 @@ import java.util.Map;
  * <table border="1">
  *   <caption>七个端点</caption>
  *   <tr><th>端点</th><th>回答什么</th></tr>
- *   <tr><td>{@code GET /api/agent-tasks}</td><td>"现在有哪些任务、各自在哪一列"（看板一次取回）</td></tr>
+ *   <tr><td>{@code GET /api/agent-tasks}</td><td>"现在有哪些任务、各自在哪一列"（看板一次取回；
+ *       {@code ?userId=} 时只给"球在他手上"的那些）</td></tr>
  *   <tr><td>{@code GET /api/agent-tasks/{id}}</td><td>"这条任务走到哪了、每一步是谁怎么答的、现在能做什么"</td></tr>
  *   <tr><td>{@code POST /api/agent-tasks}</td><td>"发布一条任务"</td></tr>
  *   <tr><td>{@code POST …/{id}/advance}</td><td>"推进当前事件"（登记执行结果 / 验收通过）</td></tr>
@@ -62,10 +64,18 @@ public class AgentTaskController {
 		this.tasks = tasks;
 	}
 
-	/** 看板：全部任务按列分好（列的顺序与归属见 {@code AgentTaskService.Column}）。 */
+	/**
+	 * 看板：任务按列分好（列的顺序与归属见 {@code AgentTaskService.Column}）。
+	 *
+	 * @param userId 只看"与这个人有关、而且该由他看见"的任务（{@code ?userId=<当前登录的人的用户 id>}）。
+	 *        <b>不传就是不筛</b>（全量），传了但这个人不在账号表里是 <b>400</b>（不是"筛不出来"）。
+	 *        判断按状态挑列（{@code AgentTaskStatus#party()}）：新发布 / 已完成 / 已取消是
+	 *        发布人**或**任务人；待确认需求 / 待验收只有发布人；其余状态只有任务人。
+	 */
 	@GetMapping
-	public Map<String, Object> board() {
-		AgentTaskService.Board board = tasks.board();
+	public Map<String, Object> board(
+			@RequestParam(name = "userId", required = false) Long userId) {
+		AgentTaskService.Board board = tasks.board(userId);
 		List<Map<String, Object>> columns = new ArrayList<>();
 		int total = 0;
 		for (AgentTaskService.BoardColumn column : board.columns()) {
@@ -81,6 +91,10 @@ public class AgentTaskController {
 		Map<String, Object> body = new LinkedHashMap<>();
 		body.put("columns", columns);
 		body.put("total", total);
+		// 回显这次到底筛没筛、按谁筛：界面上那句"只看与他有关的"，依据就是它（前端不自己推一份）。
+		// ⚠️ 键是 userId 而不是 currentExecutorId —— 后者在任务卡片上是**另一个东西**
+		// （那一格此刻球在谁手上）；两个同名的键放进同一个响应体里迟早被读错
+		body.put("userId", userId);
 		body.put("howToAdvance", "POST /api/agent-tasks/{id}/advance | /confirms/{confirmId}/answer | /cancel");
 		return body;
 	}

@@ -51,6 +51,18 @@
  * 按这套判据走不到「已授权」「执行中」这些格子上。
  *
  * ---------------------------------------------------------------------------
+ * ★ "我的任务"按状态挑列认人（`?userId=`），与"这一格球在谁手上"是两件事
+ * ---------------------------------------------------------------------------
+ * `GET /api/agent-tasks?userId=<用户 id>` 只给"与他有关、而且该由他看见"的那些，
+ * 判据是 `partyOf`（与真后端 `AgentTaskStatus#party()` 逐条一致）：
+ *   · 新发布 / 已完成 / 已取消 —— 发布人**或**任务人都算；
+ *   · 待确认需求 / 待验收 —— 只有发布人；
+ *   · 其余状态 —— 只有任务人。
+ * **不传 `userId` 就是不筛**（全量），传了但账号表里没有这个人是 400（不是"筛出来是空的"）。
+ * ⚠️ 它与 `executorFor`（卡片上"当前执行人"那一格显示谁）**不是同一条判据**：
+ * 新发布与三个"待确认"上两者刻意不同，混用的后果都是静默的（漏卡片，或者写错那一格）。
+ *
+ * ---------------------------------------------------------------------------
  * 发布任务：两个名字都要在账号表里，agentId 不由发布人给
  * ---------------------------------------------------------------------------
  * `publisher` 与 `assignee` **都必填**，且都要能在 permission-routes 那份账号表里找到
@@ -257,6 +269,11 @@ function authorizationText(actions, permissionNote) {
  * 自检也就验不出"下拉里选的人与卡片上显示的是同一个人"。
  * li 是**停用**账号，它出现在一条已取消的任务上：停用与"当时是谁派的、派给谁"是两件事。
  * `currentExecutorId` 为 null 的含义与真后端一致：球在 agent 手上，或这件事已经结束。
+ *
+ * ⚠️ `currentExecutorId` 逐条按 `executorFor` 那份判据摆（不是随手填的）：需求确认与待验收是
+ * **发布人**、其余在**任务人**手上、三个"已确认"是空（球在 agent 手上）。
+ * `publisherId` / `assigneeId` 那一对决定的是**这条任务出现在谁的列表里**（`partyOf`）——
+ * 假数据里两条判据各有取值，自检才断得到"两者不是同一条"。
  */
 function initialState() {
   return {
@@ -265,7 +282,7 @@ function initialState() {
       // 任务人刻意用**有目录授权**的 admin（他那个角色授权了 D:\work\demo，见 TASK_WORKSPACE）：
       // 自检要把这一条一路推到「待授权」，而权限不足那一条路由下面 id 12（任务人 zhou 没有角色）走
       {
-        id: 1, publisherId: 1, assigneeId: 1, description: '整理 9 月项目周报：按周汇总进展与风险',
+        id: 1, publisherId: 2, assigneeId: 1, description: '整理 9 月项目周报：按周汇总进展与风险',
         status: 'NEW', currentExecutorId: 1, currentStep: 1, agentId: AGENT_ID, result: null, cancelReason: null,
       },
       // 待确认需求：需求确认项还没答
@@ -277,13 +294,13 @@ function initialState() {
       // 待确认计划：第 1 步已答、agent 拆出 5 个任务点，第 3 步在等
       {
         id: 3, publisherId: 1, assigneeId: 2, description: '给工具调用那一页补一份失败分类的说明',
-        status: 'PENDING_PLAN', currentExecutorId: 1, currentStep: 3, agentId: null, result: null,
+        status: 'PENDING_PLAN', currentExecutorId: 2, currentStep: 3, agentId: null, result: null,
         cancelReason: null,
       },
       // 待授权：计划已答、agent 问到了授权这一格，第 5 步在等
       {
-        id: 4, publisherId: 2, assigneeId: 1, description: '把成本看板的单价表换成新合同价',
-        status: 'PENDING_AUTHORIZATION', currentExecutorId: 2, currentStep: 5, agentId: AGENT_ID, result: null,
+        id: 4, publisherId: 1, assigneeId: 1, description: '把成本看板的单价表换成新合同价',
+        status: 'PENDING_AUTHORIZATION', currentExecutorId: 1, currentStep: 5, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
       // 已确认需求：需求答完了，球在 agent 手上（等它拆任务点）—— 执行人那一格因此是空的
@@ -309,26 +326,30 @@ function initialState() {
       // 执行中：agent 正在跑
       {
         id: 8, publisherId: 2, assigneeId: 1, description: '把语料快照脚本的输出目录改成可配置',
-        status: 'EXECUTING', currentExecutorId: null, currentStep: 7, agentId: AGENT_ID, result: null,
+        status: 'EXECUTING', currentExecutorId: 1, currentStep: 7, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
       // 待验收：执行结果已经写回来了，等发布人点头
       {
-        id: 9, publisherId: 1, assigneeId: 1, description: '给成本看板补一条"算不出来"的说明',
+        id: 9, publisherId: 1, assigneeId: 2, description: '给成本看板补一条"算不出来"的说明',
         status: 'PENDING_ACCEPTANCE', currentExecutorId: 1, currentStep: 8, agentId: AGENT_ID,
         result: '【产出】已补上说明段落。\n\n【改动】成功的才算数：\n- edit_file {"path":"web/src/components/CostPanel.tsx"}',
         cancelReason: null,
       },
       // 已完成。描述刻意写长：它要盖住"卡片上的文字默认夹住"这件事 ——
-      // 一列里所有描述都只有一行时，「展开全文」永远不出现，界面自检也就断不到它
+      // 一列里所有描述都只有一行时，「展开全文」永远不出现，界面自检也就断不到它。
+      // ⚠️ 执行人那一格写着**任务人**（真后端在完成时会清空它）：这一条要留在"我的任务"里
+      // （[11] 那一段在登录态下看这一页，而看板按 `current_executor_id` 筛），
+      // 否则「已完成」那一列在筛过的那一份里是空的
       {
         id: 10, publisherId: 2, assigneeId: 1,
         description: '把 CI 的端口说明改成环境变量法：两套服务各用一对变量，'
           + '并写清"代理指错了端口"与"服务没起来"这两种失败长得完全一样、该先查哪一个',
-        status: 'COMPLETED', currentExecutorId: null, currentStep: 9, agentId: AGENT_ID,
+        status: 'COMPLETED', currentExecutorId: 1, currentStep: 9, agentId: AGENT_ID,
         result: '【产出】已改成 CI_MOCK_PORT / CI_UI_PORT 两行说明。', cancelReason: null,
       },
-      // 已取消：这一列只在有卡片时出现，所以假数据里必须有一条。
+      // 已取消：这一列只在有卡片时出现，所以假数据里必须有一条。执行人**保持取消那一刻的值**
+      // （与真后端 `cancel` 一致：它回答"取消的那一刻球在谁手上"），这里就是当时拿着球的那位。
       // 任务人是停用账号 li：停用与"当时派给谁"是两件事（与真后端 realUser 的注释同一条）
       {
         id: 11, publisherId: 1, assigneeId: 3, description: '调研换一个向量库（先搁置）',
@@ -499,22 +520,75 @@ function enterAgent(task, status) {
   task.currentExecutorId = null
 }
 
-/** 进入"等确认项答复"的一格：步骤 +1，当前执行人回到发布人，并生成那一步的确认项。 */
+/**
+ * "我的任务"按哪一列认人 —— 与真后端 `AgentTaskStatus#party()` **逐条一致**。
+ *
+ * <p>它不是"这一格球在谁手上"（那是 `executorFor`，回答的是卡片上那一格显示谁）：
+ * 两者在几处刻意不同，混用的后果都是静默的。
+ *
+ * @returns 'BOTH'（发布人或任务人）/ 'PUBLISHER'（只有发布人）/ 'ASSIGNEE'（只有任务人）
+ */
+function partyOf(status) {
+  if (status === 'NEW' || status === 'COMPLETED' || status === 'CANCELLED') return 'BOTH'
+  if (status === 'PENDING_REQUIREMENT' || status === 'PENDING_ACCEPTANCE') return 'PUBLISHER'
+  return 'ASSIGNEE'
+}
+
+/** 这条任务该由谁在自己的列表里看见（三组状态见 partyOf）。 */
+function visibleTo(task, userId) {
+  const party = partyOf(task.status)
+  if (party === 'PUBLISHER') return task.publisherId === userId
+  if (party === 'ASSIGNEE') return task.assigneeId === userId
+  return task.publisherId === userId || task.assigneeId === userId
+}
+
+/**
+ * "这一格球在谁手上" —— 与真后端 `AgentTaskTransitions.executorFor` **逐条一致**。
+ *
+ * <p>它填的是卡片上那一格显示谁（`current_executor_id`），**不是**看板按人筛选的依据 ——
+ * 收件人判据是 `partyOf`，两者在新发布与三个"待确认"上刻意不同。
+ *
+ * <p>「执行中」那一格写的是**任务人**：那一格确实是 agent 在跑（"是哪个 agent"看 `agentId`），
+ * 而跑失败时它停在执行中等任务人处置。
+ *
+ * @returns 用户 id；`null` = 球在 agent 手上，或这件事已经结束
+ */
+function executorFor(task, status) {
+  if (status === 'PENDING_REQUIREMENT' || status === 'PENDING_ACCEPTANCE') return task.publisherId
+  if (status === 'CONFIRMED_REQUIREMENT' || status === 'CONFIRMED_PLAN' || status === 'AUTHORIZED') return null
+  if (status === 'COMPLETED') return null
+  if (status === 'CANCELLED') return task.currentExecutorId
+  // 新发布与三个"待确认"里的另外两个、「权限不足」、「执行中」：任务人
+  // （任务人为空的行只可能是早期的行 —— 发布时必填）
+  return task.assigneeId ?? task.publisherId
+}
+
+/** 进入"等确认项答复"的一格：步骤 +1，当前执行人按 `executorFor` 算，并生成那一步的确认项。 */
 function enterPending(task, status, type, description) {
-  task.status = status
-  task.currentStep += 1
-  task.currentExecutorId = task.publisherId
+  enterWaiting(task, status)
   openConfirmation(task, type, task.currentStep, description)
 }
 
 /**
- * 进入「权限不足」：步骤 +1，当前执行人回到发布人，结论写进 result ——
+ * 进入一个"球在人手上"的格子但不生成确认项（步骤 +1，当前执行人按 `executorFor` 算）。
+ *
+ * <p>「待验收」是唯一这样的格子：人要做的是"点头"而不是"答一条确认项"，
+ * 所以它的确认项永远不存在 —— 真后端 `run()` 也是直接 `move` 过去的。
+ */
+function enterWaiting(task, status) {
+  task.status = status
+  task.currentStep += 1
+  task.currentExecutorId = executorFor(task, status)
+}
+
+/**
+ * 进入「权限不足」：步骤 +1，当前执行人按 `executorFor` 算，结论写进 result ——
  * 与真后端 `AgentTaskTransitions#enterPermissionDenied` 逐条一致。
  */
 function enterPermissionDenied(task, reason) {
   task.status = 'INSUFFICIENT_PERMISSION'
   task.currentStep += 1
-  task.currentExecutorId = task.publisherId
+  task.currentExecutorId = executorFor(task, 'INSUFFICIENT_PERMISSION')
   task.result = reason
 }
 
@@ -535,7 +609,7 @@ function advance(task, result) {
   if (task.status === 'EXECUTING') {
     task.status = 'PENDING_ACCEPTANCE'
     task.currentStep += 1
-    task.currentExecutorId = task.publisherId
+    task.currentExecutorId = executorFor(task, 'PENDING_ACCEPTANCE')
     if (result != null && String(result).trim()) task.result = String(result).trim()
     return null
   }
@@ -566,7 +640,7 @@ function revise(task) {
   const previous = task.result == null ? '' : String(task.result).trim()
   task.status = 'NEW'
   task.currentStep += 1
-  task.currentExecutorId = task.assigneeId ?? task.publisherId
+  task.currentExecutorId = executorFor(task, 'NEW')
   task.result = '用户答复「已修改任务」：这条任务已回到「新发布」重新走一遍'
     + '（重新判需求 → 拆任务点 → 判授权）。'
     + (previous ? `\n\n上一次「权限不足」的结论（留档）：\n${previous}` : '')
@@ -615,7 +689,7 @@ function runAgentStep(task) {
     if (isAmbiguous(task.description)) {
       // 第 1 步不递增：新发布与待确认需求都停在第 1 步
       task.status = 'PENDING_REQUIREMENT'
-      task.currentExecutorId = task.publisherId
+      task.currentExecutorId = executorFor(task, 'PENDING_REQUIREMENT')
       openConfirmation(task, 'REQUIREMENT', task.currentStep,
         '请补充：这条任务描述里没有说清交付物与验收标准。')
       return
@@ -652,10 +726,10 @@ function runAgentStep(task) {
       return
     }
     enterAgent(task, 'EXECUTING')
-    // 真后端这里是"跑一次 Agent 运行"：假后端直接给一份形状相同的执行结果
-    task.status = 'PENDING_ACCEPTANCE'
-    task.currentStep += 1
-    task.currentExecutorId = task.publisherId
+    // ⚠️ 接着往"待验收"走：执行中那一格写任务人（真后端 `executorFor` 就是这么算的，
+    // 跑失败时他在这一格用「登记执行结果」处置），所以这里不能靠"当前这一格"推下一步，
+    // 落点必须显式写出来 —— 真后端 run() 也是显式 move 到 PENDING_ACCEPTANCE 的
+    enterWaiting(task, 'PENDING_ACCEPTANCE')
     task.result = '【产出】假后端：这一步在真后端是一次 Agent 运行，产出由模型汇总。'
       + '\n\n【改动】这次运行没有写操作（只调用了只读工具，或没有调用工具）'
       + '\n\n【运行】runId=（假后端不产生运行记录） · 1 步 · 0 次工具调用 · 0 tokens · 0ms · 停因 ANSWERED'
@@ -724,8 +798,22 @@ export function handleTaskRoutes(req, res, url, json) {
   }
 
   if (req.method === 'GET' && pathname === '/api/agent-tasks') {
+    // 与真后端 `AgentTaskService#board(userId)` 同一套判据：按状态挑列认人（`visibleTo`），
+    // **不传就是不筛**。不实现的话，自检里"登录之后看板只剩与他有关的"永远断不到 ——
+    // 而那是这一版的全部内容
+    const rawUserId = url.searchParams.get('userId')
+    if (rawUserId != null && !findMockAccountById(Number(rawUserId))) {
+      json(res, {
+        ok: false,
+        error: `账号表里没有 id=${rawUserId} 这个人 —— 界面上传的是「当前登录的人」，`
+          + '他不在账号表里就取不出「与他有关」的任务。本地存着的那条登录记录已经过期，重新登录一次。',
+      }, 400)
+      return true
+    }
+    const userId = rawUserId == null ? null : Number(rawUserId)
+    const visible = userId == null ? state.tasks : state.tasks.filter(task => visibleTo(task, userId))
     const columns = COLUMNS.map(column => {
-      const tasks = state.tasks.filter(task => column.statuses.includes(task.status))
+      const tasks = visible.filter(task => column.statuses.includes(task.status))
       return {
         key: column.key,
         label: column.label,
@@ -736,7 +824,8 @@ export function handleTaskRoutes(req, res, url, json) {
     })
     json(res, {
       columns,
-      total: state.tasks.length,
+      total: visible.length,
+      userId,
       howToAdvance: 'POST /api/agent-tasks/{id}/advance | /confirms/{confirmId}/answer | /revise | /cancel',
     })
     return true

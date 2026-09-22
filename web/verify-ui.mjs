@@ -2942,6 +2942,11 @@ if (EXPECT_REFLECTION) {
 //
 // ⚠️ 真后端那条路径上**一个字节都不写库**（与用户管理 / 权限管理同一条纪律）：
 // 造数据、推进、答复、取消都只在假后端上跑。真后端只断言这一页渲染得出来。
+//
+// ⚠️ 这一节**在未登录下跑**（看板 = 全量）：下面那一大段要断言"点一下卡片真的换列了、
+// 列里的条数 ±1"，而按人筛过之后同一列可能只剩一张卡片，那些计数断言就测不到它要说的事。
+// 「登录之后看板只剩我的待办」这一小段放在 [11]（那里本来就处于登录态）——
+// 它要一次 reload 才拿得到登录后的那一份，而 reload 会把前面几节攒下的结果清掉，只能排在最后。
 console.log('[8.8] 应用管理 · agent任务')
 await navMode('agent任务')
 await waitFor(async () => (await page.locator('.task-panel .ant-card').count()) > 0, 8000)
@@ -2956,7 +2961,24 @@ const taskColumnCounts = () => page.$$eval('.task-column', els => Object.fromEnt
     Number(el.querySelector('.task-column-count')?.dataset.count ?? -1),
   ])))
 
+/**
+ * 关掉详情弹窗，并**断言它真的没了**。
+ *
+ * <p>少断言那一下的后果很具体（实测踩到一次）：弹窗没关掉时，后面 `runAgent` 里那次
+ * 「刷新」会被 `.ant-modal-wrap` 拦住，Playwright 一直重试直到 30 秒超时 ——
+ * 报出来的是 `ant-modal-wrap … intercepts pointer events`，看起来像"刷新按钮坏了"，
+ * 而真正的原因（上一步那个弹窗没关）在这 30 秒里已经看不出是哪一处了。
+ * 这四处点击都要走这一步：同一段流程里连点几次关，少一处静默失败就够毁掉整节的定位。
+ */
+const closeTaskModal = async () => {
+  await page.locator('.ant-modal:visible .ant-modal-footer .ant-btn').last().click()
+  const closed = await waitFor(async () => (await page.locator('.ant-modal:visible').count()) === 0, 5000)
+  expect('关掉详情弹窗（它开着会拦住后面那些点击）', closed,
+    `还开着 ${await page.locator('.ant-modal:visible').count()} 个`)
+}
+
 if (EXPECT_REFLECTION) {
+  // 这一节的基准：全量（未登录）下每一列各有几张卡片
   const initialCounts = await taskColumnCounts()
   expect('看板五列都在，顺序与后端的列定义一致',
     JSON.stringify(Object.keys(initialCounts))
@@ -2975,13 +2997,13 @@ if (EXPECT_REFLECTION) {
   // 库里存的是 `agent_user.id`（姓名可以改，而"当时是谁派的、派给谁"要一直指向同一个人），
   // 所以响应体必须同时给 id 与姓名。只断姓名的话，一个"把 id 那两格漏掉"的实现照样全绿；
   // 只断 id 的话，一个"把 id 直接显示给用户"的实现也全绿 —— 两条一起断才钉得住这个契约。
-  const boardJson = await (await page.request.get(`${URL}/api/agent-tasks`)).json()
-  const cardById = id => boardJson.columns.flatMap(c => c.tasks).find(t => t.id === id)
+  const allBoard = await (await page.request.get(`${URL}/api/agent-tasks`)).json()
+  const cardById = id => allBoard.columns.flatMap(c => c.tasks).find(t => t.id === id)
   const idCard = cardById(3)
   expect('★ 卡片上三个"人"都带 id 与姓名两份（库里存 id，界面显示姓名）',
     idCard.publisherId === 1 && idCard.publisher === 'admin'
     && idCard.assigneeId === 2 && idCard.assignee === 'zhou'
-    && idCard.currentExecutorId === 1 && idCard.currentExecutor === 'admin',
+    && idCard.currentExecutorId === 2 && idCard.currentExecutor === 'zhou',
     JSON.stringify({ p: `${idCard.publisherId}/${idCard.publisher}`,
       a: `${idCard.assigneeId}/${idCard.assignee}`,
       e: `${idCard.currentExecutorId}/${idCard.currentExecutor}` }))
@@ -3098,10 +3120,23 @@ if (EXPECT_REFLECTION) {
   const runAgent = async query => {
     const response = await page.request.post(`${URL}/api/agent-tasks/__run-agent${query ?? ''}`)
     const body = await response.json()
+    const refresh = page.locator('.task-panel button', { hasText: /刷\s*新/ }).first()
+    /**
+     * 点「刷新」前先等**没有开着的弹窗**：`.ant-modal-wrap` 铺满整个视口，
+     * 它开着的时候 Playwright 对刷新按钮会一直重试到超时（失败信息是
+     * `ant-modal-wrap … intercepts pointer events`，看起来像"刷新按钮坏了"）。
+     * 上一次踩到它是 30 秒后超时，而那 30 秒里真正的原因（某个弹窗没关掉）已经看不出来了 ——
+     * 所以这里等不到就直接说清楚。
+     */
+    const noModal = await waitFor(async () => (await page.locator('.ant-modal:visible').count()) === 0, 5000)
+    if (!noModal) {
+      const stuck = await page.locator('.ant-modal:visible').first().innerText()
+      throw new Error(`推之前点不了「刷新」：还有弹窗开着 —— ${stuck.replace(/\n/g, ' ').slice(0, 120)}`)
+    }
     // ⚠️ 两字按钮在 antd 6 里渲染成「刷 新」（汉字之间插一个空格）——
     // 写成 `getByRole('button', { name: '刷新', exact: true })` 一直等不到，
     // 而失败信息（waiting for locator … 超时）看起来像"这个按钮不存在"（同 [8.6] 的「角 色」）
-    await page.locator('.task-panel button', { hasText: /刷\s*新/ }).first().click()
+    await refresh.click()
     return body
   }
 
@@ -3119,8 +3154,7 @@ if (EXPECT_REFLECTION) {
   expect('★ 「新发布」没有「发起需求确认」按钮，并写明这一步由 agent 任务执行做',
     (await detail.getByRole('button', { name: '发起需求确认', exact: true }).count()) === 0
     && /这一步由 agent 任务执行做/.test(await detail.innerText()))
-  await detail.locator('.ant-modal-footer .ant-btn').click()
-  await waitFor(async () => (await page.locator('.ant-modal:visible').count()) === 0, 5000)
+  await closeTaskModal()
 
   const round1 = await runAgent(`?id=${openedId}&steps=1`)
   const afterFirstStep = await taskColumnCounts()
@@ -3167,8 +3201,8 @@ if (EXPECT_REFLECTION) {
   //
   // ⚠️ 外部推完要**重开**详情：刷新按钮只重拉看板（useTasks 的 reload），
   // 开着的详情还是推之前那一份 —— 直接点「授权」会一直等不到那个按钮
-  await planDetail.locator('.ant-modal-footer .ant-btn').click()
-  await waitFor(async () => (await page.locator('.ant-modal:visible').count()) === 0, 5000)
+  await closeTaskModal()
+
   await runAgent(`?id=${openedId}`)
   const asked = await (await page.request.get(`${URL}/api/agent-tasks/${openedId}`)).json()
   expect('★ agent 再推一格：转到「待授权」，授权确认项的正文里带着这次要做的事',
@@ -3194,8 +3228,7 @@ if (EXPECT_REFLECTION) {
     /状态已经变了/.test(await page.locator('.task-panel').innerText()), 8000)
   expect('★ 别人已经答过之后，界面上那次点答被说成「状态已经变了」（409 与 400 分开处理）',
     conflictShown)
-  await planDetail.locator('.ant-modal-footer .ant-btn').click()
-  await waitFor(async () => (await page.locator('.ant-modal:visible').count()) === 0, 5000)
+  await closeTaskModal()
 
   // ---- 发布一条新任务（界面走一遍表单） ----
   //
@@ -3326,8 +3359,7 @@ if (EXPECT_REFLECTION) {
   // 关掉它再往下走：下面的 runAgent 会点看板上的「刷新」，而开着的弹窗会挡住那次点击
   // （失败信息是 Playwright 的点击超时 + "ant-modal-wrap intercepts pointer events"，
   // 看起来像"刷新按钮坏了"）
-  await deniedDetail.locator('.ant-modal-footer .ant-btn').click()
-  await waitFor(async () => (await page.locator('.ant-modal:visible').count()) === 0, 5000)
+  await closeTaskModal()
 
   // ---- 判断不通过那条路：任务人没有目录授权 ⇒ 「权限不足」，且**不生成授权确认项** ----
   //
@@ -3637,12 +3669,92 @@ console.log('[11] 模拟登录（页头右上角）')
     (await chip.count()) === 1 && Number(await chip.getAttribute('data-login-user-id')) === hit.id,
     (await chip.innerText()).replace(/\n/g, ' '))
 
+  // ---- ★ 登录态下 agent任务那一页的看板按人筛（`?userId=`） ----
+  //
+  // 这一小段放在这里而不是 [8.8]，理由有两条，都不是排版问题：
+  //   ① 它要一次 `page.reload()` 才拿得到"登录之后"的那一份看板（登录态只是 localStorage
+  //      里的一条记录，App 挂载时读一次），而这一节本来就 reload 过 —— 再插一次是免费的；
+  //   ② [8.8] 里那些"点一下卡片真的换列了、列里的条数 ±1"必须在**未登录（全量）**下跑，
+  //      按人筛过之后同一列可能只剩一张卡片，计数断言就测不到它要说的事。
+  //
+  // ★ 判据是"按状态挑列"，不是某一列上的等值比较（`AgentTaskStatus#party()`）：
+  //   新发布 / 已完成 / 已取消 —— 发布人**或**任务人；待确认需求 / 待验收 —— 只有发布人；
+  //   其余状态 —— 只有任务人。所以这一小段两边都得断：
+  //   **该出现的出现了**（只断这个，一个"没筛、返回全量"的实现照样全绿），
+  //   **不该出现的一条都没有**（只断这个，"筛成空"也全绿）。期望的 id 集合是照上面对出来的。
+  await navMode('agent任务')
+  await waitFor(async () => /只看与|未登录/.test(await page.locator('.task-board-scope').innerText()), 8000)
+  const scopeText = await page.locator('.task-board-scope').innerText()
+  expect('★ 登录之后看板说明它按谁筛（少掉的那几条在屏幕上没有别的痕迹）',
+    scopeText.includes(label) && new RegExp(`用户 id\\s*${hit.id}`).test(scopeText),
+    scopeText.replace(/\n/g, ' ').slice(0, 90))
+  /** 屏幕上那几张卡片的 id（`data-task-id` 是卡片上的稳定标识）。 */
+  const shownTaskIds = () => page.$$eval('.task-card', els => els.map(el => Number(el.dataset.taskId)).sort((a, b) => a - b))
+  const filteredBoard = await (await page.request.get(`${URL}/api/agent-tasks?userId=${hit.id}`)).json()
+  const allBoard = await (await page.request.get(`${URL}/api/agent-tasks`)).json()
+  const cardsOf = board => board.columns.flatMap(c => c.tasks)
+  const idsOf = board => cardsOf(board).map(task => task.id).sort((a, b) => a - b)
+  expect('★ 这一页收的是"与他有关、且该由他看见"的那些（接口那一份与屏幕上一致）',
+    filteredBoard.userId === hit.id
+    && allBoard.userId === null && allBoard.total > filteredBoard.total
+    && cardsOf(filteredBoard).length > 0
+    && JSON.stringify(await shownTaskIds()) === JSON.stringify(idsOf(filteredBoard)),
+    `屏幕上 ${JSON.stringify(await shownTaskIds())} / 接口 ${JSON.stringify(idsOf(filteredBoard))}`)
+  // 页头卡片上那个数字也要跟着筛：它是"我现在有几件事"里最直接的那个
+  const shownTotal = await page.locator('.task-panel .ant-card-head-title').innerText()
+  expect('★ 看板标题上的条数是筛过之后的数（不是全库的条数）',
+    shownTotal.includes(`任务看板（${filteredBoard.total} 条）`), shownTotal.replace(/\n/g, ' '))
+
+  // ---- ★ 同一份数据换个人看，看到的是另一批（这条才真正钉住 OR 规则） ----
+  //
+  // 脚本替"另一个人"取一次接口，断的是**他自己在界面上也会看到的那些**：admin 是发布人的
+  // 「待确认计划」（球在 zhou 手上）只有 zhou 看得见、admin 看**不**见；
+  // 而 admin 是发布人的「待验收」反过来只有 admin 看得见（那两格只有他能做）。
+  // 少了这一条，一个把筛选写成"发布人或任务人，不分状态"的实现会照样全绿。
+  const othersBoard = await (await page.request.get(`${URL}/api/agent-tasks?userId=2`)).json()
+  const agentHeldCard = 5 // 已确认需求：球在 agent 手上，而它按状态归**任务人**
+  expect('★ 收件人判据不是"发布人或任务人"一刀切：「待确认计划」只归任务人',
+    idsOf(othersBoard).includes(3) && !idsOf(filteredBoard).includes(3),
+    `zhou 的 ${JSON.stringify(idsOf(othersBoard))}`)
+  expect('★ 「待验收」只归发布人（那两格只有他能做）',
+    idsOf(filteredBoard).includes(9) && !idsOf(othersBoard).includes(9),
+    `admin 的 ${JSON.stringify(idsOf(filteredBoard))} / zhou 的 ${JSON.stringify(idsOf(othersBoard))}`)
+  // ⚠️ 球在 agent 手上那三格**照样归任务人**（"其余状态 → assignee_id"）：那一列是空的，
+  // 但这与"该由谁看"是两件事 —— 它在等 agent 把它拆完，而它是任务人的活。
+  // 这一条把两件事分开：admin 是发布人却看不到它，zhou 是任务人所以看得到
+  expect('★ 球在 agent 手上的卡片归**任务人**（那一列为空 ≠ 与谁都不相关）',
+    idsOf(othersBoard).includes(agentHeldCard) && !idsOf(filteredBoard).includes(agentHeldCard),
+    `#${agentHeldCard}：admin ${idsOf(filteredBoard).includes(agentHeldCard)} / `
+    + `zhou ${idsOf(othersBoard).includes(agentHeldCard)}`)
+  expect('★ 已结束的两条（已完成 / 已取消）发布人与任务人都看得见',
+    idsOf(filteredBoard).includes(10) && idsOf(filteredBoard).includes(11)
+    && idsOf(othersBoard).includes(10),
+    `admin 的 ${JSON.stringify(idsOf(filteredBoard))} / zhou 的 ${JSON.stringify(idsOf(othersBoard))}`)
+  // 回到对话台：下一段要按页头那个「退出」按钮，而在这一页上它会顺手把看板重拉一遍
+  // （那是一件好事，但会让"退出之后刷新仍是未登录"那两条多绕一圈）
+  await navMode('SSE 流式')
+
   await exit.click()
   const loggedOut = await waitFor(async () => (await entry.count()) === 1, 8000)
   expect('★ 点「退出」回到未登录（入口按钮回来、标签消失）',
     loggedOut && (await chip.count()) === 0)
   const cleared = await page.evaluate(() => window.localStorage.getItem('ai-agent.mock-login'))
   expect('★ 退出把那条记录删掉了（不是只清了内存）', cleared === null, `localStorage=${cleared}`)
+
+  // 退出之后回那一页看：说明那一行换成了"这是全部任务"，看板也回到全量 ——
+  // 它同时钉住"换人要重拉"这条（筛选条件是服务端的，本地那一份是按旧条件取回来的）
+  await navMode('agent任务')
+  const outScope = await waitFor(async () =>
+    /未登录：这是全部任务/.test(await page.locator('.task-board-scope').innerText()), 8000)
+  expect('★ 退出之后看板回到全量，说明那一行也换回「未登录：这是全部任务」',
+    outScope && /模拟登录/.test(await page.locator('.task-board-scope').innerText()),
+    (await page.locator('.task-board-scope').innerText()).replace(/\n/g, ' ').slice(0, 90))
+  const afterLogoutBoard = await (await page.request.get(`${URL}/api/agent-tasks`)).json()
+  const shownAfter = await page.locator('.task-panel .ant-card-head-title').innerText()
+  expect('★ 那一份的条数等于全量（登录时效的那一条回来了）',
+    afterLogoutBoard.userId === null
+    && shownAfter.includes(`任务看板（${afterLogoutBoard.total} 条）`),
+    `${shownAfter.replace(/\n/g, ' ')} · 全量 ${afterLogoutBoard.total} 条`)
 
   await page.reload({ waitUntil: 'domcontentloaded' })
   await page.waitForSelector('.app-topbar')

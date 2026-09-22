@@ -80,6 +80,7 @@ public class DefaultAgentTaskService implements AgentTaskService {
 		this.dispatch = dispatch;
 		this.permissions = permissions;
 		verifyColumnsCoverAllStatuses();
+		verifyPartyCoverAllStatuses();
 	}
 
 	/**
@@ -100,13 +101,45 @@ public class DefaultAgentTaskService implements AgentTaskService {
 				Column.values().length);
 	}
 
+	/**
+	 * 启动期自检：<b>每一个状态都必须答得出"这件事该由谁在自己的列表里看见"</b>。
+	 *
+	 * <p>{@link AgentTaskStatus#party()} 是界面上那张看板的收件人判据（见 {@code board}），
+	 * 它是一个 switch 表达式，编译器保证"每个取值都有分支"；这里问的是另一半 ——
+	 * <b>三组加起来是不是全部</b>。多算一格（同一个状态落在两组里）会让同一条任务在
+	 * 两张列表里都出现，而"它到底归谁"变成一件说不清的事；少算一格则相反：
+	 * 那条任务在**谁的列表里都不出现**，而"看不到"与"它本来就不该出现"长得一模一样。
+	 */
+	private static void verifyPartyCoverAllStatuses() {
+		int counted = 0;
+		for (AgentTaskStatus.Party party : AgentTaskStatus.Party.values()) {
+			counted += AgentTaskStatus.withParty(party).size();
+		}
+		if (counted != AgentTaskStatus.values().length) {
+			throw new IllegalStateException(("按人取任务的收件人自检没过：%d 个状态里只有 %d 个落在某一组上 —— "
+					+ "多算会让同一条任务出现在两张列表里，少算会让它在谁的列表里都不出现。"
+					+ "改状态链时要在 AgentTaskStatus#party 里给它一个归属。")
+					.formatted(AgentTaskStatus.values().length, counted));
+		}
+		log.info("任务看板的收件人自检完成：{} 个状态各归一组（发布人或任务人 {} 个 / 只有发布人 {} 个 / 只有任务人 {} 个）",
+				AgentTaskStatus.values().length,
+				AgentTaskStatus.withParty(AgentTaskStatus.Party.BOTH).size(),
+				AgentTaskStatus.withParty(AgentTaskStatus.Party.PUBLISHER).size(),
+				AgentTaskStatus.withParty(AgentTaskStatus.Party.ASSIGNEE).size());
+	}
+
 	// ------------------------------------------------------------------
 	//  读
 	// ------------------------------------------------------------------
 
 	@Override
-	public Board board() {
-		List<AgentTask> all = tasks.list().stream().map(MapperRows.AgentTaskRow::toDomain).toList();
+	public Board board(Long userId) {
+		List<MapperRows.AgentTaskRow> rows = userId == null ? tasks.list() : tasks.listForUser(
+				person(userId).id(),
+				storedValues(AgentTaskStatus.withParty(AgentTaskStatus.Party.BOTH)),
+				storedValues(AgentTaskStatus.withParty(AgentTaskStatus.Party.PUBLISHER)),
+				storedValues(AgentTaskStatus.withParty(AgentTaskStatus.Party.ASSIGNEE)));
+		List<AgentTask> all = rows.stream().map(MapperRows.AgentTaskRow::toDomain).toList();
 		List<BoardColumn> columns = new ArrayList<>();
 		for (Column column : Column.values()) {
 			List<AgentTask> inColumn = all.stream().filter(task -> column.statuses().contains(task.status())).toList();
@@ -114,6 +147,11 @@ public class DefaultAgentTaskService implements AgentTaskService {
 					column.statuses().stream().map(AgentTaskStatus::label).toList(), inColumn));
 		}
 		return new Board(List.copyOf(columns));
+	}
+
+	/** 状态名（库里存的那一份）—— 按人取任务的那条查询用它拼三组状态。 */
+	private static List<String> storedValues(List<AgentTaskStatus> statuses) {
+		return statuses.stream().map(AgentTaskStatus::storedValue).toList();
 	}
 
 	@Override
@@ -374,6 +412,21 @@ public class DefaultAgentTaskService implements AgentTaskService {
 						+ "都是真实用户；名字要从用户列表里搜出来选（GET /api/permissions/users/search?keyword=…），"
 						+ "打错一个字不会有任何约束拦下这条任务，它只会挂在一个不存在的人名下。")
 						.formatted(wanted, what)));
+	}
+
+	/**
+	 * 按 id 取人（界面上传进来的"当前登录的人"）—— 与 {@link #realUser} 同一条取舍，按 id 的那一份。
+	 *
+	 * <p>走的同样是一次真实查询，于是"这个 id 根本不在账号表里"会当着用户的面报 400：
+	 * 那种情况来自本地存着的一条过期的登录记录（账号后来被清掉了），而**两种猜测都是错的** ——
+	 * 当成没登录会给他看全量任务（他以为看到的是自己的），当成筛不出来会给他一张空看板
+	 * （看起来像"我没有任务"）。两句话都要由这里说出来。
+	 */
+	private Account person(Long userId) {
+		return permissions.findAccountById(userId).orElseThrow(() -> new TaskInvalidException(
+				("账号表里没有 id=%d 这个人 —— 界面上传的是「当前登录的人」，他不在账号表里就取不出"
+						+ "「与他有关」的任务。本地存着的那条登录记录已经过期，重新登录一次。")
+						.formatted(userId)));
 	}
 
 	/** 日志里的姓名：账号那一行不在（姓名落空）时退回 id，而不是留一格空白。 */

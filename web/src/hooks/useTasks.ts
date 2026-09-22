@@ -44,8 +44,17 @@ export interface UseTasksResult {
  * 与成本看板 / Prompt 面板同一条：这一页的数据只被这一页自己改。
  * 唯一会因为等待而轮询的是 HITL 待办（"有人在等它"），而这张看板上的"等"
  * 是等人来点界面，不是等系统跑完 —— 点一次刷新就够了。
+ *
+ * <h2>看板按"当前登录的人"筛（`userId`）</h2>
+ * 筛的是"此刻的球在谁手上"（后端按 `current_executor_id` 筛，见 `taskApi.board`），
+ * 不是"与他有关的全部任务" —— 所以同一个人既是发布人又是任务人时，看到的也只是现在归他的那些。
+ * 没登录（`userId` 为空）时**不筛**：那时没有"我"这个主语，给一份空看板会被读成"我没有待办"。
+ *
+ * <p>登录态变了要重拉：它是**服务端**的筛选条件，本地那份看板是按旧条件取回来的
+ * （切走再切回来才刷新的话，用户会看着一列别人的任务点下去，然后收到 409 —— 而那条待办
+ * 本来就不该在他眼前）。
  */
-export function useTasks(active: boolean): UseTasksResult {
+export function useTasks(active: boolean, userId: number | null): UseTasksResult {
   const [board, setBoard] = useState<Remote<AgentTaskBoard>>({ status: 'idle' })
   const [detail, setDetail] = useState<Remote<AgentTaskDetail>>({ status: 'idle' })
   const [feedback, setFeedback] = useState<UseTasksResult['feedback']>({ status: 'idle' })
@@ -57,12 +66,12 @@ export function useTasks(active: boolean): UseTasksResult {
   const loadBoard = useCallback(async () => {
     setBoard({ status: 'loading' })
     try {
-      setBoard({ status: 'ok', data: await taskApi.board() })
+      setBoard({ status: 'ok', data: await taskApi.board(userId) })
     }
     catch (e) {
       setBoard({ status: 'error', error: describe(e) })
     }
-  }, [])
+  }, [userId])
 
   const loadDetail = useCallback(async (id: number) => {
     try {
@@ -153,7 +162,18 @@ export function useTasks(active: boolean): UseTasksResult {
 
   const clearFeedback = useCallback(() => setFeedback({ status: 'idle' }), [])
 
-  // 进面板拉一次（不轮询，理由见类注释）
+  /**
+   * 换人（登录 / 退出）就让下一次进面板重新取一份。
+   *
+   * <p>这里刻意**不顺手调一次 `loadBoard`**：要在"进面板"与"换人"两个入口都拉一次的话，
+   * 那个 initialized 标记就挡不住重复请求，而重复请求的后果是后到的那一份覆盖先到的
+   * （两份可能按不同的人筛）。只把它复位，取数的时机仍然只有一处 —— 下面那个 effect。
+   */
+  useEffect(() => {
+    initialized.current = false
+  }, [userId])
+
+  // 进面板拉一次（不轮询，理由见类注释）。loadBoard 认得当前的人，所以这里不用把 userId 写进依赖
   useEffect(() => {
     if (!active || initialized.current) return
     initialized.current = true

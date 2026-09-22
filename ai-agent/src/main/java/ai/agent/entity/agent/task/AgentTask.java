@@ -20,8 +20,11 @@ import java.time.Instant;
  *   <li>{@code publisherId} 发布人：指派出任务的人 —— 这一次从开始到结束都是他；</li>
  *   <li>{@code assigneeId} 任务人：交付任务的人 —— 也是开始时的执行人；</li>
  *   <li>{@code currentExecutorId} 当前执行人：**这一条现在流转到谁手里** ——
- *       球在人手上时是他的 id，球在 agent 手上（三个"已确认"与"执行中"）或事情已经结束时为空。
- *       它与前两列是两类东西：前两列是"这件事的人"，它是"此刻的球在谁手上"。</li>
+ *       球在人手上时是他的 id（待确认计划 / 待授权 / 权限不足 / 执行中 / 待验收在任务人手上，
+ *       需求确认与验收在发布人手上，见 {@code AgentTaskTransitions#executorFor}），
+ *       球在 agent 手上（三个"已确认"）或事情已经结束时为空。
+ *       它与前两列是两类东西：前两列是"这件事的人"，它是"此刻的球在谁手上" ——
+ *       看板按人筛选用的就是这一列。</li>
  * </ul>
  *
  * <h2>校验放在紧凑构造器里</h2>
@@ -125,9 +128,9 @@ public record AgentTask(Long id, Long publisherId, String publisher, Long assign
 	 *   <li>任务已结束、或这列空而 agent 也还没接手过 → 空串（界面显示「（无）」）。</li>
 	 * </ul>
 	 *
-	 * <p>第二条成立的前提是发布人 id 非空（列 NOT NULL）：三个"待确认"、「权限不足」与「待验收」
-	 * 的球都在发布人手上，所以非终态里"这一列为空"只可能是球在 agent 手上那四格
-	 * （见 {@code AgentTaskTransitions#executorFor}）。
+	 * <p>第二条成立的前提是：非终态里"这一列为空"只可能是球在 agent 手上那三格 ——
+	 * 有人接手的那几格都写着一个人的 id（{@code AgentTaskTransitions#executorFor}），
+	 * 而发布人 id 非空（列 NOT NULL）、任务人在发布时必填。
 	 */
 	public String executorLabel() {
 		if (currentExecutorId != null) {

@@ -15,7 +15,7 @@ const { Text, Paragraph } = Typography
  * 状态与列的归属**由后端算**（`AgentTaskService.Column`），前端只按 key 画 ——
  * 前端再定一份"哪个状态进哪一列"就是第二份判据，而两份不一致时卡片会出现在错误的列上。
  *
- * <h2>★ 四条不能省的说法</h2>
+ * <h2>★ 五条不能省的说法</h2>
  * <ol>
  *   <li><b>卡片停在哪一列 = 现在等谁</b>：看板不解释这一点，"待处理"就只是一个堆着东西的筐；
  *       所以列头写出这一列收的是哪几种状态，卡片上写出当前执行人；</li>
@@ -26,7 +26,11 @@ const { Text, Paragraph } = Typography
  *   <li><b>发布人 / 任务人只能从用户列表里选</b>：那两个名字在发出去的时候核一遍账号表，
  *       而库里存的是核出来的用户 id（姓名是读侧关联查询出来的）——
  *       所以那两格是搜索选择器（`UserPicker`），而 <b>agentId 根本不在表单里</b>：
- *       它由平台在第一次接手这条任务时写入（配置项 `ai.agent.task.agent-id`）。</li>
+ *       它由平台在第一次接手这条任务时写入（配置项 `ai.agent.task.agent-id`）；</li>
+ *   <li><b>这份看板是"与我有关的活"，要说清它筛过了</b>：登录之后看板只收与他有关的那些
+ *       （后端按状态挑列，见 `taskApi.board`），而屏幕上少了的那几条
+ *       没有任何痕迹 —— 所以卡片标题下面那一行必须写出"按谁筛的"。没登录时不筛，
+ *       那一行也要说出来（否则"没有任务"与"没筛"看起来一样）。</li>
  * </ol>
  *
  * <h2>「权限不足」那一格：原因要显示，两个按钮要说清各做什么</h2>
@@ -52,7 +56,11 @@ const { Text, Paragraph } = Typography
  * 展开入口必须在卡片上（而不是"想看就去点详情"）：一列里摆着好几张卡时，
  * 哪一张被夹掉靠比对各卡高度是看不出来的。
  */
-export function AgentTaskPanel({ tasks }: { tasks: UseTasksResult }) {
+export function AgentTaskPanel({ tasks, loginName }: {
+  tasks: UseTasksResult
+  /** 当前登录那个人的显示名（`mockLoginLabel` 算出来的那一份）；没登录是 `null`。 */
+  loginName: string | null
+}) {
   const { board } = tasks
   const data = board.status === 'ok' ? board.data : null
   const [createOpen, setCreateOpen] = useState(false)
@@ -95,6 +103,15 @@ export function AgentTaskPanel({ tasks }: { tasks: UseTasksResult }) {
           <Button type="primary" onClick={() => setCreateOpen(true)}>发布任务</Button>
         </Space>}
       >
+        {/* 筛没筛、按谁筛，由**后端回显的那一格**说了算（`board.userId`）——
+            这里再推一份"我登录了没有"就是第二份判据。没有这张说明的话，看板看起来
+            与"全部任务"完全一样，而用户会以为别人的任务不见了 */}
+        <div className="task-board-scope">
+          {data?.userId == null
+            ? '未登录：这是全部任务（先在上方「模拟登录」里选一个人，看板就只看与他有关的那些）。'
+            : `只看与 ${loginName ?? '（没记下名字）'} 有关的任务（用户 id ${data.userId}）`
+              + ' —— 归别人在办的那些不在这一份里，退出登录即可看全部。'}
+        </div>
         {data && data.total === 0
           ? <Empty description="还没有任务。点「发布任务」发一条：它会先落在「新任务」，随后由 agent 任务执行判断需求。" />
           : (

@@ -19,7 +19,7 @@ import { useAgent } from './hooks/useAgent'
 import { useAlerts } from './hooks/useAlerts'
 import { useChatStream } from './hooks/useChatStream'
 import { useCost } from './hooks/useCost'
-import { useMockLogin } from './hooks/useMockLogin'
+import { mockLoginLabel, useMockLogin } from './hooks/useMockLogin'
 import { usePermissions } from './hooks/usePermissions'
 import { usePrompt } from './hooks/usePrompt'
 import { useRagDiag } from './hooks/useRagDiag'
@@ -105,12 +105,14 @@ export default function App(
   // 同样不轮询 —— 这一页的数据只被这一区自己改，而每次写完之后 hook 会自己重拉一次。
   // 两个页面共用一个 hook（账号与角色本来就是一次取回的一份快照），所以两边的 active 都要算上
   const permissions = usePermissions(mode === 'users' || mode === 'permissions')
-  // 第十个（agent任务）：进面板拉一次看板。写操作（发布 / 推进 / 答复 / 取消）之后
-  // hook 会自己把看板与打开着的那条详情一起重拉 —— 一次写会同时改这两处的形状
-  const tasks = useTasks(mode === 'tasks')
   // 第十一个：页头的模拟登录。它不发请求（选人那一步走搜索端点），也不跟着视图走 ——
-  // 它记的是"现在以谁的身份在用这一页"，后续要按人区分的业务从这里取 id
+  // 它记的是"现在以谁的身份在用这一页"，按人区分的业务从这里取 id（agent任务那一页的看板就是）
   const mockLogin = useMockLogin()
+  // 第十个（agent任务）：进面板拉一次看板 —— **按当前登录的人筛**（`mockLogin.user.id`）：
+  // 筛的是"此刻的球在他手上"的那些，所以它要拿到那个 id 才挂得起来。
+  // 写操作（发布 / 推进 / 答复 / 取消）之后 hook 会把看板与打开着的那条详情一起重拉；
+  // 登录态换了（登录 / 退出）它也会重拉一次 —— 筛选条件是服务端的，本地那份是按旧条件取的
+  const tasks = useTasks(mode === 'tasks', mockLogin.user?.id ?? null)
 
   const listRef = useRef<HTMLElement>(null)
 
@@ -190,7 +192,7 @@ export default function App(
         ) : mode === 'permissions' ? (
           <PermissionPanel permissions={permissions} />
         ) : mode === 'tasks' ? (
-          <AgentTaskPanel tasks={tasks} />
+          <AgentTaskPanel tasks={tasks} loginName={mockLogin.user ? mockLoginLabel(mockLogin.user) : null} />
         ) : mode === 'threads' ? (
           // 面板自己带滚动容器：诊断内容比对话长得多，而且没有"新消息贴底"这个语义
           <ThreadBudgetPanel diag={diag} />

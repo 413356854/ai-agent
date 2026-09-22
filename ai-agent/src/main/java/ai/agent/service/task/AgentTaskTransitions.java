@@ -192,23 +192,33 @@ public class AgentTaskTransitions {
 	 *
 	 * <p>返回的是<b>用户 id</b>（写进 {@code agent_task.current_executor_id}），
 	 * 而 {@code null} 是有含义的两种：球在 agent 手上（agent 不是账号，那一列存不下它），
-	 * 或这件事已经结束。五种落点：
+	 * 或这件事已经结束。四种落点：
 	 * <ul>
-	 *   <li>{@link AgentTaskStatus#NEW} —— 任务人（没指派时是发布人），球在他手上，由他决定要不要往下走；</li>
-	 *   <li>三个"待确认"、「权限不足」与"待验收" —— 发布人（等他答复 / 等他处置 / 等他验收）；</li>
-	 *   <li>三个"已确认"与"执行中" —— agent（空；卡片上的 {@code agent#…} 由
-	 *       {@link AgentTask#executorLabel()} 按 {@code agent_id} 拼出来）；</li>
+	 *   <li>{@link AgentTaskStatus#NEW}、「待确认计划」、「待授权」、「权限不足」与
+	 *       {@link AgentTaskStatus#EXECUTING} —— <b>任务人</b>：球在他手上，由他往下做。
+	 *       「执行中」也写他：那一格确实是 agent 正在跑（"是哪个 agent"由 {@code agent_id} 回答），
+	 *       而跑失败时它停在执行中等他用「登记执行结果」处置 —— 写空会让它从他的列表里消失，
+	 *       而他是唯一能处置它的人；</li>
+	 *   <li>{@link AgentTaskStatus#PENDING_REQUIREMENT} 与 {@link AgentTaskStatus#PENDING_ACCEPTANCE}
+	 *       —— <b>发布人</b>：前者等他答复需求确认项、后者等他验收，这两件只有他能做；</li>
+	 *   <li>三个"已确认"（已确认需求 / 已确认计划 / 已授权）—— agent（空；卡片上的 {@code agent#…}
+	 *       由 {@link AgentTask#executorLabel()} 按 {@code agent_id} 拼出来）；</li>
 	 *   <li>{@link AgentTaskStatus#COMPLETED} —— 没有执行人（没有事件在谁手上了），
 	 *       留着 id 会让那张卡片读起来像还卡着；</li>
 	 *   <li>{@link AgentTaskStatus#CANCELLED} —— 由取消那条路单独处理（保持不动，见 {@code cancel}）。</li>
 	 * </ul>
+	 *
+	 * <p>这一列同时是<b>看板按人筛选的键</b>（{@code ?userId=}，见 {@code AgentTaskService#board}），
+	 * 所以"谁填在这里"直接决定那个人看不看得见这张卡片：写成发布人，任务人就看丢了自己的待办，
+	 * 而界面上没有任何提示说它去哪了。
 	 */
 	public static Long executorFor(AgentTaskStatus status, AgentTask task) {
 		return switch (status) {
+			case PENDING_REQUIREMENT, PENDING_ACCEPTANCE -> task.publisherId();
+			// 任务人为空的行只可能是早期的行（发布时必填，见 AgentTask#draft）：它照样要有人接着做
 			case NEW -> task.assigneeId() == null ? task.publisherId() : task.assigneeId();
-			case PENDING_REQUIREMENT, PENDING_PLAN, PENDING_AUTHORIZATION, INSUFFICIENT_PERMISSION,
-					PENDING_ACCEPTANCE -> task.publisherId();
-			case CONFIRMED_REQUIREMENT, CONFIRMED_PLAN, AUTHORIZED, EXECUTING -> null;
+			case PENDING_PLAN, PENDING_AUTHORIZATION, INSUFFICIENT_PERMISSION, EXECUTING -> task.assigneeId();
+			case CONFIRMED_REQUIREMENT, CONFIRMED_PLAN, AUTHORIZED -> null;
 			case COMPLETED -> null;
 			case CANCELLED -> task.currentExecutorId();
 		};

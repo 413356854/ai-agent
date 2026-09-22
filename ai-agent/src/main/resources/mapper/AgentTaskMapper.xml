@@ -103,6 +103,32 @@
 		ORDER BY t.updated_at DESC, t.id DESC
 	</select>
 
+	<!--
+	  "我的任务"：与这个人有关、而且该由他看见的那些。
+
+	  ⚠️ 判断横跨两列、按状态分组（见 AgentTaskMapper#listForUser 的注释）：
+	    · 新发布 / 已完成 / 已取消 —— 发布人或任务人都算；
+	    · 待确认需求 / 待验收 —— 只有发布人；
+	    · 其余状态 —— 只有任务人。
+	  三组状态名由调用方给（SQL 里不写状态名：状态链只有一份定义）。
+	-->
+	<select id="listForUser" resultMap="agentTaskRow">
+		SELECT <include refid="taskColumns"/>
+		<include refid="taskFrom"/>
+		WHERE (
+			(t.status IN
+			<foreach item="status" collection="terminalStatuses" open="(" separator="," close=")">#{status}</foreach>
+			 AND (t.publisher_id = #{userId} OR t.assignee_id = #{userId}))
+			OR (t.status IN
+			<foreach item="status" collection="publisherStatuses" open="(" separator="," close=")">#{status}</foreach>
+			 AND t.publisher_id = #{userId})
+			OR (t.status IN
+			<foreach item="status" collection="assigneeStatuses" open="(" separator="," close=")">#{status}</foreach>
+			 AND t.assignee_id = #{userId})
+		)
+		ORDER BY t.updated_at DESC, t.id DESC
+	</select>
+
 	<update id="updateProgress">
 		UPDATE agent_task
 		   SET status = #{status}, current_executor_id = #{currentExecutorId}, current_step = #{currentStep}

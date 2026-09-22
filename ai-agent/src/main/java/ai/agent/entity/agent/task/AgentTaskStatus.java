@@ -26,7 +26,8 @@ import java.util.Optional;
  * </pre>
  *
  * <h2>「等确认项答复」与「等任务执行器动手」是两类状态</h2>
- * 前者的球在发布人手上（他在界面上答复确认项），后者的球在 agent 手上
+ * 前者的球在人手上（他在界面上答复确认项：需求确认与验收在发布人手上、计划与授权在任务人手上，
+ * 见 {@code AgentTaskTransitions#executorFor}），后者的球在 agent 手上
  * （见 {@link #awaitingAgent()}：它把"哪几个状态该由任务执行器处理"写成状态的属性）。
  * 两类的区别决定界面上的按钮：等待答复的状态有「答复确认项」，
  * 等 agent 的状态没有可点的动作（只有「取消任务」）——
@@ -128,6 +129,66 @@ public enum AgentTaskStatus {
 	/** 全部"等任务执行器动手"的状态（{@link #awaitingAgent()} 的集合形态，给查询用）。 */
 	public static List<AgentTaskStatus> awaitingAgentStatuses() {
 		return Arrays.stream(values()).filter(AgentTaskStatus::awaitingAgent).toList();
+	}
+
+	/**
+	 * <b>"我的任务"按哪一列认人</b> —— 界面上那张看板收哪些任务，只看这一个属性。
+	 *
+	 * <p>它不是"这一格球在谁手上"（那是 {@code AgentTaskTransitions#executorFor}，
+	 * 回答的是卡片上那一格显示谁）：两者在几处刻意不同，各自只有一个调用点，
+	 * 混用的后果都是静默的 —— 用这一条去填 {@code current_executor_id}，
+	 * 那条任务在链上的"当前执行人"就写错了；反过来用 {@code executorFor} 去筛，
+	 * 新发布与终态会从两个人的列表里一起消失。
+	 *
+	 * <p>三组的判据：
+	 * <ul>
+	 *   <li>{@link #BOTH} —— 发布人与任务人都算：刚发出来（还没落到谁手上）、
+	 *       已经结束、已被取消。这三格上"这件事是谁的"不再有区别，两个人里谁都该找得到它；</li>
+	 *   <li>{@link #PUBLISHER} —— 只有发布人：「待确认需求」与「待验收」那两件只有他能做；</li>
+	 *   <li>{@link #ASSIGNEE} —— 只有任务人：其余七个状态。球在 agent 手上的三格
+	 *       （三个"已确认"）<b>也在这一组里</b> —— 那一格确实是 agent 在拆在做，
+	 *       而它是任务人的活，他正是那个要看着它跑完、跑砸了要处置的人。</li>
+	 * </ul>
+	 */
+	public enum Party {
+
+		/** 发布人<b>或</b>任务人都算（新发布 / 已完成 / 已取消）。 */
+		BOTH("发布人或任务人"),
+
+		/** 只有发布人算（待确认需求 / 待验收）。 */
+		PUBLISHER("只有发布人"),
+
+		/** 只有任务人算（其余状态）。 */
+		ASSIGNEE("只有任务人");
+
+		private final String label;
+
+		Party(String label) {
+			this.label = label;
+		}
+
+		public String label() {
+			return label;
+		}
+	}
+
+	/**
+	 * 这个状态的任务该由谁在自己的列表里看见（三组，见 {@link Party}）。
+	 *
+	 * <p>它必须覆盖全部取值 —— 漏掉一个状态的后果是"那条任务在谁的列表里都不出现"，
+	 * 而那与"它本来就不该出现"在界面上长得一样（也由启动自检逐个问一遍）。
+	 */
+	public Party party() {
+		return switch (this) {
+			case NEW, COMPLETED, CANCELLED -> Party.BOTH;
+			case PENDING_REQUIREMENT, PENDING_ACCEPTANCE -> Party.PUBLISHER;
+			case PENDING_PLAN, PENDING_AUTHORIZATION, INSUFFICIENT_PERMISSION,
+					CONFIRMED_REQUIREMENT, CONFIRMED_PLAN, AUTHORIZED, EXECUTING -> Party.ASSIGNEE;
+		};
+	}
+	/** 某一组里的全部状态（界面按人取任务时用它拼查询）。 */
+	public static List<AgentTaskStatus> withParty(Party party) {
+		return Arrays.stream(values()).filter(status -> status.party() == party).toList();
 	}
 
 	/**

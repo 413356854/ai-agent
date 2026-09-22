@@ -44,8 +44,18 @@ import java.util.List;
  */
 public interface AgentTaskService {
 
-	/** 看板：全部任务按列分好（列的定义与顺序见 {@link Column}）。 */
-	Board board();
+	/**
+	 * 看板：按列分好（列的定义与顺序见 {@link Column}）。
+	 *
+	 * @param userId 只看"与这个人有关、而且该由他看见"的任务（界面上传的是当前登录的人）；
+	 *        <b>传 {@code null} 就是不筛</b>（全量）。
+	 *        <p>判断<b>不是某一列上的等值比较</b>，而是按状态挑列（{@link AgentTaskStatus#party()}）：
+	 *        新发布 / 已完成 / 已取消是发布人**或**任务人（两个人里谁都找得到它）；
+	 *        待确认需求 / 待验收只有发布人（那两件只有他能做）；其余状态只有任务人。
+	 *        球在 agent 手上的三格（三个"已确认"）与谁都不相关，两张列表里都不出现。
+	 *        <p>不在账号表里的 id 会被拒（400），理由见 {@code DefaultAgentTaskService#person}。
+	 */
+	Board board(Long userId);
 
 	/** 一条任务的详情：任务 + 它的全部确认项 + 当前可做的动作。 */
 	Detail detail(Long id);
