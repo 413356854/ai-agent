@@ -88,6 +88,25 @@ public record UserPermissions(Account account, List<Role> roles, Set<String> too
 		return false;
 	}
 
+	/**
+	 * 技能的文件夹算不算在授权范围里。
+	 *
+	 * <p>它与 {@link #coversDirectory(String)} 是<b>同一个判据</b>（同一批前缀、同一个
+	 * {@link RoleDirectory#coversPath}），差别只在问的对象不同：那个问"这次运行的工作区"，
+	 * 这个问"这条技能放在哪个文件夹"。技能的文件夹本来就是从这份目录前缀里选的
+	 * （见 skill 管理那一页的「文件夹目录」选项集），所以两处必须给出同一个答案 ——
+	 * 各写一遍的后果是"能在某个目录下干活、却看不到那个目录下的技能"，
+	 * 而那种不一致在页面上看不出来。
+	 */
+	public boolean coversSkillFolder(String folder) {
+		for (RoleDirectory directory : directories) {
+			if (RoleDirectory.coversPath(directory.prefix(), folder)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/** 命中这条工作区目录的前缀（没有命中时为空）—— 报告里要写清"是按哪一条放行的"。 */
 	public Optional<RoleDirectory> matchedDirectory(String workspaceDir) {
 		return directories.stream().filter(d -> d.covers(workspaceDir)).findFirst();

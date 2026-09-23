@@ -39,6 +39,14 @@
 //  第九轮：HITL 的假状态（一个极小的状态机，理由见文件头注释）
 // ---------------------------------------------------------------------------
 
+/*
+  技能目录的候选来自 skill-routes 那一份技能表（同一个导出，见 `mockSkillCatalogOf`）。
+  各写一份的话，"agent 这一页说注入了两条、skill 那一页只有一条"只会表现为
+  自检里一句对不上的数字，而没人知道是哪一边错了 —— 与 task-routes 读同一份账号表同一条理由。
+*/
+import { findMockAccountById } from './permission-routes.mjs'
+import { mockSkillCatalogOf } from './skill-routes.mjs'
+
 /** 等人时限。与真后端 `ai.agent.approval.timeout` 同一个量纲（真后端默认 120s，假后端给个短的便于演示） */
 const TIMEOUT_SECONDS = 120
 
@@ -722,8 +730,19 @@ const LIMITS = {
  *
  * @param workspaceDir 请求体里带来的工作区目录（**原样回显**，与真后端一样）
  * @param permissionLevel 请求体里带来的档位枚举名（原样回显）
+ * @param executorId 请求体里带来的执行者 id；它决定下面那一节技能目录
  */
-function askResponse(question, workspaceDir = '', permissionLevel = '') {
+function askResponse(question, workspaceDir = '', permissionLevel = '', executorId = null) {
+  /*
+    【本次新增：这一次注入的技能】
+    真后端按「执行者 → 他的角色 → 角色目录 → 那些目录下的技能」筛出一份目录，
+    把 name + desc 拼进系统提示词，正文由 `get_skill_content` 按需取。
+    这里的候选来自 skill-routes 那一份技能表（同一个导出，见 `mockSkillCatalogOf`）——
+    **不做前缀比较的第二份实现**：判据只有那一处，否则
+    "agent 这一页说注入了两条、skill 那一页只有一条"就没人说得清是哪边错了。
+  */
+  const skills = mockSkillCatalogOf(executorId)
+  const executor = executorId == null ? null : findMockAccountById(Number(executorId))
   /**
    * 【第九轮】`/ask` 的返回按**审批状态**分三条分支。
    *
@@ -754,6 +773,27 @@ function askResponse(question, workspaceDir = '', permissionLevel = '') {
     permissionLevel,
     permissionLabel: PERMISSION_LABELS[permissionLevel] ?? '',
     permissionNote: workspaceDir ? `${PERMISSION_LABELS[permissionLevel] ?? '未记录'} · ${workspaceDir}` : '',
+    /*
+      【本次注入的技能】字段名与真后端 `AgentController.assemble` 逐字对应。
+      没有执行者时 `skillExecutor` 是空串、技能为空数组 —— 与真后端一样：
+      界面据此显示"这次没有注入技能（没指定执行者）"，而不是一片空白。
+    */
+    skillExecutor: executor ? `${executor.displayName || executor.name}(#${executor.id})` : '',
+    skillFolders: [...new Set(skills.map(s => s.folder))].sort(),
+    skillCount: skills.length,
+    skillTruncated: false,
+    skillTotalMatched: skills.length,
+    skillNote: skills.length === 0
+      ? (executorId == null ? '未指定执行者 → 本次不注入技能' : '这个人的角色目录下没有技能（目录 0 个）')
+      : `${executor.displayName || executor.name}：${new Set(skills.map(s => s.folder)).size} 个文件夹 / ${skills.length} 条技能`,
+    skills: skills.map(s => ({
+      id: s.id,
+      folder: s.folder,
+      name: s.name,
+      description: s.description ?? '',
+      ownerId: s.ownerId,
+      ownerName: s.ownerName,
+    })),
     stepSummaries: [
       '第 1 步：调用 [list_documents] ×1（1222 tokens, 1420ms）',
       '第 2 步：调用 [doc_search] ×1（1675 tokens, 1680ms）',
@@ -940,6 +980,13 @@ export function handleAgentRoutes(req, res, url, json) {
       */
       let workspaceDir = ''
       let permissionLevel = ''
+      /*
+        【执行者（本次新增）】请求体里的 `executorId`。
+        它与上面两个字段不同的一点：**假后端要拿它去筛技能**（真后端也是），
+        所以"字段名写错了"在这里的表现不是一句报错，而是"技能那一节空了" ——
+        自检里那条断言（注入条数与执行者对上）正是为了接住它。
+      */
+      let executorId = null
       try {
         const parsed = JSON.parse(body || '{}')
         question = parsed.question ?? question
@@ -947,13 +994,14 @@ export function handleAgentRoutes(req, res, url, json) {
         tenantId = parsed.tenantId ?? ''
         workspaceDir = parsed.workspaceDir ?? ''
         permissionLevel = parsed.permissionLevel ?? ''
+        executorId = parsed.executorId ?? null
       } catch {
         // 解析失败就用默认值：这是**假后端**，它的职责是让界面能跑起来，
         // 不是严格校验输入（严格校验在真后端，而且那里有测试）
       }
       void intent
       void tenantId
-      setTimeout(() => json(res, askResponse(question, workspaceDir, permissionLevel)), 900)
+      setTimeout(() => json(res, askResponse(question, workspaceDir, permissionLevel, executorId)), 900)
     })
     return true
   }

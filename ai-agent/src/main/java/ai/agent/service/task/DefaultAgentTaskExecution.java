@@ -6,12 +6,14 @@ import ai.agent.entity.agent.task.AgentTask;
 import ai.agent.entity.agent.task.AgentTaskConfirm;
 import ai.agent.entity.agent.task.AgentTaskStatus;
 import ai.agent.entity.agent.task.ConfirmType;
+import ai.agent.entity.agent.skill.SkillCatalog;
 import ai.agent.entity.tool.RunPermission;
 import ai.agent.entity.tool.ToolCallOutcome;
 import ai.agent.mapper.AgentTaskConfirmMapper;
 import ai.agent.mapper.AgentTaskMapper;
 import ai.agent.mapper.MapperRows;
 import ai.agent.service.agent.ResumableAgentService;
+import ai.agent.service.skill.SkillDirectory;
 import ai.agent.service.tool.AgentTool;
 import ai.agent.service.tool.ToolRegistry;
 import org.slf4j.Logger;
@@ -91,11 +93,15 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 	/** 判断授权：这次要动的目录在不在任务人角色的目录前缀里（判据与措辞都在它那边）。 */
 	private final TaskFileAuthorization fileAuthorization;
 
+	/** 技能目录：任务人 → 他的角色 → 角色目录 → 那些目录下的技能（判据与措辞都在它那边）。 */
+	private final SkillDirectory skillDirectory;
+
 	private final AgentTaskProperties properties;
 
 	public DefaultAgentTaskExecution(AgentTaskMapper tasks, AgentTaskConfirmMapper confirms,
 			AgentTaskTransitions transitions, AgentTaskAnalyst analyst, ResumableAgentService agent,
-			ToolRegistry tools, TaskFileAuthorization fileAuthorization, AgentTaskProperties properties) {
+			ToolRegistry tools, TaskFileAuthorization fileAuthorization, SkillDirectory skillDirectory,
+			AgentTaskProperties properties) {
 		this.tasks = tasks;
 		this.confirms = confirms;
 		this.transitions = transitions;
@@ -103,6 +109,7 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 		this.agent = agent;
 		this.tools = tools;
 		this.fileAuthorization = fileAuthorization;
+		this.skillDirectory = skillDirectory;
 		this.properties = properties;
 	}
 
@@ -300,8 +307,8 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 		transitions.enterAgent(task, AgentTaskStatus.EXECUTING);
 
 		String runId = UUID.randomUUID().toString();
-		AgentRun result = agent.runWithPermissions(runId, instruction, null, INTENT,
-				CONVERSATION_PREFIX + task.id(), null, permission);
+		AgentRun result = agent.runWithSkills(runId, instruction, null, INTENT,
+				CONVERSATION_PREFIX + task.id(), null, permission, skillsOf(task, breakdown));
 		String summary = summarize(runId, result);
 
 		if (!result.answered()) {
@@ -356,6 +363,36 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 					e.getMessage(), dir);
 			return RunPermission.ofStored("", properties.level());
 		}
+	}
+
+	/**
+	 * <b>这条任务的执行者能用的技能</b>。
+	 *
+	 * <h2>执行者是「任务人」，不是发布人</h2>
+	 * 这与授权判断（{@link #judgeAuthorization}：判的是任务人角色的目录前缀）
+	 * 是同一个人 —— 技能是按"角色目录"筛的，用它来筛的那一刻已经隐含了
+	 * "这些目录他有权限"这一层；换成发布人就会出现"发布人的技能在任务人的目录下被执行"，
+	 * 而那些技能可能包含任务人自己都读不到的东西。
+	 *
+	 * <h2>工作区用本次拆出来的那一个，失败时退成"全部文件夹"</h2>
+	 * 技能与工作区不是一回事：技能装在<b>角色目录</b>下（可能有很多个），
+	 * 而这次任务只在一个目录里干活。所以筛选<b>不以本次工作区为限</b> ——
+	 * 否则"任务只动 demo 目录"会让这个人其它目录下的技能全部消失，
+	 * 而那正是"技能写了却没人用得上"的另一种形态。
+	 * 于是这里用的是全套角色目录前缀（{@link SkillDirectory#forPermissions}），
+	 * {@code breakdown.workspaceDir()} 只是顺带记进日志的一个上下文。
+	 *
+	 * <p>解析不出来（账号不在 / 已停用 / 没有角色）时退成"没有技能"，并留一条 INFO：
+	 * 一条任务不该因为"任务人的权限此刻解析不出来"而失败 ——
+	 * 授权判断那一步会给出真正的结论。
+	 */
+	private SkillCatalog skillsOf(AgentTask task, AgentTaskAnalyst.TaskBreakdown breakdown) {
+		SkillCatalog catalog = task.assigneeId() == null ? SkillCatalog.none()
+				: skillDirectory.forExecutor(task.assigneeId());
+		log.info("任务 #{} 的技能目录：{}（任务人 {}，本次工作区 {}）", task.id(), catalog.describe(), assigneeName(task),
+				breakdown.workspaceDir() == null || breakdown.workspaceDir().isBlank() ? "(没有工作区)"
+						: breakdown.workspaceDir());
+		return catalog;
 	}
 
 	// ------------------------------------------------------------------

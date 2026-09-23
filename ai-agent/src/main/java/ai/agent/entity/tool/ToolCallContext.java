@@ -1,5 +1,6 @@
 package ai.agent.entity.tool;
 
+import ai.agent.entity.agent.skill.SkillCatalog;
 import ai.agent.service.tool.AgentTool;
 import ai.agent.service.tool.ToolCallOrigin;
 import java.time.Duration;
@@ -65,9 +66,15 @@ import java.time.Duration;
  *              让工具自己去别处找参数，就会多出第二条路径判据，两条迟早漂移。
  *              <p>形状是"原始字符串"而不是解析后的对象：上下文是<b>门禁与审计</b>的输入，
  *              它不该依赖每把工具各不相同的参数类型。工具自己按需解析（骨架只读一个字段）。
+ * @param skillCatalog <b>这一次运行能用的技能</b>（按执行者的角色目录筛过的那一份），
+ *              {@code null} 表示没有执行者信息（老链路、外部 MCP 客户端、执行器被单独调用）。
+ *              <p>它的唯一消费者是 {@code get_skill_content}：那把工具要按名字取正文，
+ *              而"哪些技能这次看得见"只有循环（或算它的服务层）知道 ——
+ *              与 {@code runPermission} 完全同一类事实，所以走同一条传递路径。
  */
 public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin origin, ApprovalGrant grant,
-		String approvalId, Duration decisionTimeout, RunPermission runPermission, String arguments) {
+		String approvalId, Duration decisionTimeout, RunPermission runPermission, String arguments,
+		SkillCatalog skillCatalog) {
 
 	public ToolCallContext {
 		origin = origin == null ? ToolCallOrigin.AGENT_LOOP : origin;
@@ -75,12 +82,12 @@ public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin or
 
 	/** Agent 循环里的一步（没有通行证 —— 首次提出调用时必定没有）。 */
 	public static ToolCallContext ofStep(String runId, int stepIndex) {
-		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, null, null, null, null, null);
+		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, null, null, null, null, null, null);
 	}
 
 	/** Agent 循环里的一步，且这一次调用带着人工批准的通行证（恢复路径用）。 */
 	public static ToolCallContext ofStep(String runId, int stepIndex, ApprovalGrant grant) {
-		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, grant, null, null, null, null);
+		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, grant, null, null, null, null, null);
 	}
 
 	/**
@@ -90,7 +97,8 @@ public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin or
 	 * 而测试需要在不删掉逻辑的前提下把时间刻度改小。
 	 */
 	public static ToolCallContext ofStep(String runId, int stepIndex, Duration decisionTimeout) {
-		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, null, null, decisionTimeout, null, null);
+		return new ToolCallContext(runId, stepIndex, ToolCallOrigin.AGENT_LOOP, null, null, decisionTimeout, null, null,
+				null);
 	}
 
 	/**
@@ -104,7 +112,22 @@ public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin or
 	 *                   （执行器被单独调用、外部链路）—— 那时按最严的一档处理
 	 */
 	public ToolCallContext withRunPermission(RunPermission permission) {
-		return new ToolCallContext(runId, stepIndex, origin, grant, approvalId, decisionTimeout, permission, arguments);
+		return new ToolCallContext(runId, stepIndex, origin, grant, approvalId, decisionTimeout, permission, arguments,
+				skillCatalog);
+	}
+
+	/**
+	 * 把<b>这一次运行能用的技能</b>补上 —— 循环在调执行器之前调用它。
+	 *
+	 * <p>它与 {@link #runPermission} 是同一个形状的运行级事实（由服务层在开跑之前算好），
+	 * 所以走同一条传递路径：<b>取技能正文这件事必须知道"这次是谁在跑"</b> ——
+	 * 否则 {@code get_skill_content} 只能返回全库技能，"按角色目录筛技能"在工具这一侧就失效了。
+	 *
+	 * @param catalog 这次运行的技能目录；{@code null} 表示没有执行者信息（老链路、外部调用）
+	 */
+	public ToolCallContext withSkillCatalog(SkillCatalog catalog) {
+		return new ToolCallContext(runId, stepIndex, origin, grant, approvalId, decisionTimeout, runPermission,
+				arguments, catalog);
 	}
 
 	/**
@@ -118,7 +141,7 @@ public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin or
 	 */
 	public ToolCallContext withArguments(String rawArguments) {
 		return new ToolCallContext(runId, stepIndex, origin, grant, approvalId, decisionTimeout, runPermission,
-				rawArguments);
+				rawArguments, skillCatalog);
 	}
 
 	/**
@@ -130,7 +153,7 @@ public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin or
 	 */
 	public ToolCallContext withApproval(String approvalId) {
 		return new ToolCallContext(runId, stepIndex, origin, grant, approvalId, decisionTimeout, runPermission,
-				arguments);
+				arguments, skillCatalog);
 	}
 
 	/**
@@ -143,14 +166,16 @@ public record ToolCallContext(String runId, Integer stepIndex, ToolCallOrigin or
 	 * <p>同样刻意<b>不带权限</b>：档位是"一次运行"的属性，这条路没有运行。
 	 * 于是它按最严的一档算（写操作要人点头），见 {@code WorkspaceApprovalGate} ——
 	 * 放宽必须有一个能被审计的主体，而这里没有。
+	 *
+	 * <p>技能目录同样为空：没有主体就没有"按角色目录筛"这件事。
 	 */
 	public static ToolCallContext mcpClient() {
-		return new ToolCallContext(null, null, ToolCallOrigin.MCP_CLIENT, null, null, null, null, null);
+		return new ToolCallContext(null, null, ToolCallOrigin.MCP_CLIENT, null, null, null, null, null, null);
 	}
 
 	/** 没有上下文（执行器被单独调用时用）。 */
 	public static ToolCallContext none() {
-		return new ToolCallContext(null, null, ToolCallOrigin.AGENT_LOOP, null, null, null, null, null);
+		return new ToolCallContext(null, null, ToolCallOrigin.AGENT_LOOP, null, null, null, null, null, null);
 	}
 
 	public boolean hasRun() {

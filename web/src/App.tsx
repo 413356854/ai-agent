@@ -224,7 +224,7 @@ export default function App(
         ) : mode === 'rag' ? (
           <RagPanel diag={rag} />
         ) : mode === 'agent' ? (
-          <AgentPanel agent={agent} />
+          <AgentPanel agent={agent} loginUser={mockLogin.user} />
         ) : mode === 'cost' ? (
           <CostPanel cost={cost} />
         ) : mode === 'prompt' ? (

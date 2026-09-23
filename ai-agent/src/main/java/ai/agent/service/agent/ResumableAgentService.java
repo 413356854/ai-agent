@@ -8,6 +8,7 @@ import ai.agent.entity.agent.store.AgentRunRecord;
 import ai.agent.service.agent.store.AgentRunStore;
 import ai.agent.service.agent.store.RunStatus;import ai.agent.service.support.agent.store.TranscriptCodec;
 import ai.agent.config.AgentStoreProperties;
+import ai.agent.entity.agent.skill.SkillCatalog;
 import ai.agent.entity.tool.ApprovalGrant;
 import ai.agent.entity.tool.RunPermission;
 import ai.agent.entity.tool.ToolInvocation;
@@ -226,15 +227,36 @@ public class ResumableAgentService {
 	 */
 	public AgentRun runWithPermissions(String runId, String question, ModelTurn modelTurn, String intent,
 			String conversationId, String tenantId, RunPermission permission) {
+		return runWithSkills(runId, question, modelTurn, intent, conversationId, tenantId, permission, null);
+	}
+
+	/**
+	 * 完整入口，再多一份<b>技能目录</b>（按执行者的角色目录筛出来的那一份）。
+	 *
+	 * <h2>为什么它是指名的方法，而不是再往 {@link #runWithPermissions} 后面加一个参数</h2>
+	 * 与那个方法的理由一字不差：这个类上的重载已经够多，而"多一个位置参数"的坏法是
+	 * 某条链路把技能目录传到了权限的位置上 —— 参数类型不同时编译器会拦住，
+	 * 但两个都为 {@code null} 的调用是**编译得过**的静默降级。
+	 *
+	 * <h2>技能目录与权限一样，都要在开跑之前算好</h2>
+	 * 它们回答的都是"这一次运行的前提是什么"，而算它们需要读三张表（账号 / 角色 / 技能）——
+	 * 那是服务层的事，循环只负责把结论拼进系统提示词、并交给工具。
+	 * {@code null} 表示这次运行没有指定执行者：提示词里不加技能那一节，
+	 * {@code get_skill_content} 也会如实回一句"没有技能目录"。
+	 *
+	 * @param skills 这次运行的技能目录；{@code null} 按"没有执行者"处理
+	 */
+	public AgentRun runWithSkills(String runId, String question, ModelTurn modelTurn, String intent,
+			String conversationId, String tenantId, RunPermission permission, SkillCatalog skills) {
 		RunPermission effective = permission == null ? RunPermission.none() : permission;
 		store.start(new AgentRunStore.Start(runId, question, properties.node(), intent, conversationId, tenantId)
 				.withPermissions(effective));
 		// 把"这次实际用哪个模型"传给监听器 —— 它是成本归因的一部分（见 PersistingListener.override）
 		PersistingListener listener = new PersistingListener(runId, modelTurn);
 		try {
-			// 传了模型或权限就临时换一个 loop：AgentLoop 是无状态的（所有可变状态都在方法局部变量里），
+			// 传了模型 / 权限 / 技能就临时换一个 loop：AgentLoop 是无状态的（所有可变状态都在方法局部变量里），
 			// 所以这里 new 一个是安全的 —— 不是"共享可变状态"那种危险做法
-			AgentLoop effectiveLoop = effectiveLoop(modelTurn, effective);
+			AgentLoop effectiveLoop = effectiveLoop(modelTurn, effective, skills);
 			AgentRun run = effectiveLoop.run(runId, question, listener);
 			store.persistCompletedRun(runId, run);
 			return run;
@@ -250,15 +272,19 @@ public class ResumableAgentService {
 	}
 
 	/**
-	 * 这一次用哪个循环实例：模型与权限各可能被这一次运行覆盖。
+	 * 这一次用哪个循环实例：模型、权限与技能各可能被这一次运行覆盖。
 	 *
 	 * <p>做成一个方法而不是在三处各写一遍 {@code modelTurn == null ? loop : loop.withModelTurn(...)}：
 	 * 漏掉权限那一半的表现是"完全权限的运行仍然弹审批"，
-	 * 而那看起来像权限参数没传到，排查方向会跑到控制器上去。
+	 * 漏掉技能那一半的表现是"执行者指定的技能没有出现在提示词里" ——
+	 * 两者看起来都像"参数没传到"，排查方向会跑到控制器上去。
 	 */
-	private AgentLoop effectiveLoop(ModelTurn modelTurn, RunPermission permission) {
+	private AgentLoop effectiveLoop(ModelTurn modelTurn, RunPermission permission, SkillCatalog skills) {
 		AgentLoop effective = modelTurn == null ? loop : loop.withModelTurn(modelTurn);
-		return permission == null ? effective : effective.withPermission(permission);
+		if (permission != null) {
+			effective = effective.withPermission(permission);
+		}
+		return skills == null ? effective : effective.withSkills(skills);
 	}
 
 	/**

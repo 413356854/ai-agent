@@ -7,6 +7,7 @@ import ai.agent.service.tool.ToolCallOrigin;
 import ai.agent.entity.tool.ToolCallOutcome;
 import ai.agent.service.tool.ToolRegistry;
 import ai.agent.entity.model.tool.ToolHints;
+import ai.agent.service.tool.workspace.RunContextBoundTool;
 import ai.agent.service.tool.workspace.WorkspaceBoundTool;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
@@ -143,6 +144,15 @@ public class McpToolExposure {
 				log.info("工具「{}」不通过 MCP 暴露（它需要工作区）—— "
 						+ "外部 MCP 链路没有「一次运行」这个对象，ToolCallContext 里没有工作区目录，"
 						+ "这些工具在那条链路上没有可解析路径的根", tool.name());
+				continue;
+			}
+			if (tool instanceof RunContextBoundTool) {
+				// 与上一条同源但理由不同：它缺的是**执行者**（技能的候选范围是按执行者的角色目录筛的）。
+				// 暴露出去的现象是"每次都回一句没有技能目录"—— 在客户端看来像这个工具坏了，
+				// 而真相是"按执行者的角色筛"这条判据在那条链路上根本没有输入
+				log.info("工具「{}」不通过 MCP 暴露（它需要执行者）—— "
+						+ "外部 MCP 链路没有「一次运行」这个对象，ToolCallContext 里没有技能目录，"
+						+ "它在那条链路上只能按名字取不到任何技能", tool.name());
 				continue;
 			}
 			ToolHints hints = tool.description().hints();

@@ -126,6 +126,42 @@ function foldersOf(userId) {
   return [...unique.values()].sort((a, b) => a.localeCompare(b))
 }
 
+/**
+ * **某个执行者这次能用的技能** —— `/api/agent/ask` 的响应里那一节就是它。
+ *
+ * <h2>为什么由这里导出，而不是在 agent-routes 里另写一份</h2>
+ * 与 task-routes 读同一份账号表是同一条理由：技能的文件夹来自角色目录，
+ * 而"这个人的角色目录是哪些"只有 `mockPermissionsOfId` 那一份数据。
+ * 各写一份的话，"agent 那一页说注入了两条、skill 那一页只有一条"
+ * 只会表现为自检里一句对不上的数字，而没人知道是哪一边错了。
+ *
+ * <p>判据与真后端 {@code SkillDirectory} 一致：技能落在执行者<b>角色目录前缀</b>之下才算看得见
+ * （按路径分段比，不是字符串前缀 —— `D:\work\demo` 不命中 `D:\work\demo-other`）。
+ * 没有执行者（不传 `executorId`）时返回空数组：真后端那时一条都不注入，
+ * 假后端也不能"顺手给全部"，否则界面上"没指定执行者"与"这个人的权限很宽"分不出来。
+ *
+ * @param executorId 请求体里的执行者 id（可能是 null）
+ */
+export function mockSkillCatalogOf(executorId) {
+  if (executorId == null) return []
+  const permissions = mockPermissionsOfId(Number(executorId))
+  if (!permissions) return []
+  return state.skills
+    .filter(skill => permissions.dirPrefixes.some(prefix => coversPath(prefix, skill.folder)))
+    .map(skillView)
+    .sort((a, b) => (a.folder === b.folder ? a.name.localeCompare(b.name) : a.folder.localeCompare(b.folder)))
+}
+
+/** 路径分段比较（与真后端 `RoleDirectory.coversPath` 同一条判据，见导出函数的注释）。 */
+function coversPath(prefix, dir) {
+  if (!prefix || !dir) return false
+  const norm = value => value.replace(/[\\/]+$/, '').toLowerCase().split(/[\\/]+/)
+  const base = norm(prefix)
+  const target = norm(dir)
+  if (target.length < base.length) return false
+  return base.every((segment, index) => segment === target[index])
+}
+
 /** 最近修改的在前（与真后端 `ORDER BY s.updated_at DESC, s.id DESC` 同一条）。 */
 function sorted(list) {
   return [...list].sort((a, b) => {

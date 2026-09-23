@@ -75,7 +75,22 @@ public record RoleDirectory(Long roleId, String prefix, String note) {
 	 * @return 工作区目录等于本前缀，或者是本前缀下面的子目录
 	 */
 	public boolean covers(String workspaceDir) {
-		if (workspaceDir == null || workspaceDir.isBlank()) {
+		return coversPath(prefix, workspaceDir);
+	}
+
+	/**
+	 * "目录算不算落在前缀里"的<b>唯一计算</b> —— {@link #covers(String)} 与
+	 * {@link #coversPath(String, String)} 都走它。
+	 *
+	 * <p>抽出来是为了让"只有一份判据"这件事在类型上也成立：有些调用方手里只有两个字符串
+	 * （技能记录上的 {@code folder} 与角色的目录前缀），它们不该为了比较而造一条假的授权对象 ——
+	 * 造出来的那种对象会带一个编出来的 roleId，而下一处就会有人拿它去查库。
+	 *
+	 * @param prefix 目录前缀（用户输入的原始写法）
+	 * @param workspaceDir 被检查的目录（原始写法，可以是相对路径）
+	 */
+	public static boolean coversPath(String prefix, String workspaceDir) {
+		if (prefix == null || prefix.isBlank() || workspaceDir == null || workspaceDir.isBlank()) {
 			return false;
 		}
 		Path target;
@@ -87,7 +102,13 @@ public record RoleDirectory(Long roleId, String prefix, String note) {
 			// 不抛异常：判定本身要能对任意输入给出 true/false
 			return false;
 		}
-		Path base = Path.of(prefix).toAbsolutePath().normalize();
+		Path base;
+		try {
+			base = Path.of(prefix).toAbsolutePath().normalize();
+		}
+		catch (InvalidPathException e) {
+			return false;
+		}
 		// 分段比较：段的个数与每一段都必须相同。`D:\work\demo` 有 3 段，
 		// 而 `D:\work\demo-other` 的第 3 段是 "demo-other" —— 判否
 		int baseCount = base.getNameCount();

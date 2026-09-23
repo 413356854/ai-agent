@@ -18,6 +18,8 @@ import type {
   AgentToolCall,
   AgentTrace,
 } from '../api/agent'
+import type { MockLoginUser } from '../hooks/useMockLogin'
+import { mockLoginLabel } from '../hooks/useMockLogin'
 import type { Remote } from '../types'
 
 /**
@@ -56,7 +58,7 @@ import type { Remote } from '../types'
  * <p>同理，审批那一块**不自己判断"这条该不该批"**：风险声明（`hints`）由后端给
  * （它来自工具的 `ToolHints`，与"要不要审批"的判据同源）。页面只把它显示出来。
  */
-export function AgentPanel({ agent }: { agent: UseAgentResult }) {
+export function AgentPanel({ agent, loginUser }: { agent: UseAgentResult; loginUser: MockLoginUser | null }) {
   return (
     <div className="diag-panel">
       {/*
@@ -66,7 +68,7 @@ export function AgentPanel({ agent }: { agent: UseAgentResult }) {
       */}
       <ApprovalCard agent={agent} />
 
-      <AskCard remote={agent.current} running={agent.running} onAsk={agent.ask} />
+      <AskCard remote={agent.current} running={agent.running} onAsk={agent.ask} loginUser={loginUser} />
 
       {agent.detail.status !== 'idle' && <DetailCard remote={agent.detail} onClose={agent.closeDetail} />}
 
@@ -504,11 +506,13 @@ function AskCard({
   remote,
   running,
   onAsk,
+  loginUser,
 }: {
   remote: Remote<AgentAskResponse>
   running: boolean
   onAsk: (q: string, workspaceDir: string, permissionLevel: AgentPermissionLevelValue,
-    intent: string, tenantId: string) => void
+    intent: string, tenantId: string, executorId: number | null) => void
+  loginUser: MockLoginUser | null
 }) {
   const [question, setQuestion] = useState('分块策略的结论是什么？')
   /**
@@ -557,10 +561,27 @@ function AskCard({
    */
   const [tenantId, setTenantId] = useState('示例租户')
 
+  /**
+   * 执行者（本次新增）：这一次运行代表谁。
+   *
+   * <h2>为什么它的值来自页头那条模拟登录记录，而不是本页自己的输入框</h2>
+   * 它是 `agent_user.id`，而"现在以谁的身份在用这一页"在这一页上只有一个来源
+   * （页头的「模拟登录」，与 skill 管理 / agent任务两页同一个）。本页再放一个"填 id"
+   * 的输入框就有两个身份来源，而它们不一致时看不出来 —— 一个运行按 A 的技能跑、
+   * 页头却写着 B。
+   *
+   * <p><b>它的作用不是权限</b>（那是上面那个档位与工作区目录的事），而是
+   * **这次注入哪些技能**：执行者的角色 → 那些角色的目录前缀 → 落在这些目录下的技能。
+   * 没登录时不传，后端一条都不注入 —— 界面上会说清"没有指定执行者"，
+   * 而不是偷偷用一个默认的人。
+   */
+  const executorId = loginUser?.id ?? null
+  const executorLabel = loginUser ? mockLoginLabel(loginUser) : null
+
   /** 工作区为空时不能跑：后端的必填校验会给 200 + ok:false，但那是一次白往返。 */
   const workspaceMissing = workspaceDir.trim() === ''
   const canRun = !running && !workspaceMissing
-  const run = () => onAsk(question, workspaceDir, permissionLevel, intent, tenantId)
+  const run = () => onAsk(question, workspaceDir, permissionLevel, intent, tenantId, executorId)
 
   return (
     <Card
@@ -660,6 +681,28 @@ function AskCard({
           而分组键的取值质量直接决定那两栏有没有用。
           排成一行会让它们看起来是"一个东西的两个输入框"
         */}
+        <Flex gap={8} align="center" wrap data-testid="agent-executor-row">
+          <Typography.Text type="secondary" className="cost-intent-label">
+            执行者
+          </Typography.Text>
+          {/*
+            这里刻意**不是一个输入框**：身份只有一个来源（页头的模拟登录）。
+            只读地显示"本次会以谁的身份跑"，并在没登录时把"没有技能会注入"写出来 ——
+            一个空白的格子会让人以为"系统自己会挑一个人"
+          */}
+          {executorLabel ? (
+            <Tag color="blue" data-testid="agent-executor-value">
+              {executorLabel} · #{executorId}
+            </Tag>
+          ) : (
+            <Tag data-testid="agent-executor-value">未登录 —— 本次不注入任何技能</Tag>
+          )}
+          <Typography.Text type="secondary" className="cost-intent-hint">
+            他决定这次注入哪些技能：他的角色 → 这些角色的目录前缀 → 那些目录下的技能
+            （name + 说明进系统提示词，正文由模型按需取）。改用页头的「模拟登录」换人
+          </Typography.Text>
+        </Flex>
+
         <Flex gap={8} align="center" wrap>
           <Typography.Text type="secondary" className="cost-intent-label">
             业务归因
@@ -718,7 +761,7 @@ function AskCard({
                 // 工作区与权限**不跟着切**：它们是这次运行的前提（其中一个是必填），
                 // 而点一个例子不该顺手把"完全权限"或某个目录一起改掉 ——
                 // 那种"点一下就把风险档位换了"的行为在页面上没有任何提示
-                onAsk(sample.q, workspaceDir, permissionLevel, sample.intent, sample.tenantId)
+                onAsk(sample.q, workspaceDir, permissionLevel, sample.intent, sample.tenantId, executorId)
               }}
             >
               {sample.q}
@@ -764,6 +807,8 @@ function AskBody({ data }: { data: AgentAskResponse }) {
         本次运行的执行前提：{data.permissionNote || '未记录'}
         {!data.workspaceDir && '（这条链路没有传工作区目录 —— 没有权限上下文，写操作按最严的一档处理）'}
       </Typography.Text>
+
+      <SkillsNote data={data} />
 
       {/*
         【第九轮】"停在等人确认"必须单独一条、并且指向那张待办卡片。
@@ -846,6 +891,71 @@ function AskBody({ data }: { data: AgentAskResponse }) {
       {/* ---- 过程时间线：这一页的主角 ---- */}
       <StepTimeline steps={data.steps} />
     </Flex>
+  )
+}
+
+/**
+ * **这一次注入了哪些技能**（本次新增）。
+ *
+ * <h2>为什么这一行必须显示出来</h2>
+ * 技能目录是按执行者动态拼进系统提示词的，而**提示词指纹覆盖不到它** ——
+ * 于是"模型没按技能做"与"技能压根没注入"在别的任何地方都长得一模一样。
+ * 这一行就是那个区分：它显示的是后端实际筛出来的那一份（不是界面上填的那一份）。
+ *
+ * <h2>三条分支而不是"有就显示、没有就算了"</h2>
+ * "0 条"有三种完全不同的成因，而它们的下一步动作不同：
+ * ① <b>没指定执行者</b>（页头没登录）→ 去登录；
+ * ② <b>他一个角色都没有</b> → 去权限管理配角色；
+ * ③ <b>角色有目录、但那些目录下没有技能</b> → 去 skill 管理建一条。
+ * 合成一句"没有技能"会让②③都被读成①，而人照着登录一次之后还是 0 条。
+ */
+function SkillsNote({ data }: { data: AgentAskResponse }) {
+  const skills = data.skills ?? []
+  const folders = data.skillFolders ?? []
+  const executor = data.skillExecutor ?? ''
+
+  return (
+    <div className="agent-skills" data-testid="agent-skills">
+      <Flex gap={8} wrap align="center">
+        <Typography.Text type="secondary" className="cost-intent-label">
+          本次注入的技能
+        </Typography.Text>
+        <Tag color={skills.length > 0 ? 'blue' : 'default'} data-testid="agent-skill-count">
+          {skills.length} 条
+        </Tag>
+        {executor ? <Tag data-testid="agent-skill-executor">{executor}</Tag> : null}
+        {data.skillTruncated ? (
+          <Tag color="gold" title={`匹配到 ${data.skillTotalMatched ?? 0} 条，提示词里只列了前 ${skills.length} 条`}>
+            已截断（共 {data.skillTotalMatched ?? 0} 条）
+          </Tag>
+        ) : null}
+      </Flex>
+
+      {skills.length > 0 ? (
+        <Flex vertical gap={2} className="agent-skill-list">
+          {skills.map(skill => (
+            <span key={skill.id} className="agent-skill-row">
+              <code>{skill.folder}</code>
+              <strong>{skill.name}</strong>
+              <span className="agent-skill-desc">{skill.description || '（库里没填说明）'}</span>
+            </span>
+          ))}
+        </Flex>
+      ) : (
+        <Typography.Text type="secondary" className="diag-note">
+          {executor
+            ? `他的角色目录${folders.length > 0 ? `（${folders.join('、')}）` : ''}下没有技能 —— `
+              + '技能是按「文件夹目录 = 角色目录前缀」放的，去「skill管理」建一条就会出现在这里'
+            : '这次没有指定执行者（页头「模拟登录」里选一个人），所以一条技能都不会注入 —— '
+              + '技能的候选范围来自执行者的角色目录，没有他就没有这一份'}
+        </Typography.Text>
+      )}
+
+      <Typography.Text type="secondary" className="diag-note">
+        只有名字与说明进系统提示词（正文由模型按需用 <code>get_skill_content</code> 取回来）。
+        提示词指纹覆盖不到这一节，所以它只在这里与运行的日志里能看到
+      </Typography.Text>
+    </div>
   )
 }
 

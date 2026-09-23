@@ -1,6 +1,7 @@
 package ai.agent.controller;
 
 import ai.agent.entity.agent.AgentRun;
+import ai.agent.entity.agent.skill.SkillCatalog;
 import ai.agent.service.agent.AgentStopReason;
 import ai.agent.service.agent.ResumableAgentService;
 import ai.agent.service.agent.approval.AgentApprovalService;
@@ -101,9 +102,20 @@ public class AgentController {
 	 */
 	private final AgentTraceView traceView;
 
+	/**
+	 * 技能目录的解析（执行者 → 角色 → 目录 → 技能）。
+	 *
+	 * <p>控制器<b>只做一件事</b>：把请求体里那个 {@code executorId} 换成一个
+	 * {@link ai.agent.entity.agent.skill.SkillCatalog} —— 填错时它抛出来的是一句能读的提示，
+	 * 而"哪些技能算看得见"这个判据在 {@code SkillDirectory} 一处（类注释里那条
+	 * "控制器不含业务判断"的纪律在这一层仍然成立：这里没有前缀比较，只有转交）。
+	 */
+	private final ai.agent.service.skill.SkillDirectory skillDirectory;
+
 	public AgentController(ResumableAgentService service, AgentRunStore store, AgentConcurrencyLimitsView limitsView,
 			AgentApprovalService approvals, AgentApprovalProperties approvalProperties, AgentTraceView traceView,
-			ai.agent.config.WorkspaceProperties workspaceProperties) {
+			ai.agent.config.WorkspaceProperties workspaceProperties,
+			ai.agent.service.skill.SkillDirectory skillDirectory) {
 		this.service = service;
 		this.store = store;
 		this.limitsView = limitsView;
@@ -111,6 +123,7 @@ public class AgentController {
 		this.approvalTimeoutSeconds = approvalProperties.timeout().toSeconds();
 		this.traceView = traceView;
 		this.workspaceProperties = workspaceProperties;
+		this.skillDirectory = skillDirectory;
 	}
 
 	/**
@@ -154,6 +167,20 @@ public class AgentController {
 			return Map.of("ok", false, "error", e.getMessage());
 		}
 
+		// 【执行者与技能目录】这一次运行代表谁、因此能用哪些技能。
+		//
+		// 与上面两个前提同一条规矩：解析不出来就在**花钱之前**说清楚 ——
+		// "执行者 id 填错了"与"这个人一个角色都没有"是两件事，前者要当场拒绝。
+		// 不填执行者不是错误：那时提示词里没有技能那一节，工具也会如实说"没有技能目录"
+		SkillCatalog skills;
+		try {
+			skills = skillDirectory.requireExecutor(request == null ? null : request.executorId());
+		}
+		catch (IllegalArgumentException e) {
+			log.warn("拒绝了一次 /ask：{}", e.getMessage());
+			return Map.of("ok", false, "error", e.getMessage());
+		}
+
 		String runId = java.util.UUID.randomUUID().toString();
 		// 【阶段四成本看板】把业务归因键一起落库。
 		//
@@ -185,9 +212,9 @@ public class AgentController {
 		//
 		// 长度裁剪同一条理由（超长 → 写库抛 SQL 异常 → 用户的几个字变成"这次任务失败了"）
 		String tenantId = clamp(request == null ? null : request.tenantId(), MAX_TENANT_CHARS);
-		AgentRun run = service.runWithPermissions(runId, question, null, intent, conversationId, tenantId,
-				permission);
-		return assemble(runId, run, permission);
+		AgentRun run = service.runWithSkills(runId, question, null, intent, conversationId, tenantId,
+				permission, skills);
+		return assemble(runId, run, permission, skills);
 	}
 
 	/**
@@ -466,7 +493,7 @@ public class AgentController {
 	}
 
 	/** 把一次运行组装成界面要的形状。 */
-	private Map<String, Object> assemble(String runId, AgentRun run, RunPermission permission) {
+	private Map<String, Object> assemble(String runId, AgentRun run, RunPermission permission, SkillCatalog skills) {
 		Map<String, Object> body = new LinkedHashMap<>();
 		body.put("ok", true);
 		body.put("runId", runId);
@@ -478,6 +505,18 @@ public class AgentController {
 		body.put("permissionLevel", permission == null ? "" : permission.level().name());
 		body.put("permissionLabel", permission == null ? "" : permission.label());
 		body.put("permissionNote", permission == null ? "" : permission.describe());
+		// 【这一次注入的技能】它是"技能到底对模型起了什么作用"的唯一凭据：
+		// 提示词里那一节是按执行者的角色目录拼的，而**提示词指纹覆盖不到它**
+		// （见 AgentLoop#loadSystemPrompt 的注释）。所以这里把筛选结果原样回给界面 ——
+		// 不显示的话，"模型没按技能做"与"技能压根没注入"在页面上长得一模一样
+		body.put("skillExecutor", skills == null ? "" : skills.executorLabel());
+		body.put("skillFolders", skills == null ? List.of() : skills.folders());
+		body.put("skillCount", skills == null ? 0 : skills.skills().size());
+		body.put("skillTruncated", skills != null && skills.truncated());
+		body.put("skillTotalMatched", skills == null ? 0 : skills.totalMatched());
+		body.put("skillNote", skills == null ? "" : skills.describe());
+		body.put("skills", skills == null ? List.of()
+				: skills.skills().stream().map(SkillCatalog::row).toList());
 		body.put("answered", run.answered());
 		body.put("finalAnswer", run.finalAnswer() == null ? "" : run.finalAnswer());
 		body.put("stopReason", run.stopReason().name());
@@ -597,35 +636,50 @@ public class AgentController {
 	 *            读操作在任何档位下都直接执行；写操作在完全权限下直接执行、其余两档要人点头。
 	 *            <p>可空：空 = 仅可查看（最严的一档）。<b>填了但不认识一律拒绝</b>，
 	 *            不静默降级 —— 见 {@code AgentController.parseLevel}
+	 * @param executorId <b>执行者</b>：这一次运行代表谁（{@code agent_user.id}）。
+	 *            <p>它决定<b>这次能注入哪些技能</b>：执行者的角色 → 这些角色的目录前缀 →
+	 *            落在这些目录下的技能（见 {@link ai.agent.service.skill.SkillDirectory}）。
+	 *            技能的 name + desc 拼进系统提示词，正文由 {@code get_skill_content} 按需取。
+	 *            <p>可空：空 = 没有执行者，提示词里没有技能那一节，工具也会如实说"没有技能目录"。
+	 *            <b>刻意不默认成"随便挑一个人"</b>：那样"没指定"与"权限很宽的那个人"在运行记录里
+	 *            长得一模一样，而技能是按角色目录筛的 —— 选错人会让一次运行读到它不该读的技能。
+	 *            <p>填了但账号表里没有这个人 / 已停用 → <b>200 + ok:false</b> 且不花钱
+	 *            （与"问题不能为空"同一个形状：调用方可以改对）。
 	 */
 	public record AskRequest(String question, String intent, String conversationId, String tenantId,
-			String workspaceDir, String permissionLevel) {
+			String workspaceDir, String permissionLevel, Long executorId) {
 
 		/** 不带任何归因的构造器（最早的调用点与测试用）。 */
 		public AskRequest(String question) {
-			this(question, null, null, null, null, null);
+			this(question, null, null, null, null, null, null);
 		}
 
 		/** 带归因键、不带会话与租户的构造器（成本看板那批调用点用）。 */
 		public AskRequest(String question, String intent) {
-			this(question, intent, null, null, null, null);
+			this(question, intent, null, null, null, null, null);
 		}
 
 		/** 带归因键与会话、不带租户的构造器（第 2 件那批调用点用）。 */
 		public AskRequest(String question, String intent, String conversationId) {
-			this(question, intent, conversationId, null, null, null);
+			this(question, intent, conversationId, null, null, null, null);
 		}
 
 		/**
 		 * 带上工作区与档位（界面这条链路用）。
 		 *
-		 * <p>六参的规范构造器已经能吃下这个形态，这里再给一个五参的只是为了
+		 * <p>七参的规范构造器已经能吃下这个形态，这里再给一个五参的只是为了
 		 * 让"知道工作区但不想写档位"的调用方少写一个 {@code null} ——
 		 * 而档位为空时落的是最严的一档，方向是安全的。
 		 */
 		public AskRequest(String question, String intent, String conversationId, String tenantId,
 				String workspaceDir) {
-			this(question, intent, conversationId, tenantId, workspaceDir, null);
+			this(question, intent, conversationId, tenantId, workspaceDir, null, null);
+		}
+
+		/** 带上工作区、档位与执行者（界面这条链路用；比上面多一个执行者）。 */
+		public AskRequest(String question, String intent, String conversationId, String tenantId,
+				String workspaceDir, String permissionLevel) {
+			this(question, intent, conversationId, tenantId, workspaceDir, permissionLevel, null);
 		}
 	}
 

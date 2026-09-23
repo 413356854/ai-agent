@@ -1,6 +1,7 @@
 package ai.agent.service.agent;
 
 import ai.agent.entity.agent.AgentRun;
+import ai.agent.entity.agent.skill.SkillCatalog;
 import ai.agent.entity.canary.CanaryDecision;
 import ai.agent.service.canary.CanaryService;
 import ai.agent.config.AgentLoopProperties;
@@ -123,6 +124,20 @@ public class AgentLoop {
 	private final RunPermission permission;
 
 	/**
+	 * <b>这一次运行能用的技能</b>（按执行者的角色目录筛出来的一份目录）。
+	 *
+	 * <h2>为什么它在循环里，而不是由读技能的那把工具自己查</h2>
+	 * 技能的候选范围来自"这次是谁在跑"（执行者 → 他的角色 → 角色目录 → 目录下的技能），
+	 * 而"这次是谁在跑"是<b>调用方在开跑之前给出的事实</b> —— 与 {@link #permission} 完全同一类。
+	 * 让工具自己去查的写法会需要一条"当前是谁在跑"的隐式通道，而那种通道在虚拟线程下会串味。
+	 *
+	 * <p>{@code null} 表示没有执行者信息（老入口、外部链路、测试直接 new 循环）：
+	 * 那时系统提示词里<b>没有</b>技能那一节，工具也会明确回一句"这次没有技能目录" ——
+	 * 而不是退化成"注入全库技能"（那会让"没指定执行者"看起来与"权限很宽"一模一样）。
+	 */
+	private final SkillCatalog skills;
+
+	/**
 	 * 容器装配用的那一个（<b>标了 `@Autowired` 是必需的，不是风格</b>）。
 	 *
 	 * <p>类里有两个构造器，而 Spring 只在"只有一个候选"时才自动选它。有了第二个之后
@@ -135,11 +150,11 @@ public class AgentLoop {
 	@org.springframework.beans.factory.annotation.Autowired
 	public AgentLoop(ToolRegistry registry, ToolCallExecutor executor, ModelTurn modelTurn,
 			AgentLoopProperties properties, PromptService prompts, CanaryService canary) {
-		this(registry, executor, modelTurn, properties, prompts, canary, null);
+		this(registry, executor, modelTurn, properties, prompts, canary, null, null);
 	}
 
 	/**
-	 * 完整形态（多一个权限字段）。
+	 * 完整形态（多一个权限字段与一份技能目录）。
 	 *
 	 * <p>⚠️ <b>它必须是 `private`，而且不能标 `@Autowired`</b> —— 两者都是为了同一件事：
 	 * 让容器只看见上面那一个公开构造器。Spring 的规则是"类里只有一个构造器时才自动选它"，
@@ -149,12 +164,14 @@ public class AgentLoop {
 	 * `required a bean of type 'RunPermission' that could not be found`，
 	 * 指向的是"少一个 bean"，而真正的原因是"注解标错了构造器"。
 	 *
-	 * <p>权限由 {@code ResumableAgentService} 每次运行用 {@link #withPermission} 派生实例带进来
-	 * （它本来就为换模型这么做过），所以容器里那个循环的权限字段永远是 {@code null} ——
-	 * 语义是"没有权限上下文"，判定侧按最严的一档处理。
+	 * <p>权限与技能都由 {@code ResumableAgentService} 每次运行用 {@link #withPermission} /
+	 * {@link #withSkills} 派生实例带进来（它本来就为换模型这么做过），
+	 * 所以容器里那个循环的这两个字段永远是 {@code null} —— 语义是"没有上下文"，
+	 * 判定侧按最严的一档处理、提示词里不加技能那一节。
 	 */
 	private AgentLoop(ToolRegistry registry, ToolCallExecutor executor, ModelTurn modelTurn,
-			AgentLoopProperties properties, PromptService prompts, CanaryService canary, RunPermission permission) {
+			AgentLoopProperties properties, PromptService prompts, CanaryService canary, RunPermission permission,
+			SkillCatalog skills) {
 		this.registry = registry;
 		this.executor = executor;
 		this.modelTurn = modelTurn;
@@ -162,6 +179,7 @@ public class AgentLoop {
 		this.prompts = prompts;
 		this.canary = canary;
 		this.permission = permission;
+		this.skills = skills;
 	}
 
 	/**
@@ -417,7 +435,8 @@ public class AgentLoop {
 				}
 
 				ToolCallOutcome outcome = executor.execute(invocation,
-						ToolCallContext.ofStep(runId, round, effectiveGrant).withRunPermission(permission));
+						ToolCallContext.ofStep(runId, round, effectiveGrant).withRunPermission(permission)
+								.withSkillCatalog(skills));
 
 				// ---- 出口 5：停在人工闸门上（HITL） ----
 				//
@@ -589,7 +608,7 @@ public class AgentLoop {
 
 	/**
 	 * 读系统提示词。<b>读哪一版由 {@code decision} 决定</b>（灰度分流的结果），
-	 * 与工具目录拼在一起 —— 见 {@code ToolRegistry.renderCatalog} 的注释。
+	 * 与工具目录、技能目录拼在一起 —— 见 {@code ToolRegistry.renderCatalog} 的注释。
 	 *
 	 * <h2>为什么正文与指纹必须来自同一次判定</h2>
 	 * 判定结果同时给出了 version 与 fingerprint。如果这里重读一次"当前生效那一版"
@@ -597,16 +616,38 @@ public class AgentLoop {
 	 * 当中间恰好有人切了版本时（这正是热更新会发生的事）。
 	 * 那种情况下库里的指纹对不上真正发出去的正文，而它**不报错**：
 	 * 事后查"那天的答案为什么变差"时，你会对着一个错的版本号去比正文。
+	 *
+	 * <h2>技能目录为什么拼在这里，而不是拼进提示词版本库</h2>
+	 * 提示词库里的那一份是<b>所有运行共用</b>的正文；而技能目录按执行者不同而不同
+	 * （同一个文件夹下不同的人看到的不一样）。把动态内容写进版本库的后果是
+	 * "每换一个执行者就多出一个版本"，而版本库的用途是"人与人之间的对照实验"。
+	 * 所以它排在三段拼装的最后一段，与工具目录同一个位置、同一条理由。
+	 *
+	 * <p>⚠️ 这也意味着<b>提示词指纹覆盖不到技能目录</b>：两次运行指纹相同、
+	 * 技能却可能不同（执行者换了、或有人改了技能）。它不报错，只表现为
+	 * "同一版提示词的两条 trace 结果不一样"。要归因技能这一层，看的是运行记录里的
+	 * {@code skillCatalog}（`/api/agent/ask` 的响应与日志里都有）。
 	 */
 	private String loadSystemPrompt(CanaryDecision decision) {
 		// 兜底链（库 → classpath → 抛异常）在 PromptService 里，这里不重复实现 ——
 		// 两处兜底就意味着两处会漂移
 		String base = decision.candidate() ? candidateContent(decision) : prompts.currentContent(PromptKind.AGENT_LOOP);
 		String catalog = registry.renderCatalog();
-		if (catalog.isBlank()) {
-			return base;
+		if (!catalog.isBlank()) {
+			base = base + "\n\n## 你当前可以使用的工具\n\n" + catalog;
 		}
-		return base + "\n\n## 你当前可以使用的工具\n\n" + catalog;
+		String skillCatalog = skills == null ? "" : skills.render();
+		if (!skillCatalog.isBlank()) {
+			// 落一行 INFO：这是**模型那一侧到底看到了哪几条技能**的唯一凭据。
+			//
+			// 为什么非要有它：技能目录是按执行者动态拼的，而**提示词指纹覆盖不到它** ——
+			// 于是"模型没按技能做"与"技能压根没注入"事后只能靠猜。
+			// 这一行把这次真正拼进去的那几条名字写进日志，与 `/api/agent/ask` 响应里的
+			// `skills` 是同一个对象渲染出来的，所以两边不可能不一致。
+			log.info("本次系统提示词里注入了技能：{}（{}）", skills.names(), skills.describe());
+			base = base + "\n\n" + skillCatalog;
+		}
+		return base;
 	}
 
 	/**
@@ -654,7 +695,7 @@ public class AgentLoop {
 	 * （这个坑阶段一的钉住实验踩过：一个"只在第一次算"的字段在真并发下会互相干扰）。
 	 */
 	public AgentLoop withModelTurn(ModelTurn otherModel) {
-		return new AgentLoop(registry, executor, otherModel, properties, prompts, canary, permission);
+		return new AgentLoop(registry, executor, otherModel, properties, prompts, canary, permission, skills);
 	}
 
 	/**
@@ -665,7 +706,21 @@ public class AgentLoop {
 	 * 在恢复之后拿到完全权限，而那种放大在页面上完全看不出来。
 	 */
 	public AgentLoop withPermission(RunPermission other) {
-		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, other);
+		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, other, skills);
+	}
+
+	/**
+	 * 换<b>这一次运行能用的技能</b>，其余装配照旧 —— 返回一个<b>新实例</b>，不改动自己。
+	 *
+	 * <p>与 {@link #withPermission} 同一条做法，理由也一样：技能是"这一次运行"的前提，
+	 * 由服务层在开跑之前算好。它对恢复路径的含义是具体的 ——
+	 * <b>恢复时不会重新筛技能</b>（检查点里已经有一条带技能目录的系统消息），
+	 * 所以续跑用的是原来那一份；而如果这次恢复是"人工批准后接着跑"，
+	 * 那一份技能目录也不会被重新解析（见 {@code AgentLoop.run} 里
+	 * {@code messages.isEmpty()} 那一个分支 —— 它只有新起的运行才会注入系统消息）。
+	 */
+	public AgentLoop withSkills(SkillCatalog other) {
+		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, permission, other);
 	}
 
 }

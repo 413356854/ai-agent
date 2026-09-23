@@ -1640,6 +1640,26 @@ if (EXPECT_REFLECTION) {
       `permissionLevel=${JSON.stringify(body.permissionLevel)}`)
     expect('★ 权限档位的默认值是 READ_ONLY（与界面上选中的那一档一致）',
       body.permissionLevel === 'READ_ONLY', `permissionLevel=${body.permissionLevel}`)
+
+    /*
+      ★ 执行者（本次新增）也必须在出站请求体里。
+
+      【为什么判据是"请求体里有这个键"而不是"页面上有那一行"】
+      与上面两条一字不差：中间隔着一次字段名拼接（`executorId`），而字段名写错的症状是
+      **后端认为"没指定执行者" → 一条技能都不注入**，而页面上一切正常
+      （"没有技能"与"技能没生效"长得一模一样）。
+      这里钉的是"界面显示的那个身份真的发出去了"这一跳。
+
+      <p>⚠️ 值在本节刻意断言成 null：这一节跑在 [11] 之前，而**登录态存的是 localStorage、
+      App 挂载时只读一次** —— 也就是说"往 localStorage 里写一条记录"不会让这一页变成登录态。
+      所以这里的正确期望值是"没登录 → 不带执行者"，而不是"应该等于某个人的 id"。
+      登录态下的那一条断言在 [11]（那里会真的点开弹窗选一个人）。
+    */
+    expect('★ 出站请求体里有 executorId 这个键（不是只在界面上画了一行字）',
+      Object.prototype.hasOwnProperty.call(body, 'executorId'),
+      `—— body=${JSON.stringify(body).slice(0, 240)}`)
+    expect('★ 未登录时出站请求体里的 executorId 是 null（不偷偷用一个默认的人）',
+      body.executorId === null, `executorId=${JSON.stringify(body.executorId)}`)
   }
   catch (e) {
     expect('抓到了 /api/agent/ask 的出站请求体（用来核对归因与权限字段）', false, String(e))
@@ -1662,6 +1682,37 @@ if (EXPECT_REFLECTION) {
   expect('★ 结果卡回显了本次运行的执行前提（工作区 + 档位）',
     /执行前提/.test(resultText) && /仅可查看|工作区内修改|完全权限|未记录/.test(resultText),
     `—— 页面文本片段：${resultText.slice(0, 240).replace(/\n/g, ' | ')}`)
+
+  /*
+    ★ 本次注入的技能必须显示出来（本次新增）。
+
+    【为什么这一块必须回显，而不是只写进后端日志】技能目录是按执行者**动态**拼进系统提示词的，
+    而提示词指纹覆盖不到它 —— 于是"模型没按技能做"与"技能压根没注入"
+    在别的任何地方都长得一模一样。这一块就是那个区分。
+
+    <p>判据是"它说的是 0 条 + 原因"，不是"这一块存在"：未登录时后端一条都不注入，
+    而界面上必须把这句**原因**写出来（页头去登录）—— 只显示一个空的技能列表的话，
+    "没指定执行者"与"他的目录下没有技能"会被读成同一件事，而两者的下一步动作不同。
+  */
+  const skillsBlock = agentCard.locator('[data-testid="agent-skills"]')
+  expect('★ 结果卡上有「本次注入的技能」这一块（技能对模型的影响有唯一的凭据）',
+    (await skillsBlock.count()) > 0)
+  if ((await skillsBlock.count()) > 0) {
+    const skillsText = (await skillsBlock.innerText()).trim()
+    const shownCount = (await skillsBlock.locator('[data-testid="agent-skill-count"]').innerText()).trim()
+    if (EXPECT_REFLECTION) {
+      expect('★ 未登录时注入 0 条技能，并写出了原因（去页头模拟登录）',
+        /^0\s*条$/.test(shownCount) && /模拟登录/.test(skillsText),
+        `计数=${shownCount} 文本=${skillsText.replace(/\n/g, ' | ').slice(0, 160)}`)
+    }
+    else {
+      // 真后端：这一次跑在未登录（没带 executorId）下，所以同样一条都不该注入；
+      // 但库里可能已经有技能 —— 那也不能注入，因为**没有执行者就没有候选范围**
+      expect('★ 真后端上"没有执行者"同样一条都不注入（不是把所有技能都塞进去）',
+        /^0\s*条$/.test(shownCount) && /模拟登录/.test(skillsText),
+        `计数=${shownCount} 文本=${skillsText.replace(/\n/g, ' | ').slice(0, 160)}`)
+    }
+  }
 
   // 「停因」这一格在每个路径上都该是**真实的枚举名**，而不是空 ——
   // 它是"这一页回答了为什么"的最小证据
@@ -4042,6 +4093,66 @@ console.log('[11] 模拟登录（页头右上角）')
   expect('刷新之后仍然是登录态，且 id 没变（读的是存下来的那份记录）',
     (await chip.count()) === 1 && Number(await chip.getAttribute('data-login-user-id')) === hit.id,
     (await chip.innerText()).replace(/\n/g, ' '))
+
+  // ---- ★ 登录态下"这一次运行注入哪些技能"必须按身份算（本次新增） ----
+  //
+  // 【为什么这一小段放在这里，而不是 Agent 面板那一节】
+  // 它需要一个**真的登录过**的状态，而登录态只有这一节有（理由见上面那段 reload 的说明：
+  // 往 localStorage 里写一条记录不会让页面变成登录态）。而 Agent 面板那一节跑在这一节之前，
+  // 那时页头还是未登录 —— 所以那一条断言的正确期望值是"0 条 + 去登录"。
+  //
+  // 【它钉住的是什么】"技能的候选范围来自执行者的角色目录"这条判据的**端到端**表现：
+  //   ① 请求体里真的带着这个人的 id（字段名写错 = 后端认为没指定执行者）；
+  //   ② 回来的条数等于"按他的角色目录前缀筛全库技能"这个**独立算出来**的数。
+  //
+  // ⚠️ 期望值刻意**不**取 `?userId=<他>` 那一份：那个接口筛的是**拥有者**
+  // （"这一行是不是我的"），而运行期筛的是**文件夹**（"这个目录下的技能"）——
+  // 两份本来就会不一样（同一批人共用一个目录时，同事写的技能也算这个目录下的）。
+  // 拿拥有者那一份当期望值，等于把两件不同的事当成同一件。
+  if (EXPECT_REFLECTION) {
+    await navMode('Agent 工具调用')
+    await waitFor(async () => (await agentCard.count()) > 0, 8000)
+    const executorTag = (await agentCard.locator('[data-testid="agent-executor-value"]').innerText()).trim()
+    expect('★ 登录之后 Agent 面板显示的执行者是页头那个人（身份只有一个来源）',
+      executorTag.includes(label) && executorTag.includes(`#${hit.id}`), executorTag)
+
+    const askedAgain = page.waitForRequest(
+      r => r.url().includes('/api/agent/ask') && r.method() === 'POST', { timeout: 20000 })
+    await agentCard.locator('button', { hasText: /跑\s*一\s*次/ }).first().click()
+    const body = JSON.parse((await askedAgain).postData() ?? '{}')
+    expect('★ 登录之后出站请求体里带的是页头那个人的 id（不是空、也不是别人）',
+      body.executorId === hit.id, `executorId=${JSON.stringify(body.executorId)} 期望=${hit.id}`)
+
+    await agentCard.locator('.stat-cell', { hasText: '停因' }).first().waitFor({ state: 'visible', timeout: 150000 })
+    const skillsBlock = agentCard.locator('[data-testid="agent-skills"]')
+    const shownCount = Number(((await skillsBlock.locator('[data-testid="agent-skill-count"]').innerText())
+      .match(/\d+/) ?? ['-1'])[0])
+
+    // 这个人的角色目录前缀（与 skill 管理那一页的「文件夹目录」同一个来源）
+    const foldersOfUser = (await (await page.request.get(`${URL}/api/skills?userId=${hit.id}`)).json()).folders
+    // 全库技能（**不按拥有者筛**）里落在他那些目录前缀下的那些 —— 运行期看的正是这一批
+    const allSkills = (await (await page.request.get(`${URL}/api/skills`)).json()).skills
+    const under = (prefix, dir) => {
+      const seg = value => value.replace(/[\\/]+$/, '').toLowerCase().split(/[\\/]+/)
+      const base = seg(prefix)
+      const target = seg(dir)
+      return target.length >= base.length && base.every((s, i) => s === target[i])
+    }
+    const expected = allSkills.filter(s => foldersOfUser.some(p => under(p, s.folder)))
+    expect('★ 注入的技能条数 = 按他的角色目录前缀从全库筛出来的那些（两边同一个判据）',
+      shownCount === expected.length,
+      `Agent 页 ${shownCount} 条 / 按目录前缀算 ${expected.length} 条（${JSON.stringify(expected.map(s => s.name))}）`
+      + ` / 他自己的 ${JSON.stringify(allSkills.filter(s => s.ownerId === hit.id).map(s => s.name))}`)
+
+    const skillsText = (await skillsBlock.innerText()).trim()
+    expect('★ 注入的技能在页面上是一条条列出来的（不是只有一个数字）',
+      expected.length === 0
+        ? /没有技能/.test(skillsText)
+        : (await skillsBlock.locator('.agent-skill-row').count()) === expected.length
+          && expected.every(s => skillsText.includes(s.name)),
+      `—— 文本片段：${skillsText.replace(/\n/g, ' | ').slice(0, 240)}`)
+    await page.screenshot({ path: `${SHOT_DIR}/agent-skills.png`, fullPage: true })
+  }
 
   // ---- ★ 登录态下 agent任务那一页的看板按人筛（`?userId=`） ----
   //

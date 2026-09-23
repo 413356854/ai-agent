@@ -164,6 +164,33 @@ export interface AgentAskResponse {
   /** 一行可读说明，形如 `完全权限 · D:\work\demo` */
   permissionNote?: string
 
+  // ---- 本次新增：这一次注入的技能 ----
+  /**
+   * **这一次运行代表谁**（形如 `初始管理员(#1)`）；空串 = 没有指定执行者。
+   *
+   * <p>技能的候选范围来自执行者的角色目录，所以"注入了哪些技能"这件事
+   * 只有在知道"代表谁"之后才可解释。空串时后端一条都不注入。
+   */
+  skillExecutor?: string
+  /** 这次生效的文件夹目录（执行者全部角色的目录前缀）。空数组 = 没有执行者 / 他没有角色 */
+  skillFolders?: string[]
+  /** 注入了几条技能的 name + desc（进系统提示词的那一节） */
+  skillCount?: number
+  /** 是否因为超过 `ai.agent.skill.max-catalog-skills` 被截断 */
+  skillTruncated?: boolean
+  /** 截断前一共匹配到几条 —— 与 `skillCount` 一起说清"被拦掉了多少条" */
+  skillTotalMatched?: number
+  /** 一行可读说明，形如 `初始管理员(#1)：1 个文件夹 / 2 条技能` */
+  skillNote?: string
+  /**
+   * 注入了哪些技能（**只有 name 与 desc，没有正文**）。
+   *
+   * <p>它是"技能到底对模型起了什么作用"的唯一凭据：提示词指纹覆盖不到技能那一节
+   * （它是按执行者动态拼的）。不显示的话，"模型没按技能做"与"技能压根没注入"
+   * 在页面上长得一模一样。
+   */
+  skills?: AgentSkillBrief[]
+
   // ---- 第九轮新增：HITL（人工确认）----
   /**
    * **这次任务停在一次写操作上等人确认**（`stopReason === 'WAITING_FOR_APPROVAL'` 的便捷布尔）。
@@ -184,6 +211,24 @@ export interface AgentAskResponse {
   approvalTimeoutSeconds?: number
   /** 停因说是等审批、但待办里查不到对应记录 —— 这是**必须报出来的不一致** */
   approvalMissing?: boolean
+}
+
+/**
+ * 一次运行里注入的一条技能（`/ask` 响应里 `skills[]` 的一行）。
+ *
+ * 对应后端 `ai.agent.entity.agent.skill.SkillCatalog#row`。**没有 content** ——
+ * 正文由模型按需用工具取，它不进提示词、也不该进这个响应（那是几万字的量级）。
+ */
+export interface AgentSkillBrief {
+  id: number
+  /** 它所在的文件夹目录（= 执行者某个角色的目录前缀） */
+  folder: string
+  name: string
+  /** 这个技能是干什么的；空串 = 库里没填说明 */
+  description: string
+  ownerId: number
+  /** 拥有者的姓名（账号行不在时后端给「未知用户 #id」） */
+  ownerName: string
 }
 
 /**
@@ -658,6 +703,15 @@ export interface AgentLimitsResponse {
  *            而一次拼写不一致就让同一个租户裂成两行（两行加起来才是真相，没人会去加）。
  *
  *            <p>它同样由调用方给：后端看不出来"这次是替谁跑的"。
+ * @param executorId 执行者（本次新增）：这次运行代表谁。
+ *
+ *            <p>后端拿它算**这次能注入哪些技能**：执行者的角色 → 这些角色的目录前缀 →
+ *            落在这些目录下的技能；name + desc 拼进系统提示词，正文由模型按需取。
+ *            填错（账号表里没有 / 已停用）时后端在**花钱之前**回 `{ok:false}`。
+ *
+ *            <p>留空（`null`）不是错误：没有执行者就没有技能那一节。
+ *            **刻意不给一个默认值** —— 默认成"第一个人"会让一次运行读到它不该读的技能，
+ *            而那种错在页面上完全看不出来（技能确实是注入了，只是按别人的权限注入的）。
  */
 export function askAgent(
   question: string,
@@ -666,6 +720,7 @@ export function askAgent(
   intent = '',
   tenantId = '',
   conversationId = AGENT_CONVERSATION_ID,
+  executorId: number | null = null,
 ): Promise<AgentAskResponse> {
   return postJson<AgentAskResponse>(
     '/api/agent/ask',
@@ -679,6 +734,8 @@ export function askAgent(
       // 现象是"我填的目录它说没有"，而没人会想到是转义
       workspaceDir,
       permissionLevel,
+      // 同理进请求体：它是 `agent_user.id`，而界面这一侧唯一的来源是页头那条模拟登录记录
+      executorId,
     },
     '跑 Agent 任务',
   )

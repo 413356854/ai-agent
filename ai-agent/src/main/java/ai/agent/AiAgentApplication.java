@@ -4,6 +4,7 @@ import ai.agent.config.AgentApprovalProperties;
 import ai.agent.config.AgentTaskProperties;
 import ai.agent.config.ChatCallProperties;
 import ai.agent.config.ReviewProperties;
+import ai.agent.config.SkillPromptProperties;
 import ai.agent.config.WorkspaceFileProperties;
 import ai.agent.config.WorkspaceProperties;
 import ai.agent.config.rag.RagProperties;
@@ -57,13 +58,18 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * 触发周期、一轮处理几条、几个任务点要人确认计划、执行时拿哪一档权限。
  * 四个值都必须写在配置里（record 没有默认值）—— 少一个会在启动时报出键名，
  * 而不是悄悄用一个我们挑的默认值跑起来。
+ *
+ * <p>{@link SkillPromptProperties}（{@code ai.agent.skill}）是技能注入的两个上限：
+ * 系统提示词里最多列几条技能的 name + desc、以及取正文时单次返回多少字符。
+ * 它们与文件类工具那两个上限同族（都是"回填给模型的上下文预算"），
+ * 但拼的是<b>每一轮都要付一遍</b>的系统提示词，所以单独一处。
  */
 @SpringBootApplication
 @MapperScan("ai.agent.mapper")
 @EnableScheduling
 @EnableConfigurationProperties({ ChatCallProperties.class, RagProperties.class, AgentApprovalProperties.class,
 		ReviewProperties.class, WorkspaceProperties.class, WorkspaceFileProperties.class,
-		AgentTaskProperties.class })
+		AgentTaskProperties.class, SkillPromptProperties.class })
 public class AiAgentApplication {
 
 	public static void main(String[] args) {
