@@ -3336,13 +3336,15 @@ if (EXPECT_REFLECTION) {
   // ---- 「权限不足」：判断不通过那一格的两个动作（已修改任务 / 取消任务） ----
   //
   // 这一格等的**不是**确认项的答复，而是"取消还是重走一遍" —— 所以它的按钮、文案、
-  // 点完之后回到哪一列都与「待确认」那三条不同。三件事都要验：
+  // 点完之后回到哪一列都与「待确认」那三条不同。四件事都要验：
   //   ① 结论显示出来了（它是用户决定"改什么"的唯一依据）；
   //   ② 给的是 revise 与 cancel，**没有**「答复确认项」；
-  //   ③ 点「已修改任务」之后卡片真的回到「新任务」列（步骤 +1）。
+  //   ③ 任务描述在这一格**可改**，改过的那一份与这次选择一起落库；
+  //   ④ 点「已修改任务」之后卡片真的回到「新任务」列（步骤 +1）。
   const deniedCard = page.locator('.task-column[data-column="pending"] .task-card[data-task-id="12"]')
   const deniedBefore = await taskColumnCounts()
-  const deniedStepBefore = (await (await page.request.get(`${URL}/api/agent-tasks/12`)).json()).task.currentStep
+  const deniedBeforeDetail = (await (await page.request.get(`${URL}/api/agent-tasks/12`)).json()).task
+  const deniedStepBefore = deniedBeforeDetail.currentStep
   await deniedCard.click()
   const deniedDetail = page.locator('.ant-modal:visible', { hasText: '确认项' })
   await waitFor(async () => /权限不足/.test(await deniedDetail.innerText()), 8000)
@@ -3359,18 +3361,55 @@ if (EXPECT_REFLECTION) {
   expect('★ 权限不足那一格不写"这一步由 agent 任务执行做"（它在等人处置）',
     !/这一步由 agent 任务执行做/.test(deniedText))
 
-  await deniedDetail.getByRole('button', { name: '已修改任务', exact: true }).click()
+  // ★ 描述这一格：可改的**输入框**（预填库里那一份），而不是只读的一段文字。
+  // 只断"有文字"是不够的 —— 只读的呈现同样有文字，而"改了之后能不能提交上去"才是这一版的内容。
+  // 按 placeholder 找而不是"弹窗里第一个 textarea"：详情弹窗里还挂着"登记执行结果"那一个（另一些状态下）
+  const descBox = deniedDetail.locator('textarea[placeholder^="这条任务要做什么"]')
+  const descPrefilled = await waitFor(async () => (await descBox.count()) === 1
+    && (await descBox.inputValue()) === deniedBeforeDetail.description, 5000)
+  expect('★ 权限不足的详情里「任务描述」是可改的输入框，且预填库里那一份',
+    descPrefilled,
+    `输入框 ${await descBox.count()} 个 / 值「${(await descBox.count()) ? await descBox.inputValue() : ''}」`)
+
+  const reviseButton = deniedDetail.getByRole('button', { name: '已修改任务', exact: true })
+  await descBox.fill('')
+  expect('★ 描述被清空时「已修改任务」点不动（空描述不提交：后端也会回 400）',
+    await reviseButton.isDisabled(), `disabled=${await reviseButton.isDisabled()}`)
+
+  // 改一段再提交：改过的那一份要与这次选择**一起**落库
+  const revisedDesc = '自检：把周报模板里的统计口径换成新版，并附一份口径对照表'
+  await descBox.fill(revisedDesc)
+  await reviseButton.click()
   const revisedShown = await waitFor(async () =>
     /已答复「已修改任务」/.test(await page.locator('.task-panel').innerText()), 8000)
   const afterRevise = await taskColumnCounts()
   expect('★ 点「已修改任务」之后卡片回到「新任务」列（整条链重走一遍，不是就地重试）',
     revisedShown && afterRevise.new === deniedBefore.new + 1 && afterRevise.pending === deniedBefore.pending - 1,
     `new ${deniedBefore.new}→${afterRevise.new} / pending ${deniedBefore.pending}→${afterRevise.pending}`)
+  expect('★ 反馈里说清"改过的描述与这次选择一起保存了"（用户要知道自己改的那一段去哪了）',
+    /这一份任务描述与这次选择一起保存了/.test(await page.locator('.task-panel').innerText()),
+    (await page.locator('.task-panel').innerText()).replace(/\n/g, ' ').slice(0, 120))
   const revised = await (await page.request.get(`${URL}/api/agent-tasks/12`)).json()
   expect('★ 重发之后：状态是「新发布」、步骤 +1，上一次的「权限不足」结论留在记录里',
     revised.task.status === 'NEW' && revised.task.currentStep === deniedStepBefore + 1
     && /上一次「权限不足」的结论（留档）/.test(revised.task.result ?? ''),
     `${revised.task.status} / 第 ${deniedStepBefore}→${revised.task.currentStep} 步`)
+  // ★ 描述是与这次选择**一起**落库的：库里那一份必须就是编辑框里提交上去的文本
+  // （分两次写的话，"状态回到新发布、描述还是旧的"那一小段里，重走的判据是旧文本）
+  expect('★ 改过的任务描述落库了（库里那一份 = 编辑框里提交的那一份）',
+    revised.task.description === revisedDesc, `「${revised.task.description}」`)
+  const newDescShown = await waitFor(async () =>
+    (await page.locator('.task-column[data-column="new"] .task-card[data-task-id="12"]').innerText())
+      .includes('口径对照表'), 8000)
+  expect('★ 新的描述显示在「新任务」列那张卡片上（不是在库里改了、界面上还是旧的）',
+    newDescShown,
+    (await page.locator('.task-column[data-column="new"] .task-card[data-task-id="12"]')
+      .innerText()).replace(/\n/g, ' ').slice(0, 100))
+  // 状态已经不是「权限不足」→ 那一格回到只读的一段文字（"可改"是这一格的属性，不是描述的属性）
+  const backToReadOnly = await waitFor(async () => (await descBox.count()) === 0
+    && (await deniedDetail.innerText()).includes(revisedDesc), 8000)
+  expect('★ 重走之后描述不再是输入框，详情里显示的是改过的那一份', backToReadOnly,
+    `输入框 ${await descBox.count()} 个`)
   // 关掉它再往下走：下面的 runAgent 会点看板上的「刷新」，而开着的弹窗会挡住那次点击
   // （失败信息是 Playwright 的点击超时 + "ant-modal-wrap intercepts pointer events"，
   // 看起来像"刷新按钮坏了"）
@@ -3401,6 +3440,19 @@ if (EXPECT_REFLECTION) {
   expect('★ 判断不通过那条卡片落在「待处理」列里（与两条"待确认"同列）',
     afterJudge.pending === afterRevise.pending + 1 && afterJudge.executing === afterRevise.executing,
     `pending ${afterRevise.pending}→${afterJudge.pending} / executing ${afterRevise.executing}→${afterJudge.executing}`)
+
+  // ★ 界面把空描述挡在按钮上（上一条），后端也要挡：描述与这次选择是一起落库的，
+  // 库里一条空描述看起来完全正常，而下一步会拿它去判需求。这一条**不改状态**（400 不留痕），
+  // 所以后面那两条计数断言读到的还是「权限不足」那一条
+  const blankRevise = await page.request.post(`${URL}/api/agent-tasks/${deniedId}/revise`,
+    { data: { description: '   ' } })
+  expect('★ 「已修改任务」提交空描述是 400（"没改"要把当前那一份原样传回来）',
+    blankRevise.status() === 400, `HTTP ${blankRevise.status()}`)
+  const afterBlank = await (await page.request.get(`${URL}/api/agent-tasks/${deniedId}`)).json()
+  expect('★ 空描述被拒之后这条任务一动不动（还在「权限不足」、描述还是原来那一份）',
+    afterBlank.task.status === 'INSUFFICIENT_PERMISSION'
+    && afterBlank.task.description === judged.task.description,
+    `${afterBlank.task.status} / 「${afterBlank.task.description}」`)
 
   // 收尾复位：与权限那一节同一条纪律（自检跑两遍，第二遍不该继承第一遍改出来的状态）
   const taskReset = await page.request.post(`${URL}/api/agent-tasks/__reset`)

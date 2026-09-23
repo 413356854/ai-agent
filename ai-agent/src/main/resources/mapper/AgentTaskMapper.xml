@@ -139,6 +139,11 @@
 		UPDATE agent_task SET result = #{result} WHERE id = #{id}
 	</update>
 
+	<!-- 「权限不足」那一格里用户改过的描述：与回「新发布」那一步同一次写入（见 DefaultAgentTaskService#revise） -->
+	<update id="updateDescription">
+		UPDATE agent_task SET description = #{description} WHERE id = #{id}
+	</update>
+
 	<update id="updateAgentId">
 		UPDATE agent_task SET agent_id = #{agentId} WHERE id = #{id}
 	</update>

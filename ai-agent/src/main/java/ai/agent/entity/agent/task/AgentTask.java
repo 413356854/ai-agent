@@ -112,6 +112,18 @@ public record AgentTask(Long id, Long publisherId, String publisher, Long assign
 				assignee, 1, null, null, null, null, null);
 	}
 
+	/**
+	 * 一次改写之后的描述：判据与 {@link #draft} 里那一条<b>是同一份</b>
+	 * （非空、去前后空格、长度上限 {@link #MAX_DESCRIPTION_CHARS}）。
+	 *
+	 * <p>「权限不足」那一格允许用户改了描述再重走一遍（见 {@code AgentTaskService#revise}）：
+	 * 这一份文本要先过这里，而不是直接写进库 —— 一条空描述或超长描述在库里看起来完全正常，
+	 * 而下一步会拿它去判需求、拆任务点。
+	 */
+	public static String revisedDescription(String description) {
+		return required(description, "任务描述", MAX_DESCRIPTION_CHARS);
+	}
+
 	/** agent 执行时"当前执行人"的写法（形如 {@code agent#my-app}；没配 agent id 时是 {@code agent}）。 */
 	public static String agentRef(String agentId) {
 		return agentId == null ? "agent" : "agent#" + agentId;

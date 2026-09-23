@@ -18,7 +18,7 @@ import java.util.List;
  *       <td>执行中 / 待验收</td>
  *       <td>待验收（登记执行结果，人工兜底）/ 已完成</td></tr>
  *   <tr><td>{@link #answer}</td><td>两个"待确认"</td><td>对应的"已确认"那一格（已确认需求 / 已确认计划）</td></tr>
- *   <tr><td>{@link #revise}</td><td>权限不足</td><td>新发布（用户答复「已修改任务」，整条链重走一遍）</td></tr>
+ *   <tr><td>{@link #revise}</td><td>权限不足</td><td>新发布（用户答复「已修改任务」+ 改过的任务描述，整条链重走一遍）</td></tr>
  *   <tr><td>{@link #cancel}</td><td>任一非终态</td><td>已取消（写取消原因）</td></tr>
  * </table>
  *
@@ -88,8 +88,15 @@ public interface AgentTaskService {
 	 * <p>这一格等的是"用户改了任务或改了权限"，而这件事没法从这个接口的入参里判断 ——
 	 * 它由用户在界面上答复（按钮就是「已修改任务」）。判据只有一条：当前状态必须是
 	 * {@link AgentTaskStatus#INSUFFICIENT_PERMISSION}。
+	 *
+	 * <p>{@code description} 是<b>改过之后的完整任务描述</b>（不是一段"改了什么"的说明），
+	 * 它与这次答复同一次写入：先落 {@code agent_task.description}，再把状态挪回「新发布」。
+	 * 两者必须一起落 —— 这条链上判需求歧义、拆任务点读的都是描述那一列，
+	 * 只挪状态的话，重走的这一遍读到的还是旧描述（而界面上看起来一切正常）。
+	 * <b>没有改动也要把它原样传回来</b>：空描述是 400（判据见 {@link AgentTask#revisedDescription}），
+	 * 因为"用户把它清空了"与"他没改"在请求体里长得一样，而两者该做的事完全不同。
 	 */
-	Detail revise(Long id);
+	Detail revise(Long id, String description);
 
 	/** 取消任务。取消原因必填 —— 一条没有原因的取消记录，事后只能靠回忆。 */
 	Detail cancel(Long id, String reason);

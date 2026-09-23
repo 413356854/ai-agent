@@ -33,11 +33,16 @@ const { Text, Paragraph } = Typography
  *       那一行也要说出来（否则"没有任务"与"没筛"看起来一样）。</li>
  * </ol>
  *
- * <h2>「权限不足」那一格：原因要显示，两个按钮要说清各做什么</h2>
+ * <h2>「权限不足」那一格：原因要显示，描述可以就地改，两个按钮要说清各做什么</h2>
  * 它的结论与执行结果落在同一个字段（`task.result`），所以卡片与详情都要<b>按状态换标签</b>：
  * 写成"执行结果"会让人以为这次跑过了 —— 而它一次都没开始。
  * 两个按钮各是一次选择：`revise`（「已修改任务」）= 任务或权限已经改好，放回「新发布」重走一遍；
  * `cancel` = 这条不做了。按钮同样来自后端的 `actions`，这里只负责画出来。
+ *
+ * <p>详情里的任务描述在<b>这一格是可编辑的输入框</b>（其它状态是只读的一段文字）：
+ * 这一格要改的常常就是描述本身（链上判需求、拆任务点读的都是它），
+ * 而"改描述"只能发生在权限不足这一步 —— 别的格子上球不在他手上，改了也没有下一次判定去读它。
+ * 改过的那一份随 `revise` 一起提交（空描述时按钮点不动，后端也会回 400）。
  *
  * <h2>为什么按钮来自后端的 actions，而不是这里 if 状态</h2>
  * 哪几个动作现在可用是一条状态机判断（后端 {@code DefaultAgentTaskService#actionsOf}）。
@@ -260,6 +265,14 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
   const [resultText, setResultText] = useState('')
   const [freeText, setFreeText] = useState('')
   const [cancelOpen, setCancelOpen] = useState(false)
+  /**
+   * 「权限不足」那一格里被改过的任务描述；`null` = 用户还没动过，显示后端那一份。
+   *
+   * <p>`null` 而不是"打开时把 `task.description` 抄进 state"：抄一份要在"打开"与"写完刷新"
+   * 两个时机都同步一次，漏掉一处就会让用户对着上一版的描述改 —— 而屏幕上两份文本
+   * 各说一套时，看不出哪一份会被提交。
+   */
+  const [revisedDesc, setRevisedDesc] = useState<string | null>(null)
 
   if (detail.status === 'idle') {
     return null
@@ -276,6 +289,10 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
   const needsResult = task?.status === 'EXECUTING'
   /** 这一格的结论是"权限不足"，不是执行结果 —— 两者共用 `result`，标签按状态换。 */
   const denied = task?.status === 'INSUFFICIENT_PERMISSION'
+  /** 详情里那一份任务描述：权限不足那一格可改，改过就以编辑框里这一份为准。 */
+  const description = revisedDesc ?? task?.description ?? ''
+  /** 改没改过（与库里那一份比）：只用来在界面上标一句「已改动」，提交与否不看它。 */
+  const descEdited = task != null && description.trim() !== task.description.trim()
   /**
    * 这一步在等 agent，人现在点不动。
    *
@@ -286,7 +303,7 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
   const awaitingAgent = actions.length > 0 && !advanceAction && !reviseAction && !canAnswer
 
   const close = () => {
-    setResultText(''); setFreeText(''); setCancelOpen(false)
+    setResultText(''); setFreeText(''); setCancelOpen(false); setRevisedDesc(null)
     tasks.closeTask()
   }
 
@@ -308,7 +325,27 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
       {detail.status === 'error' && <Alert type="error" showIcon title="读任务详情失败" description={detail.error} />}
       {task && (
         <Flex vertical gap={12}>
-          <Paragraph className="task-detail-desc">{task.description}</Paragraph>
+          {/* 任务描述：权限不足那一格是**可改的输入框**（链上判需求、拆任务点读的就是它，
+              而"改描述"这一步只在这里发生）；其它状态下球不在用户手上，改了也没有下一次判定去读它 */}
+          {denied
+            ? (
+              <Flex vertical gap={4}>
+                <Text strong>任务描述（可改）</Text>
+                <Input.TextArea
+                  rows={4}
+                  disabled={tasks.busy}
+                  value={description}
+                  onChange={e => setRevisedDesc(e.target.value)}
+                  placeholder="这条任务要做什么 —— 判需求有没有歧义、拆任务点都以它为准"
+                />
+                <Text type="secondary">
+                  {descEdited ? '已改动：' : ''}
+                  点「已修改任务」时这一份描述与这次选择一起保存，整条链按它重新走一遍
+                  （重新判需求 → 拆任务点 → 判授权）。
+                </Text>
+              </Flex>
+            )
+            : <Paragraph className="task-detail-desc">{task.description}</Paragraph>}
           <Flex gap={8} wrap className="task-detail-meta">
             <Text type="secondary">发布人：{task.publisher}</Text>
             <Text type="secondary">任务人：{task.assignee || '（未指派）'}</Text>
@@ -329,7 +366,8 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
                   <p>{task.result}</p>
                   <p>
                     两条路：「已修改任务」= 任务或权限已经改好，把它放回「新发布」重新走一遍
-                    （重新判需求 → 拆任务点 → 判授权）；「取消任务」= 这条不做了。
+                    （按上面那一份任务描述重新判需求 → 拆任务点 → 判授权），
+                    改过的描述与这次选择一起保存；「取消任务」= 这条不做了。
                   </p>
                 </div>}
               />
@@ -405,10 +443,11 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
                   </Button>
                 )}
                 {/* 「已修改任务」：按钮上那句话由后端给（它同时是这一格的语义），这里只画出来。
-                    点了就回「新发布」重走一遍，所以文案必须让人看清这不是"再试一次原样执行" */}
+                    点了就回「新发布」重走一遍，所以文案必须让人看清这不是"再试一次原样执行"；
+                    上面那格里改过的描述随这次答复一起提交（空描述点不动 —— 后端也会回 400） */}
                 {reviseAction && (
-                  <Button type="primary" disabled={tasks.busy}
-                    onClick={() => void tasks.revise(task.id)}>
+                  <Button type="primary" disabled={!description.trim() || tasks.busy}
+                    onClick={() => void tasks.revise(task.id, description.trim())}>
                     {reviseAction.label}
                   </Button>
                 )}

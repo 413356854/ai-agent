@@ -36,7 +36,7 @@ import java.util.Map;
  *   <tr><td>{@code POST /api/agent-tasks}</td><td>"发布一条任务"</td></tr>
  *   <tr><td>{@code POST …/{id}/advance}</td><td>"推进当前事件"（登记执行结果 / 验收通过）</td></tr>
  *   <tr><td>{@code POST …/{id}/confirms/{confirmId}/answer}</td><td>"答复这条确认项"</td></tr>
- *   <tr><td>{@code POST …/{id}/revise}</td><td>"已修改任务"（权限不足 → 新发布，整条链重走一遍）</td></tr>
+ *   <tr><td>{@code POST …/{id}/revise}</td><td>"已修改任务"（权限不足 → 新发布，请求体里带着改过的任务描述）</td></tr>
  *   <tr><td>{@code POST …/{id}/cancel}</td><td>"取消任务"（必须给原因）</td></tr>
  * </table>
  *
@@ -140,14 +140,21 @@ public class AgentTaskController {
 	}
 
 	/**
-	 * 「已修改任务」：权限不足 → 新发布。
+	 * 「已修改任务」：权限不足 → 新发布，<b>任务描述就在这一次请求里改</b>。
 	 *
-	 * <p><b>没有请求体</b>：这一格要的是一次选择（取消还是重走一遍），而不是一段说明 ——
-	 * 界面上那两个按钮就是全部输入。要写"改了什么"的话，那是任务描述与权限配置该回答的事。
+	 * <p>请求体带的是<b>改过之后的完整描述</b>，不是一段"改了什么"的说明：
+	 * 重走的这一遍读的就是 {@code agent_task.description} 那一列（判需求歧义、拆任务点都以它为准），
+	 * 所以描述与这次选择必须落在同一次写入里 —— 分成两次的话，
+	 * "状态已经回到新发布、描述还是旧的"那一小段时间里，重走的判据是旧文本。
+	 *
+	 * <p><b>没有改动也要把当前那一份原样传回来</b>（空描述是 400）：界面上那一格是可编辑的输入框，
+	 * "用户把它清空了"与"他没改"在请求体里长得一样，而后者该照旧走。
+	 * 描述本身非空与长度上限的判据在 {@code AgentTask#revisedDescription}（实体那一份），
+	 * 这里只拦"根本没传"。
 	 */
-	@PostMapping(path = "/{id}/revise")
-	public Map<String, Object> revise(@PathVariable Long id) {
-		return write(tasks.revise(id));
+	@PostMapping(path = "/{id}/revise", consumes = MediaType.APPLICATION_JSON_VALUE)
+	public Map<String, Object> revise(@PathVariable Long id, @RequestBody(required = false) ReviseRequest request) {
+		return write(tasks.revise(id, request == null ? null : request.description()));
 	}
 
 	@PostMapping(path = "/{id}/cancel", consumes = MediaType.APPLICATION_JSON_VALUE)
@@ -274,6 +281,13 @@ public class AgentTaskController {
 
 	/** 答复请求体。{@code answer} 是用户选的选项或自由回复（必填，判据在服务层）。 */
 	public record AnswerRequest(String answer) {
+	}
+
+	/**
+	 * 「已修改任务」的请求体：{@code description} 是<b>改过之后的完整任务描述</b>
+	 * （必填 —— 没改也要把当前那一份传回来，判据见 {@link #revise}）。
+	 */
+	public record ReviseRequest(String description) {
 	}
 
 	/** 取消请求体。{@code reason} 必填（判据在服务层）。 */

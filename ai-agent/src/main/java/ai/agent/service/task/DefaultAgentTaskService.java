@@ -24,7 +24,7 @@ import java.util.List;
  *
  * <h2>状态机只有这一份</h2>
  * "什么状态能做什么、做完到哪、执行人换成谁"全部落在两处，而且只有两处：
- * 人做的动作在这里（答复确认项、验收、取消），agent 做的动作在
+ * 人做的动作在这里（答复确认项、验收、重发、取消），agent 做的动作在
  * {@code DefaultAgentTaskExecution}；两边共用的写入原语在 {@link AgentTaskTransitions}。
  * 界面的按钮与接口返回的 {@code actions} 都从 {@link #actionsOf} 算出来 ——
  * 界面上再写一遍判断的后果是两份判据迟早不一致，而它们不一致时的现象是
@@ -268,6 +268,10 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	 * （需求歧义 → 任务点 → 计划 → 授权范围），改了任务描述或改了权限之后，
 	 * 那些结论都可能已经过时 —— 只重判授权会让后面几步继续用旧结论。
 	 *
+	 * <p>用户改过的描述与这次答复<b>同一次写入</b>：先落描述、再挪状态（同一个事务）。
+	 * 顺序上先落描述是刻意的 —— 判据不过（空 / 超长）时当场报 400，状态一动不动；
+	 * 反过来先挪状态的话，一次参数错的答复会留下一条"已经回到新发布、描述还是旧的"的任务。
+	 *
 	 * <p>步骤 +1（这一格也是"经过了一格"），当前执行人回到任务人
 	 * （{@code executorFor(NEW, task)}：球在他手上，由他决定要不要往下走）。
 	 *
@@ -276,18 +280,19 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	 */
 	@Override
 	@Transactional
-	public Detail revise(Long id) {
+	public Detail revise(Long id, String description) {
 		AgentTask task = transitions.require(id);
 		if (task.status() != AgentTaskStatus.INSUFFICIENT_PERMISSION) {
 			throw new TaskConflictException(("当前状态「%s」不是「权限不足」，没有可重发的任务 —— "
 					+ "「已修改任务」只在权限不足时出现（权限那一关过不了，改了之后再重走一遍）；"
 					+ "详情里的 actions 就是现在能做的事。").formatted(task.status().label()));
 		}
+		transitions.setDescription(task, description);
 		String previous = task.result() == null ? "" : task.result().strip();
 		AgentTaskStatus reached = transitions.move(task, AgentTaskStatus.NEW, task.currentStep() + 1,
 				AgentTaskTransitions.executorFor(AgentTaskStatus.NEW, task));
 		transitions.setResult(task, "用户答复「已修改任务」：这条任务已回到「新发布」重新走一遍"
-				+ "（重新判需求 → 拆任务点 → 判授权）。"
+				+ "（按这一份任务描述重新判需求 → 拆任务点 → 判授权）。"
 				+ (previous.isEmpty() ? "" : "\n\n上一次「权限不足」的结论（留档）：\n" + previous));
 		log.info("任务 #{} 由用户答复「已修改任务」，回到「新发布」（第 {} 步）", id, task.currentStep() + 1);
 		dispatchAfterCommit(reached);

@@ -153,6 +153,13 @@ const DEFAULT_OPTIONS = {
   AUTHORIZATION: ['授权', '拒绝'],
 }
 
+/**
+ * 任务描述的应用级上限 —— 与真后端 `AgentTask.MAX_DESCRIPTION_CHARS` 同一个数
+ * （DDL 里是 TEXT，不设库级上限）。「已修改任务」那一格提交上来的描述要过这一条：
+ * 一段被砍掉尾巴的描述看起来完全正常，而据此判出来的需求问的不是原来那件事。
+ */
+const MAX_DESCRIPTION_CHARS = 2000
+
 /* ------------------------------------------------------------------ */
 /*  判定与拆分：真后端调模型，这里用两条可判定的规则                      */
 /* ------------------------------------------------------------------ */
@@ -631,22 +638,33 @@ function advance(task, result) {
 /**
  * 权限不足 → 新发布：用户答复「已修改任务」。
  *
- * <p>与真后端 `DefaultAgentTaskService#revise` 一致：步骤 +1、执行人回到任务人，
- * 上一次「权限不足」的结论留在 result 里（它是"当时为什么被打回"的唯一记录）。
+ * <p>与真后端 `DefaultAgentTaskService#revise` 一致：**改过的任务描述先落库**（与这次答复
+ * 同一次写入）、步骤 +1、执行人回到任务人，上一次「权限不足」的结论留在 result 里
+ * （它是"当时为什么被打回"的唯一记录）。描述非空与长度上限的判据取
+ * `AgentTask#revisedDescription` 那一份（同一句话）。
  *
- * @returns 出错时返回一句给界面的话；成功返回 null
+ * @param description 改过之后的**完整**任务描述（没改也要原样传回来；空 → 400）
+ * @returns 出错时返回一句给界面的话（conflict = 409 / error = 400）；成功返回 null
  */
-function revise(task) {
+function revise(task, description) {
   if (task.status !== 'INSUFFICIENT_PERMISSION') {
-    return `当前状态「${STATUS_LABELS[task.status]}」不是「权限不足」，没有可重发的任务 —— `
-      + '「已修改任务」只在权限不足时出现（权限那一关过不了，改了之后再重走一遍）。'
+    return {
+      conflict: `当前状态「${STATUS_LABELS[task.status]}」不是「权限不足」，没有可重发的任务 —— `
+        + '「已修改任务」只在权限不足时出现（权限那一关过不了，改了之后再重走一遍）。',
+    }
   }
+  const text = description == null ? '' : String(description).trim()
+  if (!text) return { error: '任务描述不能为空' }
+  if (text.length > MAX_DESCRIPTION_CHARS) {
+    return { error: `任务描述过长（${text.length} 字符 > 上限 ${MAX_DESCRIPTION_CHARS}）` }
+  }
+  task.description = text
   const previous = task.result == null ? '' : String(task.result).trim()
   task.status = 'NEW'
   task.currentStep += 1
   task.currentExecutorId = executorFor(task, 'NEW')
   task.result = '用户答复「已修改任务」：这条任务已回到「新发布」重新走一遍'
-    + '（重新判需求 → 拆任务点 → 判授权）。'
+    + '（按这一份任务描述重新判需求 → 拆任务点 → 判授权）。'
     + (previous ? `\n\n上一次「权限不足」的结论（留档）：\n${previous}` : '')
   return null
 }
@@ -900,7 +918,8 @@ export function handleTaskRoutes(req, res, url, json) {
     return true
   }
 
-  // 「已修改任务」：权限不足 → 新发布。**没有请求体**（这一格要的是一次选择，不是一段说明）
+  // 「已修改任务」：权限不足 → 新发布。请求体带的是**改过之后的完整描述**（空 → 400）：
+  // 它与这次选择同一次写入 —— 重走的这一遍判需求、拆任务点读的就是它
   const reviseMatch = pathname.match(/^\/api\/agent-tasks\/(\d+)\/revise$/)
   if (reviseMatch && req.method === 'POST') {
     const task = state.tasks.find(t => t.id === Number(reviseMatch[1]))
@@ -908,12 +927,12 @@ export function handleTaskRoutes(req, res, url, json) {
       json(res, { ok: false, error: `任务不存在：#${reviseMatch[1]}` }, 400)
       return true
     }
-    const conflict = revise(task)
-    if (conflict) {
-      json(res, { ok: false, error: conflict }, 409)
-      return true
-    }
-    json(res, { ok: true, ...detailView(task) })
+    readBody(req, res, json, b => {
+      const outcome = revise(task, b ? b.description : null)
+      if (outcome && outcome.conflict) return json(res, { ok: false, error: outcome.conflict }, 409)
+      if (outcome && outcome.error) return json(res, { ok: false, error: outcome.error }, 400)
+      json(res, { ok: true, ...detailView(task) })
+    })
     return true
   }
 

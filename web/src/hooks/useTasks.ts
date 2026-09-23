@@ -21,8 +21,11 @@ export interface UseTasksResult {
   create: (payload: { publisher: string; assignee: string; description: string }) => Promise<boolean>
   advance: (id: number, result?: string) => Promise<boolean>
   answer: (id: number, confirmId: number, answer: string) => Promise<boolean>
-  /** 答复「已修改任务」：权限不足 → 新发布（整条链重走一遍）。 */
-  revise: (id: number) => Promise<boolean>
+  /**
+   * 答复「已修改任务」：权限不足 → 新发布（整条链重走一遍）。
+   * `description` 是详情里那一格改过之后的完整描述，与这次选择一起落库。
+   */
+  revise: (id: number, description: string) => Promise<boolean>
   cancel: (id: number, reason: string) => Promise<boolean>
 }
 
@@ -148,10 +151,11 @@ export function useTasks(active: boolean, userId: number | null): UseTasksResult
       return `已答复「${text}」—— 任务 #${id} 现在是「${r.task.statusLabel}」（第 ${r.task.currentStep} 步）`
     }), [mutate])
 
-  const revise = useCallback(async (id: number) =>
+  const revise = useCallback(async (id: number, description: string) =>
     mutate('重新发布任务', async () => {
-      const r = await taskApi.revise(id)
-      return `已答复「已修改任务」—— 任务 #${id} 回到「${r.task.statusLabel}」（第 ${r.task.currentStep} 步），会重新走一遍`
+      const r = await taskApi.revise(id, description)
+      return `已答复「已修改任务」—— 任务 #${id} 回到「${r.task.statusLabel}」（第 ${r.task.currentStep} 步），`
+        + '这一份任务描述与这次选择一起保存了，整条链会按它重走一遍'
     }), [mutate])
 
   const cancel = useCallback(async (id: number, reason: string) =>

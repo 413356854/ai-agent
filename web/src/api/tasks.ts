@@ -232,9 +232,13 @@ export const taskApi = {
 
   /**
    * 答复「已修改任务」：`INSUFFICIENT_PERMISSION` → 新发布（整条链重走一遍）。
-   * **没有请求体** —— 这一格要的是一次选择（取消还是重走一遍），不是一段说明。
+   *
+   * <p>`description` 是**改过之后的完整任务描述**，与这次选择同一次写入：
+   * 重走的这一遍判需求歧义、拆任务点读的都是它。没改也要把当前那一份原样传回来 ——
+   * 后端只认"非空"，空描述是 400（"用户清空了"与"他没改"在请求体里长得一样）。
    */
-  revise: (id: number) => send<AgentTaskWriteResult>('POST', `/${id}/revise`),
+  revise: (id: number, description: string) =>
+    send<AgentTaskWriteResult>('POST', `/${id}/revise`, { description }),
 
   /** 取消任务。`reason` 必填 —— 一条没有原因的取消记录事后只能靠回忆。 */
   cancel: (id: number, reason: string) =>

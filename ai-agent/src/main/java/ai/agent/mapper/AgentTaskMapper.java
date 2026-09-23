@@ -18,9 +18,9 @@ import java.util.List;
  * 且失效时**不抛异常、只留一个 null** —— 那会让"建完任务紧接着写确认项"报成
  * "任务不存在"，而真正的原因是取键没生效。代价是调用方必须紧接着调一次。
  *
- * <h2>为什么三个 update 分开写，而不是一个"更新整行"</h2>
+ * <h2>为什么每个 update 分开写，而不是一个"更新整行"</h2>
  * 因为它们的触发时机不同，而合成一条的写法有个固定的坏法：
- * 状态推进时把 {@code result} / {@code cancel_reason} 一并写成 null ——
+ * 状态推进时把 {@code result} / {@code cancel_reason} / {@code description} 一并写成旧值 ——
  * 一次"验收通过"会顺手把之前登记的执行结果抹掉，且不报错。
  * 每条 SQL 只碰自己那几列，这个可能就不存在。
  */
@@ -137,6 +137,15 @@ public interface AgentTaskMapper {
 
 	/** 登记执行结果（{@code EXECUTING → 待验收} 那一步）。 */
 	int updateResult(@Param("id") Long id, @Param("result") String result);
+
+	/**
+	 * 改写任务描述（「权限不足」那一格里用户改过的那一份）。
+	 *
+	 * <p>单独一条 SQL，理由与 {@link #updateResult} 相同：状态推进那一条每次都要跑，
+	 * 把描述并进去就意味着每次推进都要带上它 —— 而调用点手上那份任务记录可能是几步之前读的，
+	 * 一次推进就会把用户改过的描述写回旧值。
+	 */
+	int updateDescription(@Param("id") Long id, @Param("description") String description);
 
 	/**
 	 * 写入"这条任务交给哪个 Agent 应用"（发布时不写，由平台在第一次接手时写）。

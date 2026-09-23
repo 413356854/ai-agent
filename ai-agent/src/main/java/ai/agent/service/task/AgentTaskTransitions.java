@@ -155,13 +155,40 @@ public class AgentTaskTransitions {
 		}
 	}
 
-	/** 登记执行结果（{@code 执行中 → 待验收} 那一步，以及任务执行器跑完之后）。 */
+	/**
+	 * 登记执行结果（{@code 执行中 → 待验收} 那一步，以及任务执行器跑完之后）。
+	 */
 	@Transactional
 	public void setResult(AgentTask task, String result) {
 		if (result == null || result.isBlank()) {
 			return;
 		}
 		tasks.updateResult(task.id(), result.strip());
+	}
+
+	/**
+	 * 改写任务描述（「权限不足」那一格里用户改过的那一份）。
+	 *
+	 * <p>判据取 {@link AgentTask#revisedDescription} —— 实体那一份，这里只把它翻成 400：
+	 * 一条空描述或超长描述在库里看起来完全正常，而下一步（判需求、拆任务点）会拿它去问。
+	 *
+	 * <p>调用点（{@code DefaultAgentTaskService#revise}）把它与回「新发布」那一步放在同一个事务里：
+	 * 分开提交会出现"状态已经回到新发布、描述还是旧的"那种中间态，
+	 * 而下一步会照旧描述重新判一遍 —— 用户以为改的没生效，页面上却看不出哪一格是旧的。
+	 */
+	@Transactional
+	public void setDescription(AgentTask task, String description) {
+		String checked;
+		try {
+			checked = AgentTask.revisedDescription(description);
+		}
+		catch (IllegalArgumentException e) {
+			throw new TaskInvalidException(e.getMessage());
+		}
+		if (tasks.updateDescription(task.id(), checked) != 1) {
+			throw new TaskInvalidException("任务不存在：#" + task.id());
+		}
+		log.info("任务 #{} 的任务描述已改写（{} 字符）：后续几步读的是这一份", task.id(), checked.length());
 	}
 
 	/**
