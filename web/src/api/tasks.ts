@@ -43,13 +43,13 @@ export interface AgentTaskCard {
   assignee: string
   description: string
   /**
-   * NEW / PENDING_REQUIREMENT / PENDING_PLAN / PENDING_AUTHORIZATION / INSUFFICIENT_PERMISSION /
-   * CONFIRMED_REQUIREMENT / CONFIRMED_PLAN / AUTHORIZED / EXECUTING / PENDING_ACCEPTANCE /
+   * NEW / PENDING_REQUIREMENT / PENDING_PLAN / INSUFFICIENT_PERMISSION /
+   * CONFIRMED_REQUIREMENT / CONFIRMED_PLAN / EXECUTING / PENDING_ACCEPTANCE /
    * COMPLETED / CANCELLED。
    */
   status: string
   statusLabel: string
-  /** 当前执行人的用户 id；球在 agent 手上（三个"已确认"）或任务已结束时为 `null`。 */
+  /** 当前执行人的用户 id；球在 agent 手上（两个"已确认"）或任务已结束时为 `null`。 */
   currentExecutorId: number | null
   /**
    * 那一格该显示的字，**由后端给**：姓名 / `agent#<agentId>`（球在 agent 手上）/ 空串（没人）。
@@ -90,7 +90,7 @@ export interface AgentTaskConfirm {
   id: number
   taskId: number
   stepIndex: number
-  /** REQUIREMENT / PLAN / AUTHORIZATION；认不出的类型为空串。 */
+  /** REQUIREMENT / PLAN（AUTHORIZATION 是历史取值，不再生成）；认不出的类型为空串。 */
   type: string
   typeLabel: string
   description: string
@@ -205,8 +205,8 @@ export const taskApi = {
    * <p>判断按状态挑列（后端 `AgentTaskStatus#party()`），不是某一列上的等值比较：
    * 新发布 / 已完成 / 已取消 —— 他是发布人**或**任务人都算（刚发出来、已经结束、被取消的，
    * 两个人都该在自己的列表里找得到）；待确认需求 / 待验收 —— 只认发布人（那两件只有他能做）；
-   * 其余状态（含待确认计划 / 待授权 / 权限不足 / 执行中）—— 只认任务人（球在他手上）。
-   * 球在 agent 手上的三格（三个"已确认"）与谁都不相关，两张列表里都不出现。
+   * 其余状态（含待确认计划 / 权限不足 / 执行中）—— 只认任务人（球在他手上）。
+   * 球在 agent 手上的两格（两个"已确认"）与谁都不相关，两张列表里都不出现。
    */
   board: (userId?: number | null) => send<AgentTaskBoard>(
     'GET', userId == null ? '' : `?userId=${userId}`),

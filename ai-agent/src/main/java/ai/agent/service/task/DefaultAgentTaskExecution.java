@@ -52,11 +52,11 @@ import java.util.UUID;
  *   <li><b>已确认需求</b>：再判一次（用户的答复本身就是新输入），然后拆任务点。
  *       任务点达到阈值就把计划交给用户确认（那些点是他要读的东西）；
  *       没到阈值就直接进授权 —— 拆出来的东西少到一眼看得完，再让人点一次"同意计划"只是多一次点击；</li>
- *   <li><b>已确认计划</b>：计划批了，先<b>判断授权</b>（{@link TaskFileAuthorization}：任务人角色的目录前缀
- *       覆盖不覆盖这次要动的目录）—— 通过才问"允许我动手吗"（授权确认项），不通过直接进「权限不足」；</li>
- *   <li><b>已授权</b>：真的跑（{@link ResumableAgentService}，与「Agent 工具调用」那一页同一个入口），
- *       跑完把"改了什么、产出是什么"汇总进执行结果，转到待验收。开跑之前还会再判一次授权
- *       （判据与"已确认计划"那一格同一份，但目录以这一次的判定为准，理由见 {@link #run}）。</li>
+ *   <li><b>已确认计划</b>：计划批了，<b>判断授权</b>（{@link TaskFileAuthorization}：任务人角色的目录前缀
+ *       覆盖不覆盖这次要动的目录）—— 通过就<b>直接进「执行中」</b>（下一步由执行器自己开跑），
+ *       不通过直接进「权限不足」；</li>
+ *   <li><b>执行中</b>：真的跑（{@link ResumableAgentService}，与「Agent 工具调用」那一页同一个入口），
+ *       跑完把"改了什么、产出是什么"汇总进执行结果，转到待验收。</li>
  * </ol>
  */
 @Component
@@ -121,8 +121,9 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 		return switch (task.status()) {
 			case NEW -> reviewFirst(task);
 			case CONFIRMED_REQUIREMENT -> reviewConfirmed(task);
+			// 判授权与开跑分别是两格：通过时进的是「执行中」，那是下一轮要处理的状态
 			case CONFIRMED_PLAN -> askAuthorization(task);
-			case AUTHORIZED -> run(task);
+			case EXECUTING -> run(task);
 			// 不在"等 agent"那几格里：调度器取不到它，取到了也只说明状态刚被别人改过。
 			// 什么都不做是刻意的 —— 这里的每一种"顺手推进一下"都是对别人动作的覆盖
 			default -> {
@@ -145,9 +146,9 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 	 *
 	 * <h2>为什么写在这一刻，而不是"跑到执行那一格"</h2>
 	 * 时机由两件事夹出来：写早了（发布那一刻）就需要一个发布人知道的值，而那个 id 是部署方
-	 * 才有的东西（它回答的是"这条任务交给哪个 Agent 应用"）；写晚了（{@code 已授权 → 执行中}）
-	 * 会让「已确认需求 / 已确认计划 / 已授权」三格的当前执行人显示成不带 id 的 {@code agent}，
-	 * 而那三格与执行中在库里是同一件事（球在 agent 手上，见 {@link AgentTaskTransitions#executorFor}）。
+	 * 才有的东西（它回答的是"这条任务交给哪个 Agent 应用"）；写晚了（{@code 执行中}）
+	 * 会让「已确认需求 / 已确认计划」两格的当前执行人显示成不带 id 的 {@code agent}，
+	 * 而那两格与执行中在库里是同一件事（球在 agent 手上，见 {@link AgentTaskTransitions#executorFor}）。
 	 *
 	 * <p>只在为空时写：判定失败后重跑、或恢复之后再接手，都不覆盖已经写下的那个值 ——
 	 * 一条任务先后换过两个执行方的话，卡片上只会剩最后一个，而"当时是谁跑的"就查不到了。
@@ -209,58 +210,70 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 		}
 		log.info("任务 #{} 拆出 {} 个任务点（< 阈值 {}）：跳过计划确认，直接判授权", task.id(), actions.size(),
 				properties.planConfirmThreshold());
-		return askForAuthorization(task, breakdown, actions);
+		return judgeAuthorization(task, breakdown);
 	}
 
 	// ------------------------------------------------------------------
-	//  已确认计划 → 待授权 / 权限不足
+	//  已确认计划 → 执行中 / 权限不足
 	// ------------------------------------------------------------------
 
 	/**
-	 * 已确认计划：判断这次执行要授权什么，生成授权确认项。
+	 * 已确认计划：判断授权，通过就开跑。
 	 *
-	 * <p>这里重新拆一次（模型调用 1 次），而不是把"已确认需求"那一步拆出来的授权范围存下来：
+	 * <p>这里重新拆一次（模型调用 1 次），而不是把"已确认需求"那一步拆出来的工作区存下来：
 	 * 存它需要 agent_task 上再加一列，而计划已经写在计划确认项里了 ——
-	 * 授权这条要说的只是"允许我动手吗、会动哪些东西"，用当下的描述重算一次比存一份旧的更准。
+	 * 判断授权要回答的只是"这次要动的目录在不在任务人的角色前缀里"，
+	 * 用当下的描述重算一次比存一份旧的更准。
 	 */
 	private AgentTaskStatus askAuthorization(AgentTask task) {
 		AgentTaskAnalyst.TaskBreakdown breakdown = analyst.breakdown(task.description(), answered(task.id()));
-		return askForAuthorization(task, breakdown, normalizedActions(breakdown));
+		return judgeAuthorization(task, breakdown);
 	}
 
 	/**
 	 * <b>判断授权</b>那一格 —— 两条路都从这里进（"跳过计划确认"的那条与"已确认计划"那条）。
 	 *
-	 * <h2>先判权限，再问人</h2>
-	 * 判断不通过时<b>不生成授权确认项</b>：让人批一件任务人自己没有权限做的事，
-	 * 批完之后 agent 会在文件工具那一层撞墙（或者更糟：完全权限档位下直接写进去）。
-	 * 所以先把"任务人角色的目录前缀覆盖不覆盖这次要动的目录"判掉
-	 * （{@link TaskFileAuthorization}，判据与措辞都在那边），不通过就进「权限不足」等人处置。
+	 * <h2>先判权限，通过就开跑</h2>
+	 * 判据只有一条：任务人角色的目录前缀覆盖不覆盖这次要动的目录
+	 * （{@link TaskFileAuthorization}，判据与措辞都在那边）。通过就把这次要动的目录交给
+	 * {@link #run} 开跑（落「执行中」），不通过就进「权限不足」等人处置。
 	 *
-	 * <p>通过的结论会写进授权确认项的正文：人批的是"要动什么"，而"平台已经核过哪一条目录前缀"
-	 * 也是他决定批不批的依据 —— 只写一句"允许我动手吗"等于让人闭着眼睛点。
+	 * <p>不通过时<b>不停在"等人批一下"上</b>：平台已经判过"任务人自己没有权限做这件事"，
+	 * 而让人批一件任务人自己没有权限做的事，批完之后 agent 会在文件工具那一层撞墙
+	 * （完全权限档位下则是直接写进去，连墙都没有）。
 	 */
-	private AgentTaskStatus askForAuthorization(AgentTask task, AgentTaskAnalyst.TaskBreakdown breakdown,
-			List<String> actions) {
+	private AgentTaskStatus judgeAuthorization(AgentTask task, AgentTaskAnalyst.TaskBreakdown breakdown) {
 		TaskFileAuthorization.Verdict verdict = fileAuthorization.judge(task.assigneeId(), breakdown.workspaceDir());
 		if (!verdict.allowed()) {
 			log.info("任务 #{} 的授权判断不通过（任务人「{}」）：{}", task.id(), assigneeName(task), verdict.reason());
 			return transitions.enterPermissionDenied(task, verdict.reason());
 		}
-		log.info("任务 #{} 的授权判断通过（任务人「{}」）：{}", task.id(), assigneeName(task), verdict.reason());
-		return transitions.enterPending(task, AgentTaskStatus.PENDING_AUTHORIZATION, ConfirmType.AUTHORIZATION,
-				authorizationText(breakdown, actions, verdict.reason()));
+		log.info("任务 #{} 的授权判断通过（任务人「{}」）：{} —— 直接开跑", task.id(), assigneeName(task),
+				verdict.reason());
+		return run(task, breakdown);
 	}
 
 	// ------------------------------------------------------------------
-	//  已授权 → 待验收
+	//  执行中 → 待验收
 	// ------------------------------------------------------------------
 
 	/**
-	 * 已授权：跑一次 Agent 运行，把改动与产出汇总进执行结果，转到待验收。
+	 * 执行中：按当下来重新算一次要做什么，然后跑。
+	 *
+	 * <p>判定<b>不做回灌重试</b>（与 {@link #reviewConfirmed} 同一取舍）：判不出来就抛出去，
+	 * 执行器在抛之前<b>什么都没改</b>，于是任务留在「执行中」，调度器记一条 WARN，
+	 * 下一个周期再判 —— 宁可停着等下一轮，也不按猜出来的清单去动文件。
+	 */
+	private AgentTaskStatus run(AgentTask task) {
+		AgentTaskAnalyst.TaskBreakdown breakdown = analyst.breakdown(task.description(), answered(task.id()));
+		return run(task, breakdown);
+	}
+
+	/**
+	 * 判断授权通过之后真的跑一次，把改动与产出汇总进执行结果，转到待验收。
 	 *
 	 * <p>先落"执行中"再开跑：那一格是给人和给恢复看的 ——
-	 * 进程死在这次运行中途时，任务停在"执行中"而不是停在"已授权"，
+	 * 进程死在这次运行中途时，任务停在"执行中"而不是停在"已确认计划"，
 	 * 于是它<b>不会被下一轮调度重新跑一遍</b>（重复的写操作是事故，不是浪费）。
 	 * 代价是它会一直停在执行中等人处置，处置方式见下面那条 WARN。
 	 *
@@ -269,32 +282,21 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 	 * <ul>
 	 *   <li><b>不自动重试</b>：一次跑到一半失败的任务，重跑会把已经发生的写操作再做一遍；</li>
 	 *   <li><b>不进待验收</b>：那样"验收通过"会把它推成"已完成"，而它并没有产出可验收的东西 ——
-	 *       一个假的完成状态比一条停住的任务坏得多。</li>
+	 *   一个假的完成状态比一条停住的任务坏得多。</li>
 	 * </ul>
 	 * 所以它停在"执行中"，并把失败原因写进执行结果那一格（卡片上看得见）：
 	 * 人可以用「登记执行结果」把它推到待验收，或者直接取消再发一条。
 	 *
-	 * <h2>开跑之前再判一次授权</h2>
-	 * 判据与"已确认计划"那一格是同一份（{@link TaskFileAuthorization}），判的是<b>这一次要用的目录</b>：
-	 * 两次工作区目录来自两次模型判定（这一次多了一条授权答复），可能不是同一个目录，
-	 * 而"已确认计划"那一次判的只是前一次给出目录。真正要动的目录没被授权就不开跑 ——
-	 * 那样会绕过整整一道授权判断，而卡片上写着"已授权"。
+	 * <h2>为什么用这一次拆出来的工作区</h2>
+	 * 它与 {@link #judgeAuthorization} 判的是同一份（同一次模型判定的 {@code workspaceDir}）——
+	 * 判定与开跑在同一步里完成，中间没有人工答复，所以不存在"两次判定的目录不是一个"这件事。
 	 */
-	private AgentTaskStatus run(AgentTask task) {
-		List<AgentTaskConfirm> history = answered(task.id());
-		AgentTaskAnalyst.TaskBreakdown breakdown = analyst.breakdown(task.description(), history);
+	private AgentTaskStatus run(AgentTask task, AgentTaskAnalyst.TaskBreakdown breakdown) {
 		List<String> actions = normalizedActions(breakdown);
-		String instruction = instruction(task, history, actions);
+		String instruction = instruction(task, answered(task.id()), actions);
 		RunPermission permission = permission(breakdown);
 
-		TaskFileAuthorization.Verdict verdict = fileAuthorization.judge(task.assigneeId(), permission.workspaceDir());
-		if (!verdict.allowed()) {
-			log.info("任务 #{} 开跑之前的授权判断不通过（任务人「{}」，工作区 {}）：{}", task.id(), assigneeName(task),
-					permission.workspaceDir(), verdict.reason());
-			return transitions.enterPermissionDenied(task, verdict.reason());
-		}
-
-		// 步骤 +1：从"已授权"进"执行中"（执行人换成 agent）
+		// 步骤 +1：进"执行中"（执行人换成任务人，理由见 AgentTaskTransitions#executorFor）
 		transitions.enterAgent(task, AgentTaskStatus.EXECUTING);
 
 		String runId = UUID.randomUUID().toString();
@@ -331,8 +333,9 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 	 * 不合法就退成"没有工作区"并留一条 WARN，而不是让这次运行失败 ——
 	 * 目录写错时该发生的是"这次运行没有工作区"（文件类工具会在调用时明确回一句没有工作区），
 	 * 不是"整条任务卡住"。两个分支（模型说不需要目录 / 模型给的目录用不了）的档位是同一条规则：
-	 * 取配置里那一档，理由与没有工作区那条一致 —— 授权是人在「待授权」那一格给的，
-	 * 它不该因为一个目录名写错而静默放大或缩小。副作用因此是可见的：
+	 * 取配置里那一档，理由与没有工作区那条一致 —— 执行档位是平台按配置定的，
+	 * 它不该因为一个目录名写错而静默放大或缩小（目录那一层的授权另有一道判断，见
+	 * {@link #judgeAuthorization}）。副作用因此是可见的：
 	 * 退化的那一次在日志里有一行 WARN，运行记录里的 `workspace_dir` 也是空的。
 	 */
 	private RunPermission permission(AgentTaskAnalyst.TaskBreakdown breakdown) {
@@ -362,9 +365,9 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 	/**
 	 * 执行提示词：任务描述 + 用户已确认的全部内容 + 这次要完成的清单。
 	 *
-	 * <p><b>已确认的内容必须原样带上</b>（包括计划与授权那两条的正文）：
-	 * 模型看不到确认项表，而这三次确认正是"人同意过什么"的全部依据。
-	 * 只给它一句任务描述的话，它会按自己的理解补全需求 —— 那正是前面三轮确认要防的事。
+	 * <p><b>已确认的内容必须原样带上</b>（需求与计划那两条确认项的正文与答复）：
+	 * 模型看不到确认项表，而这两次确认正是"人同意过什么"的全部依据。
+	 * 只给它一句任务描述的话，它会按自己的理解补全需求 —— 那正是前两轮确认要防的事。
 	 */
 	private static String instruction(AgentTask task, List<AgentTaskConfirm> history, List<String> actions) {
 		StringBuilder sb = new StringBuilder();
@@ -483,33 +486,6 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 		sb.append(plan.isEmpty() ? "请确认执行计划（模型没有给出计划正文）" : "请确认执行计划：\n" + plan);
 		if (!actions.isEmpty()) {
 			sb.append("\n\n拆出来的任务点：\n");
-			for (int i = 0; i < actions.size(); i++) {
-				sb.append(i + 1).append(". ").append(actions.get(i)).append('\n');
-			}
-		}
-		return sb.toString().strip();
-	}
-
-	/**
-	 * 授权确认项的正文：<b>平台核过的权限</b> + 授权范围 + 这次要做的事。
-	 *
-	 * <p>任务点必须跟着一起出现：跳过计划确认的那条路上（任务点少于阈值），
-	 * 用户是<b>第一次</b>看到这份清单 —— 授权让人批的是"要动什么"，
-	 * 只写一句"允许我动手吗"等于让人闭着眼睛点。
-	 *
-	 * @param permissionNote 平台刚核过的目录授权结论（{@code TaskFileAuthorization} 给的那句话）：
-	 *        它与"要动什么"并列，因为"这条目录前缀已经核过"同样是批不批的依据
-	 */
-	private static String authorizationText(AgentTaskAnalyst.TaskBreakdown breakdown, List<String> actions,
-			String permissionNote) {
-		StringBuilder sb = new StringBuilder();
-		String scope = breakdown.authorizationScope() == null ? "" : breakdown.authorizationScope().strip();
-		sb.append(scope.isEmpty() ? "请确认授权范围（模型没有给出授权正文）" : "请确认授权范围：\n" + scope);
-		if (permissionNote != null && !permissionNote.isBlank()) {
-			sb.append("\n\n权限核对：").append(permissionNote.strip());
-		}
-		if (!actions.isEmpty()) {
-			sb.append("\n\n这次要做的事：\n");
 			for (int i = 0; i < actions.size(); i++) {
 				sb.append(i + 1).append(". ").append(actions.get(i)).append('\n');
 			}

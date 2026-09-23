@@ -24,7 +24,8 @@ import java.util.stream.Collectors;
  * 且失败发生在暂停两分钟之后。
  *
  * <p>这个默认值成立的前提是它<b>不绕过任何人的决定</b>：任务在执行之前已经过了一格
- * "待授权"，那一格的答复就是人对这次执行的授权（见 {@code AgentTaskStatus} 的状态链）。
+ * "判断授权"（{@code TaskFileAuthorization}：任务人角色的目录前缀覆盖不覆盖这次要动的目录），
+ * 而那一格的判据是<b>任务人自己的权限</b>，不是这份配置（见 {@code AgentTaskStatus} 的状态链）。
  * 要更严就把它改成 {@code WORKSPACE_WRITE} / {@code READ_ONLY}，并接受"写操作会停下来等人"。
  *
  * <p>取值认不出来<b>拒绝启动</b>（不是降成默认档）：一个拼错的档位

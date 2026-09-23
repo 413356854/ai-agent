@@ -6,7 +6,7 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * 任务状态 —— 一条链上的十二个取值（库里的值一律写枚举名，见 {@link #storedValue}）。
+ * 任务状态 —— 一条链上的十个取值（库里的值一律写枚举名，见 {@link #storedValue}）。
  *
  * <h2>状态链</h2>
  * <pre>
@@ -14,19 +14,22 @@ import java.util.Optional;
  *     → 待确认需求 PENDING_REQUIREMENT   （等需求确认项的答复；确认项由任务执行器生成）
  *     → 已确认需求 CONFIRMED_REQUIREMENT （等任务执行器：再判一次歧义、拆任务点）
  *     → 待确认计划 PENDING_PLAN          （任务点 ≥ 5 时才有这一格，等计划确认项的答复）
- *     → 已确认计划 CONFIRMED_PLAN        （等任务执行器：判断授权）
- *     → 待授权     PENDING_AUTHORIZATION （授权判断通过，等授权确认项的答复）
- *     → 已授权     AUTHORIZED            （等任务执行器：执行）
+ *     → 已确认计划 CONFIRMED_PLAN        （等任务执行器：判断授权 → 开跑）
  *     → 执行中     EXECUTING             （任务执行器正在跑；跑完写执行结果）
  *     → 待验收     PENDING_ACCEPTANCE
  *     → 已完成     COMPLETED
- *   已确认计划 / 已授权 ──判断授权不通过──▶ 权限不足 INSUFFICIENT_PERMISSION
+ *   已确认计划 ──判断授权不通过──▶ 权限不足 INSUFFICIENT_PERMISSION（结论写进 result）
  *   权限不足 ──人答复「已修改任务」──▶ 新发布（重新走一遍）
  *   任一非终态 → 已取消 CANCELLED（取消原因与状态同一次写入）
  * </pre>
  *
+ * <h2>判断授权通过之后没有人工环节</h2>
+ * 授权由平台判（{@code TaskFileAuthorization}：任务人角色的目录前缀覆盖不覆盖这次要动的目录），
+ * 判过就开跑 —— 链上没有"等答复授权"与"已授权"这两格。所以人在链上只需答复需求与计划，
+ * 而"这次要动什么"与判据一起出现在计划确认项里。
+ *
  * <h2>「等确认项答复」与「等任务执行器动手」是两类状态</h2>
- * 前者的球在人手上（他在界面上答复确认项：需求确认与验收在发布人手上、计划与授权在任务人手上，
+ * 前者的球在人手上（他在界面上答复确认项：需求确认与验收在发布人手上、计划确认在任务人手上，
  * 见 {@code AgentTaskTransitions#executorFor}），后者的球在 agent 手上
  * （见 {@link #awaitingAgent()}：它把"哪几个状态该由任务执行器处理"写成状态的属性）。
  * 两类的区别决定界面上的按钮：等待答复的状态有「答复确认项」，
@@ -39,13 +42,13 @@ import java.util.Optional;
  * 唯一能表达"我这就去改权限"的入口就没有了，而那条任务会以"已取消"结束 ——
  * 事后看只剩一条取消记录，看不出它其实是在等一次权限修正。
  *
- * <h2>为什么"已确认需求 / 已确认计划 / 已授权"是三个独立状态</h2>
+ * <h2>「已确认需求 / 已确认计划」为什么是两个独立状态</h2>
  * 它们都是"人已经答完了、球在 agent 手上"，但<b>agent 要做的事完全不同</b>：
- * 已确认需求要拆任务点、已确认计划要判断授权、已授权要真的执行。
+ * 已确认需求要拆任务点、已确认计划要判断授权并开跑。
  * 合成一个之后，"这一步该干什么"只能靠"再看看它前面答过哪些确认项"推出来 ——
  * 那是把判据散进查询，而推错的形态是"重复拆一次任务点"或"跳过授权直接执行"。
  *
- * <h2>为什么三个"待确认"是三个状态，而不是一个</h2>
+ * <h2>为什么两个"待确认"是两个状态，而不是一个</h2>
  * 见 {@code db/task-schema.sql} 的头注：一个状态装不下"现在等的是谁、等的是什么"。
  *
  * <h2>为什么"等哪一条确认项"由这个枚举回答，而不是散在服务层的 switch 里</h2>
@@ -65,11 +68,7 @@ public enum AgentTaskStatus {
 
 	CONFIRMED_PLAN("已确认计划"),
 
-	PENDING_AUTHORIZATION("待授权"),
-
 	INSUFFICIENT_PERMISSION("权限不足"),
-
-	AUTHORIZED("已授权"),
 
 	EXECUTING("执行中"),
 
@@ -109,7 +108,6 @@ public enum AgentTaskStatus {
 		return switch (this) {
 			case PENDING_REQUIREMENT -> Optional.of(ConfirmType.REQUIREMENT);
 			case PENDING_PLAN -> Optional.of(ConfirmType.PLAN);
-			case PENDING_AUTHORIZATION -> Optional.of(ConfirmType.AUTHORIZATION);
 			default -> Optional.empty();
 		};
 	}
@@ -123,7 +121,7 @@ public enum AgentTaskStatus {
 	 * 现象是那条任务永远停在那里，既不报错也不动。
 	 */
 	public boolean awaitingAgent() {
-		return this == NEW || this == CONFIRMED_REQUIREMENT || this == CONFIRMED_PLAN || this == AUTHORIZED;
+		return this == NEW || this == CONFIRMED_REQUIREMENT || this == CONFIRMED_PLAN;
 	}
 
 	/** 全部"等任务执行器动手"的状态（{@link #awaitingAgent()} 的集合形态，给查询用）。 */
@@ -182,8 +180,8 @@ public enum AgentTaskStatus {
 		return switch (this) {
 			case NEW, COMPLETED, CANCELLED -> Party.BOTH;
 			case PENDING_REQUIREMENT, PENDING_ACCEPTANCE -> Party.PUBLISHER;
-			case PENDING_PLAN, PENDING_AUTHORIZATION, INSUFFICIENT_PERMISSION,
-					CONFIRMED_REQUIREMENT, CONFIRMED_PLAN, AUTHORIZED, EXECUTING -> Party.ASSIGNEE;
+			case PENDING_PLAN, INSUFFICIENT_PERMISSION,
+					CONFIRMED_REQUIREMENT, CONFIRMED_PLAN, EXECUTING -> Party.ASSIGNEE;
 		};
 	}
 	/** 某一组里的全部状态（界面按人取任务时用它拼查询）。 */
@@ -198,12 +196,29 @@ public enum AgentTaskStatus {
 	 * 不同：账号那边落 DISABLED 是因为它决定"能不能用"；这里落 NEW 是因为它决定"看不看得见" ——
 	 * 落成 {@link #COMPLETED} / {@link #CANCELLED} 会让那一行从看板的活跃列里**消失**，
 	 * 而"卡片不见了"是这一页最难被发现的一种坏法。落在 NEW 至少看得见、还能重新推进。
+	 *
+	 * <h2>两个历史取值折回等价状态，而不是落 NEW</h2>
+	 * 链上曾有"等答复授权"与"已授权"两格，库里可能还留着那两行。落 NEW 会让它们
+	 * <b>从头重走一遍</b>（包括再跑一次可能已经发生过的写操作），而它们各自有一个等价的落点：
+	 * <pre>
+	 *   PENDING_AUTHORIZATION → CONFIRMED_PLAN （回到"判断授权"那一格，判的是同一次要动的目录）
+	 *   AUTHORIZED            → EXECUTING      （已经批过，等执行 —— 与它原本的下一步是同一个格子）
+	 * </pre>
+	 * 折回 AUTHORIZED 那一条刻意<b>不</b>折成"重新跑"：那条任务当时已经过了授权这一关，
+	 * 重跑等于把已经发生的写操作再做一遍。
 	 */
 	public static AgentTaskStatus parse(String raw) {
 		if (raw == null || raw.isBlank()) {
 			return NEW;
 		}
 		String normalized = raw.strip();
+		// 历史取值（见上面那段）：它们不在枚举里，所以先按名字认一遍
+		if ("PENDING_AUTHORIZATION".equalsIgnoreCase(normalized) || "待授权".equals(normalized)) {
+			return CONFIRMED_PLAN;
+		}
+		if ("AUTHORIZED".equalsIgnoreCase(normalized) || "已授权".equals(normalized)) {
+			return EXECUTING;
+		}
 		for (AgentTaskStatus status : values()) {
 			if (status.name().equalsIgnoreCase(normalized) || status.label.equals(normalized)) {
 				return status;

@@ -241,13 +241,13 @@ function statusColor(status: string): string {
   if (status === 'COMPLETED') return 'green'
   if (status === 'CANCELLED') return 'default'
   if (status === 'EXECUTING') return 'processing'
-  // 「权限不足」与三个「待确认」同列（都在等人），但它等的不是答复而是一次处置 ——
+  // 「权限不足」与两个「待确认」同列（都在等人），但它等的不是答复而是一次处置 ——
   // 同色会让它在那一列里混成"又一条待确认"，而它要的动作完全不同
   if (status === 'INSUFFICIENT_PERMISSION') return 'red'
   if (status.startsWith('PENDING')) return 'orange'
-  // 「已确认需求 / 已确认计划 / 已授权」与「执行中」同列：球都在 agent 手上。
-  // 用同一个颜色是刻意的 —— 这四格对用户是同一件事（不必点，等它跑）
-  if (status.startsWith('CONFIRMED') || status === 'AUTHORIZED') return 'processing'
+  // 「已确认需求 / 已确认计划」与「执行中」同列：球都在 agent 手上。
+  // 用同一个颜色是刻意的 —— 这三格对用户是同一件事（不必点，等它跑）
+  if (status.startsWith('CONFIRMED')) return 'processing'
   return 'blue'
 }
 
@@ -341,10 +341,10 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
             <Text strong>确认项（每一步是谁怎么答的）</Text>
             {/* 没有确认项有两种原因，说反了会让用户去找一条不存在的待办：
                 新发布的任务还没生成过确认项（等 agent 判需求有没有歧义），
-                而权限不足的任务可能是判断发生在生成授权确认项**之前** */}
+                而权限不足的任务是判断授权没通过、链上没有生成过任何确认项 */}
             {data.confirms.length === 0
               ? <div className="task-column-empty">{denied
-                ? '这条任务没有确认项 —— 授权判断在生成授权确认项之前就没通过（上一条结论里写着缺什么）'
+                ? '这条任务没有确认项 —— 判断授权没通过（上一条结论里写着缺什么）'
                 : '还没有确认项 —— 「新发布」的任务等 agent 判断需求有没有歧义'}</div>
               : data.confirms.map(confirm => <ConfirmRow key={confirm.id} confirm={confirm} />)}
           </div>
@@ -357,7 +357,7 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
                 type="info"
                 showIcon
                 title="这一步由 agent 任务执行做"
-                description="它按状态往下走：新发布判需求有没有歧义、已确认需求拆任务点、已确认计划问授权、已授权开跑。跑完会自己转到「待验收」，页面上不需要点。"
+                description="它按状态往下走：新发布判需求有没有歧义、已确认需求拆任务点、已确认计划判一次授权就开跑。跑完会自己转到「待验收」，页面上不需要点。"
               />
             )}
             {canAnswer && pending && (

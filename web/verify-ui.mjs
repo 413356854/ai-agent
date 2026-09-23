@@ -3076,19 +3076,24 @@ if (EXPECT_REFLECTION) {
     recollapsed.clamped === 'yes' && recollapsed.visible === collapsed.visible,
     describe(recollapsed) + `（收起时是 ${collapsed.visible}px）`)
 
-  // ---- 「执行中」那一列收**四个**状态：已确认需求 / 已确认计划 / 已授权 / 执行中 ----
+  // ---- 「执行中」那一列收**三个**状态：已确认需求 / 已确认计划 / 执行中 ----
   //
-  // 它们对看板是同一件事：球在 agent 手上，人现在点不动。分成四列会让一眼看去
-  // 像是"有四件事在等我"，而其实一件都不在等。四个状态的差别靠各自的状态标签表达。
+  // 它们对看板是同一件事：球在 agent 手上，人现在点不动。分成三列会让一眼看去
+  // 像是"有三件事在等我"，而其实一件都不在等。三个状态的差别靠各自的状态标签表达。
   const executingColumn = page.locator('.task-column[data-column="executing"]')
   const executingText = await executingColumn.innerText()
-  expect('★ 「执行中」列收四个状态，列头把它们都写出来',
-    ['已确认需求', '已确认计划', '已授权', '执行中'].every(label => executingText.includes(label)),
+  expect('★ 「执行中」列收三个状态，列头把它们都写出来',
+    ['已确认需求', '已确认计划', '执行中'].every(label => executingText.includes(label)),
     initialCounts.executing + ' 条')
-  expect('★ 那一列里的四张卡片各带自己的状态标签（同列靠标签区分）',
-    (await executingColumn.locator('.task-card').count()) === 4, initialCounts.executing + ' 条')
+  expect('★ 那一列里的三张卡片各带自己的状态标签（同列靠标签区分）',
+    (await executingColumn.locator('.task-card').count()) === 3, initialCounts.executing + ' 条')
+  // 三条里有一条是**跑失败停在执行中**的：这一格要让人看出"它没跑成、在等我处置"，
+  // 而它唯一的信号就是执行结果那一段（卡片上写着停因）—— 少了这一条，
+  // 一个"把没跑成的执行中显示成正常在跑"的实现会照样全绿
+  expect('★ 停住的「执行中」把"没有正常结束"写在卡片上（否则它看起来像还在跑）',
+    /本次执行没有正常结束/.test(executingText) && /停因：MODEL_ERROR/.test(executingText))
 
-  // ---- 「待处理」那一列收**四个**状态：三个"待确认" + 「权限不足」 ----
+  // ---- 「待处理」那一列收**三个**状态：两个"待确认" + 「权限不足」 ----
   //
   // 它们等的东西不同（答复确认项 / 处置一次权限不足），但对看板是同一个答案：球都在人手上。
   // 单开一列的话那一列多数时候是空的，而"现在有几件事在等我"反而要拼两个列名才答得出。
@@ -3096,8 +3101,8 @@ if (EXPECT_REFLECTION) {
   // 两者共用 `result` 字段，标签按状态换（写成"执行结果"会读成"这次跑过了"）。
   const pendingColumn = page.locator('.task-column[data-column="pending"]')
   const pendingText = await pendingColumn.innerText()
-  expect('★ 「待处理」列收四个状态，列头把「权限不足」也写出来',
-    ['待确认需求', '待确认计划', '待授权', '权限不足'].every(label => pendingText.includes(label)),
+  expect('★ 「待处理」列收三个状态，列头把「权限不足」也写出来',
+    ['待确认需求', '待确认计划', '权限不足'].every(label => pendingText.includes(label)),
     initialCounts.pending + ' 条')
   expect('★ 权限不足那张卡片写的是「权限不足：…」而不是「执行结果：…」，并带着结论原文',
     /权限不足：/.test(pendingText) && !/执行结果：/.test(pendingText)
@@ -3197,33 +3202,43 @@ if (EXPECT_REFLECTION) {
     && afterAnswer.confirms.every(c => c.answered),
     `confirms=${afterAnswer.confirms.length} 条，已答复 ${afterAnswer.confirms.filter(c => c.answered).length} 条`)
 
-  // ---- 再推一格：问授权 → 待授权，并生成授权确认项（正文带这次要做的事） ----
+  // ---- 再推一格：判过授权就**直接开跑**（链上没有"等人批授权"那一格） ----
   //
-  // ⚠️ 外部推完要**重开**详情：刷新按钮只重拉看板（useTasks 的 reload），
-  // 开着的详情还是推之前那一份 —— 直接点「授权」会一直等不到那个按钮
+  // 平台判断通过之后不再生成授权确认项、也不再等人答复：这一格只产生「执行中」。
+  // 授权确认项那一族断言随之一并消失 —— 留着它就是在钉一个已经删掉的分支。
+  //
+  // ⚠️ 推之前先**关掉详情**：`__run-agent` 之后脚本要点看板上的「刷新」，
+  // 而 `.ant-modal-wrap` 铺满视口时那次点击会一直重试到超时（见 runAgent 里那段说明）
   await closeTaskModal()
-
   await runAgent(`?id=${openedId}`)
-  const asked = await (await page.request.get(`${URL}/api/agent-tasks/${openedId}`)).json()
-  expect('★ agent 再推一格：转到「待授权」，授权确认项的正文里带着这次要做的事',
-    asked.task.status === 'PENDING_AUTHORIZATION'
-    && asked.confirms.some(c => c.type === 'AUTHORIZATION' && /这次要做的事/.test(c.description ?? '')),
-    asked.task.statusLabel)
-  await page.locator(`.task-column[data-column="pending"] .task-card[data-task-id="${openedId}"]`).click()
-  await waitFor(async () => /待答复/.test(await planDetail.innerText()), 8000)
+  const judgedRun = await (await page.request.get(`${URL}/api/agent-tasks/${openedId}`)).json()
+  expect('★ agent 再推一格：授权判断通过就直接进「执行中」，不生成授权确认项',
+    judgedRun.task.status === 'EXECUTING'
+    && judgedRun.confirms.every(c => c.type !== 'AUTHORIZATION'),
+    `${judgedRun.task.statusLabel} / 确认项 ${judgedRun.confirms.map(c => c.type).join(' / ') || '（只有前面那两条）'}`)
+  const afterJudgeOpen = await taskColumnCounts()
+  expect('（准备）这一格让卡片留在「执行中」那一列（球在 agent 手上）',
+    afterJudgeOpen.executing === afterPlan.executing + 1 && afterJudgeOpen.pending === afterPlan.pending - 1,
+    `executing ${afterPlan.executing}→${afterJudgeOpen.executing} / pending ${afterPlan.pending}→${afterJudgeOpen.pending}`)
 
   // ---- 409：别人先答过同一条确认项（两个人在看同一张看板的常态） ----
   //
   // 脚本直接调后端替"另一个人"把当前待答的那条答掉，然后界面上的那个按钮**看起来还能点** ——
   // 点下去必须收到 409，并被说成"状态已经变了"，而不是"你填错了"。
-  const current = await (await page.request.get(`${URL}/api/agent-tasks/${openedId}`)).json()
+  // 用 id 3 那条（第 3 步在等计划确认）而不是刚推完的 openedId：后者已经进「执行中」，
+  // 它那一格本来就没有确认项可答 —— 拿它验 409 等于在验一个不存在的按钮。
+  const conflictId = 3
+  await page.locator(`.task-column[data-column="pending"] .task-card[data-task-id="${conflictId}"]`).click()
+  const conflictDetail = page.locator('.ant-modal:visible', { hasText: '确认项' })
+  await waitFor(async () => /待答复/.test(await conflictDetail.innerText()), 8000)
+  const current = await (await page.request.get(`${URL}/api/agent-tasks/${conflictId}`)).json()
   const pendingConfirm = current.confirms.find(c => !c.answered)
   const otherAnswer = await page.request.post(
-    `${URL}/api/agent-tasks/${openedId}/confirms/${pendingConfirm.id}/answer`,
-    { data: { answer: '授权' } })
+    `${URL}/api/agent-tasks/${conflictId}/confirms/${pendingConfirm.id}/answer`,
+    { data: { answer: '同意' } })
   expect('（准备）脚本替另一个人先答掉这条确认项', otherAnswer.ok(), `HTTP ${otherAnswer.status()}`)
 
-  await planDetail.locator('button', { hasText: /^授\s*权$/ }).first().click()
+  await conflictDetail.locator('button', { hasText: /^同\s*意$/ }).first().click()
   const conflictShown = await waitFor(async () =>
     /状态已经变了/.test(await page.locator('.task-panel').innerText()), 8000)
   expect('★ 别人已经答过之后，界面上那次点答被说成「状态已经变了」（409 与 400 分开处理）',
@@ -3375,15 +3390,15 @@ if (EXPECT_REFLECTION) {
   const deniedId = (await deniedCreate.json()).task.id
   const deniedRound = await runAgent(`?id=${deniedId}`)
   const judged = await (await page.request.get(`${URL}/api/agent-tasks/${deniedId}`)).json()
-  expect('★ 授权判断不通过：任务停在「权限不足」而不是「待授权」，结论里点名缺的是目录前缀',
+  expect('★ 授权判断不通过：任务停在「权限不足」（链上没有"待授权"那一格可停），结论里点名缺的是目录前缀',
     judged.task.status === 'INSUFFICIENT_PERMISSION'
     && /zhou/.test(judged.task.result ?? '') && /目录前缀/.test(judged.task.result ?? ''),
     `${deniedRound.moved.map(m => `${m.from}→${m.to}`).join(' / ')}`)
-  expect('★ 判断不通过时不生成授权确认项（那一格还没轮到人批）',
+  expect('★ 判断不通过时一条授权确认项都不生成（授权不再等人批）',
     judged.confirms.every(confirm => confirm.type !== 'AUTHORIZATION'),
     judged.confirms.map(confirm => confirm.type).join(' / ') || '（一条确认项都没有）')
   const afterJudge = await taskColumnCounts()
-  expect('★ 判断不通过那条卡片落在「待处理」列里（与三条"待确认"同列）',
+  expect('★ 判断不通过那条卡片落在「待处理」列里（与两条"待确认"同列）',
     afterJudge.pending === afterRevise.pending + 1 && afterJudge.executing === afterRevise.executing,
     `pending ${afterRevise.pending}→${afterJudge.pending} / executing ${afterRevise.executing}→${afterJudge.executing}`)
 

@@ -16,21 +16,22 @@
  *      而"两个人在看同一张看板"正是这个码最常见的来源；
  *   2. 缺参数（没发布人 / 空答复 / 取消不写原因）→ 400 带一句能照做的话。
  * 另外整条状态链（新发布 → 待确认需求 → 已确认需求 → 待确认计划 → 已确认计划 →
- * 待授权 → 已授权 → 执行中 → 待验收 → 已完成，以及授权判断不通过时的「权限不足」）
+ * 执行中 → 待验收 → 已完成，以及授权判断不通过时的「权限不足」）
  * 与"答复之后落到哪一格"必须逐条照搬 ——
  * 假后端不实现的话，"卡片会不会换列"这件事在自检里永远走不到，而那是这一页的全部内容。
  *
  * ---------------------------------------------------------------------------
  * ★ agent 那几格在这里是**显式推**的（`POST /api/agent-tasks/__run-agent`）
  * ---------------------------------------------------------------------------
- * 真后端那四格（新发布 / 已确认需求 / 已确认计划 / 已授权）由一个定时任务驱动，
+ * 真后端那三格（新发布 / 已确认需求 / 已确认计划）由一个定时任务驱动，
  * 判定调模型、执行跑 Agent 运行。假后端不调模型、也不跑运行，而是给一套**可判定的规则**：
  *   - 描述里带「需要补充」→ 判成"有歧义"（真后端这一步是模型判定）；
  *   - 描述里带「小任务」→ 拆出 2 个任务点（走"跳过计划确认"那条路），否则拆出 5 个
  *     （阈值 5 与真后端的 `ai.agent.task.plan-confirm-threshold` 一致）；
  *   - **授权判断**（真后端是 `TaskFileAuthorization`）：任务人角色的目录前缀覆盖不覆盖
  *     这次要动的工作目录（常量 `TASK_WORKSPACE`）—— 不通过就进「权限不足」，
- *     通过才生成授权确认项。任务人的角色数据读的是 permission-routes 那一份（账号表只有一份）。
+ *     通过就**直接开跑**（不生成授权确认项，链上没有"等人批授权"那一格）。
+ *     任务人的角色数据读的是 permission-routes 那一份（账号表只有一份）。
  * 而且**不自动跑**：跟着写端点自动推的话，"发布之后卡片落在哪一列"会取决于推的时机，
  * 自检就没法断言了。所以用 `__run-agent` 显式推一轮（一轮 = 把所有待 agent 的任务推到推不动为止，
  * 与真后端"串行、一次一条、按变更时间"的结果一致）。
@@ -38,17 +39,17 @@
  * ---------------------------------------------------------------------------
  * 初始数据刻意覆盖**每一列**
  * ---------------------------------------------------------------------------
- * 五列都要有卡片，看板的分组才验得出来；「执行中」那一列刻意放**四张**：
- * 已确认需求 / 已确认计划 / 已授权 / 执行中 —— 四个状态归并到一列是这一版的判据，
- * 只放一张就看不出这件事。「已完成」那一列放**两条**：一条验收通过的、一条已取消的
- * （这一列也收两个状态），已取消那条带着取消原因，自检要断言"原因显示在卡片上"
- * （它是两者唯一的区别）。
- * 「待处理」那一列放**四条**（三个"待确认" + 「权限不足」）：前者等的是确认项的答复、
+ * 五列都要有卡片，看板的分组才验得出来；「执行中」那一列刻意放**三张**：
+ * 已确认需求 / 已确认计划 / 执行中 —— 三个状态归并到一列是这一版的判据，
+ * 只放一张就看不出这件事。「已完成」那一列放**三条**：一条验收通过的、一条取消于执行之前的、
+ * 一条取消于执行之后的（这一列也收两个状态）—— 每条已取消的都带着取消原因，
+ * 自检要断言"原因显示在卡片上"（它是两者唯一的区别）。
+ * 「待处理」那一列放**四条**（两个"待确认"各两条 + 「权限不足」）：前者等的是确认项的答复、
  * 后者等的是"取消还是重走一遍"，两种动作在同一列里靠卡片上的状态标签与详情里的按钮区分。
  *
  * ⚠️ 任务人是 `zhou`（没有角色）的卡片只出现在**授权判断之前**的状态上
  * （新发布 / 待确认需求 / 待确认计划）或「权限不足」那一格 —— 他没有目录授权，
- * 按这套判据走不到「已授权」「执行中」这些格子上。
+ * 按这套判据走不到「执行中」那些格子上。
  *
  * ---------------------------------------------------------------------------
  * ★ "我的任务"按状态挑列认人（`?userId=`），与"这一格球在谁手上"是两件事
@@ -60,7 +61,7 @@
  *   · 其余状态 —— 只有任务人。
  * **不传 `userId` 就是不筛**（全量），传了但账号表里没有这个人是 400（不是"筛出来是空的"）。
  * ⚠️ 它与 `executorFor`（卡片上"当前执行人"那一格显示谁）**不是同一条判据**：
- * 新发布与三个"待确认"上两者刻意不同，混用的后果都是静默的（漏卡片，或者写错那一格）。
+ * 新发布与两个"待确认"上两者刻意不同，混用的后果都是静默的（漏卡片，或者写错那一格）。
  *
  * ---------------------------------------------------------------------------
  * 发布任务：两个名字都要在账号表里，agentId 不由发布人给
@@ -87,15 +88,17 @@ const STATUS_LABELS = {
   CONFIRMED_REQUIREMENT: '已确认需求',
   PENDING_PLAN: '待确认计划',
   CONFIRMED_PLAN: '已确认计划',
-  PENDING_AUTHORIZATION: '待授权',
   INSUFFICIENT_PERMISSION: '权限不足',
-  AUTHORIZED: '已授权',
   EXECUTING: '执行中',
   PENDING_ACCEPTANCE: '待验收',
   COMPLETED: '已完成',
   CANCELLED: '已取消',
 }
 
+/**
+ * 确认类型的中文名。`AUTHORIZATION` 是历史取值（真后端 `ConfirmType` 里也留着它）：
+ * 链上不再生成授权确认项，这里留着只是为了认得出那几条旧记录。
+ */
 const CONFIRM_LABELS = {
   REQUIREMENT: '需求确认',
   PLAN: '计划确认',
@@ -105,30 +108,30 @@ const CONFIRM_LABELS = {
 /**
  * 列的定义与顺序，与真后端 `AgentTaskService.Column` 逐条一致（前端按 key 画）。
  *
- * ⚠️ 「待处理」一列收**四个**状态（三个"待确认" + 权限不足）：它们等的东西不同
+ * ⚠️ 「待处理」一列收**三个**状态（两个"待确认" + 权限不足）：它们等的东西不同
  * （答复确认项 / 处置一次权限不足），但对看板是同一个答案 —— 球都在人手上。
  * ⚠️ 「已完成」一列收**两个**状态（已完成与已取消）：两者都是"这件事结束了"，
  * 而给已取消单开一列会让最边缘的结局占掉一整列宽度。区别靠卡片上的状态标签与取消原因表达。
- * ⚠️ 「执行中」一列收**四个**状态：它们对看板是同一件事 —— 球在 agent 手上，人不必点它。
+ * ⚠️ 「执行中」一列收**三个**状态：它们对看板是同一件事 —— 球在 agent 手上，人不必点它。
  */
 const COLUMNS = [
   { key: 'new', label: '新任务', statuses: ['NEW'] },
   {
     key: 'pending',
     label: '待处理',
-    statuses: ['PENDING_REQUIREMENT', 'PENDING_PLAN', 'PENDING_AUTHORIZATION', 'INSUFFICIENT_PERMISSION'],
+    statuses: ['PENDING_REQUIREMENT', 'PENDING_PLAN', 'INSUFFICIENT_PERMISSION'],
   },
   {
     key: 'executing',
     label: '执行中',
-    statuses: ['CONFIRMED_REQUIREMENT', 'CONFIRMED_PLAN', 'AUTHORIZED', 'EXECUTING'],
+    statuses: ['CONFIRMED_REQUIREMENT', 'CONFIRMED_PLAN', 'EXECUTING'],
   },
   { key: 'acceptance', label: '待验收', statuses: ['PENDING_ACCEPTANCE'] },
   { key: 'completed', label: '已完成', statuses: ['COMPLETED', 'CANCELLED'] },
 ]
 
 /** 等 agent 处理的那几格（与真后端 `AgentTaskStatus.awaitingAgent()` 一致）。 */
-const AGENT_STATUSES = ['NEW', 'CONFIRMED_REQUIREMENT', 'CONFIRMED_PLAN', 'AUTHORIZED']
+const AGENT_STATUSES = ['NEW', 'CONFIRMED_REQUIREMENT', 'CONFIRMED_PLAN']
 
 /**
  * 本应用在 Agent 应用注册表里的 id —— 与真后端的 `ai.agent.task.agent-id` 同一个键。
@@ -139,7 +142,11 @@ const AGENT_STATUSES = ['NEW', 'CONFIRMED_REQUIREMENT', 'CONFIRMED_PLAN', 'AUTHO
  */
 const AGENT_ID = '1'
 
-/** 三种确认各自默认的选项集（与真后端的缺省按钮同源，见 AgentTaskTransitions#defaultOptions）。 */
+/**
+ * 各确认类型默认的选项集（与真后端的缺省按钮同源，见 AgentTaskTransitions#defaultOptions）。
+ *
+ * `AUTHORIZATION` 那一行是历史取值：链上不再生成授权确认项（授权由平台判，判过就开跑）。
+ */
 const DEFAULT_OPTIONS = {
   REQUIREMENT: ['确认', '需要补充'],
   PLAN: ['同意', '不同意'],
@@ -254,12 +261,6 @@ function planText(actions) {
     + `\n\n拆出来的任务点：\n${actions.map((a, i) => `${i + 1}. ${a}`).join('\n')}`
 }
 
-function authorizationText(actions, permissionNote) {
-  return '请确认授权范围（假后端：真后端这一步由模型按任务生成）：\n允许在工作目录内读写文件、执行自检命令。'
-    + (permissionNote ? `\n\n权限核对：${permissionNote}` : '')
-    + `\n\n这次要做的事：\n${actions.map((a, i) => `${i + 1}. ${a}`).join('\n')}`
-}
-
 /**
  * 初始状态。每次 __reset 都从这里重建（深拷贝，避免被就地改坏）。
  *
@@ -271,7 +272,7 @@ function authorizationText(actions, permissionNote) {
  * `currentExecutorId` 为 null 的含义与真后端一致：球在 agent 手上，或这件事已经结束。
  *
  * ⚠️ `currentExecutorId` 逐条按 `executorFor` 那份判据摆（不是随手填的）：需求确认与待验收是
- * **发布人**、其余在**任务人**手上、三个"已确认"是空（球在 agent 手上）。
+ * **发布人**、其余在**任务人**手上、两个"已确认"是空（球在 agent 手上）。
  * `publisherId` / `assigneeId` 那一对决定的是**这条任务出现在谁的列表里**（`partyOf`）——
  * 假数据里两条判据各有取值，自检才断得到"两者不是同一条"。
  */
@@ -280,7 +281,7 @@ function initialState() {
     tasks: [
       // 新发布：还没有确认项，等 agent 判需求（真后端由定时任务调度）。
       // 任务人刻意用**有目录授权**的 admin（他那个角色授权了 D:\work\demo，见 TASK_WORKSPACE）：
-      // 自检要把这一条一路推到「待授权」，而权限不足那一条路由下面 id 12（任务人 zhou 没有角色）走
+      // 自检要把这一条一路推到「执行中 → 待验收」，而权限不足那一条路由下面 id 12（任务人 zhou 没有角色）走
       {
         id: 1, publisherId: 2, assigneeId: 1, description: '整理 9 月项目周报：按周汇总进展与风险',
         status: 'NEW', currentExecutorId: 1, currentStep: 1, agentId: AGENT_ID, result: null, cancelReason: null,
@@ -297,10 +298,12 @@ function initialState() {
         status: 'PENDING_PLAN', currentExecutorId: 2, currentStep: 3, agentId: null, result: null,
         cancelReason: null,
       },
-      // 待授权：计划已答、agent 问到了授权这一格，第 5 步在等
+      // 待确认计划：需求已答、agent 拆出 5 个任务点，计划确认项在等答复。
+      // 它与 id 3 同状态不同人：id 3 的发布人是 admin、这儿的发布人是 zhou ——
+      // 「只有任务人看得见」那一组的取值因此有两条，自检换个人取列表时才分得清
       {
-        id: 4, publisherId: 1, assigneeId: 1, description: '把成本看板的单价表换成新合同价',
-        status: 'PENDING_AUTHORIZATION', currentExecutorId: 1, currentStep: 5, agentId: AGENT_ID, result: null,
+        id: 4, publisherId: 2, assigneeId: 1, description: '把成本看板的单价表换成新合同价',
+        status: 'PENDING_PLAN', currentExecutorId: 1, currentStep: 3, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
       // 已确认需求：需求答完了，球在 agent 手上（等它拆任务点）—— 执行人那一格因此是空的
@@ -309,25 +312,32 @@ function initialState() {
         status: 'CONFIRMED_REQUIREMENT', currentExecutorId: null, currentStep: 2, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
-      // 已确认计划：计划批了，等 agent 问授权
+      // 已确认计划：计划批了，球在 agent 手上（它下一步就判授权、判过直接开跑）
       {
         id: 6, publisherId: 2, assigneeId: 1, description: '给告警规则那一页补三条自检断言',
         status: 'CONFIRMED_PLAN', currentExecutorId: null, currentStep: 4, agentId: AGENT_ID, result: null,
         cancelReason: null,
       },
-      // 已授权：可以开跑了，等 agent 动
-      // 任务人是 admin：这一格在授权判断**之后**，任务人必须是有目录授权的那个
-      // （任务人没有角色的话，这条任务早在上一格就被判成「权限不足」了）
+      // 执行中：agent 判定失败过 —— 它停在执行中等任务人处置（「登记执行结果」或取消），
+      // 所以 result 里是那句"本次执行没有正常结束"，而**不是**一段产出。
+      // 一条好的"执行中"卡片看不出这件事，自检也就断不到"停住的执行中要有人处置"
       {
         id: 7, publisherId: 1, assigneeId: 1, description: '把 README 里的端口说明改成环境变量法',
-        status: 'AUTHORIZED', currentExecutorId: null, currentStep: 6, agentId: AGENT_ID, result: null,
+        status: 'EXECUTING', currentExecutorId: 1, currentStep: 6, agentId: AGENT_ID,
+        result: '【本次执行没有正常结束】停因：MODEL_ERROR\n\n【产出】（模型没有给出最终答复：MODEL_ERROR）'
+          + '\n\n【改动】这次运行没有写操作（只调用了只读工具，或没有调用工具）'
+          + '\n\n【运行】runId=（假后端不产生运行记录） · 0 步 · 0 次工具调用 · 0 tokens · 0ms · 停因 MODEL_ERROR',
         cancelReason: null,
       },
-      // 执行中：agent 正在跑
+      // 已取消（执行之前就被叫停的那一种）：它**一条确认项都没有** ——
+      // 确认项是链上每一步生成出来的，而这条任务在第 2 步（判需求那一格）就被取消了。
+      // 于是"没有确认项"在这份假数据里有两种来源（新发布 / 取消于生成之前），
+      // 与真后端那句按状态分岔的兜底文案对得上。
+      // 执行人**保持取消那一刻的值**（与真后端 `cancel` 一致：它回答"取消的那一刻球在谁手上"）
       {
         id: 8, publisherId: 2, assigneeId: 1, description: '把语料快照脚本的输出目录改成可配置',
-        status: 'EXECUTING', currentExecutorId: 1, currentStep: 7, agentId: AGENT_ID, result: null,
-        cancelReason: null,
+        status: 'CANCELLED', currentExecutorId: 1, currentStep: 2, agentId: AGENT_ID, result: null,
+        cancelReason: '口径还没定，先不换目录了',
       },
       // 待验收：执行结果已经写回来了，等发布人点头
       {
@@ -338,9 +348,9 @@ function initialState() {
       },
       // 已完成。描述刻意写长：它要盖住"卡片上的文字默认夹住"这件事 ——
       // 一列里所有描述都只有一行时，「展开全文」永远不出现，界面自检也就断不到它。
-      // ⚠️ 执行人那一格写着**任务人**（真后端在完成时会清空它）：这一条要留在"我的任务"里
-      // （[11] 那一段在登录态下看这一页，而看板按 `current_executor_id` 筛），
-      // 否则「已完成」那一列在筛过的那一份里是空的
+      // ⚠️ 执行人那一格写着**任务人**（真后端在完成时会清空它）。这一条出现在"我的任务"里
+      // 靠的不是这一列，而是状态（[11] 那一段在登录态下看这一页："已完成"按
+      // 发布人**或**任务人认人，与 `current_executor_id` 无关）
       {
         id: 10, publisherId: 2, assigneeId: 1,
         description: '把 CI 的端口说明改成环境变量法：两套服务各用一对变量，'
@@ -374,21 +384,15 @@ function initialState() {
       { id: 12, taskId: 3, stepIndex: 1, type: 'REQUIREMENT', description: '请确认任务需求：给工具调用那一页补一份失败分类的说明', options: DEFAULT_OPTIONS.REQUIREMENT, answer: '确认' },
       { id: 13, taskId: 3, stepIndex: 3, type: 'PLAN', description: '请确认执行计划（假后端：真后端这一步由模型按任务生成）', options: DEFAULT_OPTIONS.PLAN, answer: null },
       { id: 14, taskId: 4, stepIndex: 1, type: 'REQUIREMENT', description: '请确认任务需求：把成本看板的单价表换成新合同价', options: DEFAULT_OPTIONS.REQUIREMENT, answer: '确认' },
-      { id: 15, taskId: 4, stepIndex: 3, type: 'PLAN', description: '请确认执行计划（假后端：真后端这一步由模型按任务生成）', options: DEFAULT_OPTIONS.PLAN, answer: '同意' },
-      { id: 16, taskId: 4, stepIndex: 5, type: 'AUTHORIZATION', description: '请确认授权范围（假后端：真后端这一步由模型按任务生成）', options: DEFAULT_OPTIONS.AUTHORIZATION, answer: null },
+      { id: 16, taskId: 4, stepIndex: 3, type: 'PLAN', description: '请确认执行计划（假后端：真后端这一步由模型按任务生成）', options: DEFAULT_OPTIONS.PLAN, answer: null },
       { id: 17, taskId: 5, stepIndex: 1, type: 'REQUIREMENT', description: '请确认任务需求：清理 dev 分支上过期的实验脚本', options: DEFAULT_OPTIONS.REQUIREMENT, answer: '确认' },
       { id: 18, taskId: 6, stepIndex: 1, type: 'REQUIREMENT', description: '请确认任务需求：给告警规则那一页补三条自检断言', options: DEFAULT_OPTIONS.REQUIREMENT, answer: '确认' },
       { id: 19, taskId: 6, stepIndex: 3, type: 'PLAN', description: '请确认执行计划（假后端：真后端这一步由模型按任务生成）', options: DEFAULT_OPTIONS.PLAN, answer: '同意' },
       { id: 20, taskId: 7, stepIndex: 1, type: 'REQUIREMENT', description: '请确认任务需求：把 README 里的端口说明改成环境变量法', options: DEFAULT_OPTIONS.REQUIREMENT, answer: '确认' },
       { id: 21, taskId: 7, stepIndex: 3, type: 'PLAN', description: '请确认执行计划（假后端：真后端这一步由模型按任务生成）', options: DEFAULT_OPTIONS.PLAN, answer: '同意' },
-      { id: 22, taskId: 7, stepIndex: 5, type: 'AUTHORIZATION', description: '请确认授权范围（假后端：真后端这一步由模型按任务生成）', options: DEFAULT_OPTIONS.AUTHORIZATION, answer: '授权' },
-      { id: 23, taskId: 8, stepIndex: 1, type: 'REQUIREMENT', description: '请确认任务需求：把语料快照脚本的输出目录改成可配置', options: DEFAULT_OPTIONS.REQUIREMENT, answer: '确认' },
-      { id: 24, taskId: 8, stepIndex: 3, type: 'PLAN', description: '请确认执行计划（假后端：真后端这一步由模型按任务生成）', options: DEFAULT_OPTIONS.PLAN, answer: '同意' },
-      { id: 25, taskId: 8, stepIndex: 5, type: 'AUTHORIZATION', description: '请确认授权范围（假后端：真后端这一步由模型按任务生成）', options: DEFAULT_OPTIONS.AUTHORIZATION, answer: '授权' },
     ],
     nextTaskId: 13,
-    nextConfirmId: 26,
-  }
+    nextConfirmId: 26,  }
 }
 
 let state = initialState()
@@ -458,7 +462,7 @@ function confirmView(confirm) {
 /**
  * 现在能做的动作，与真后端的 actionsOf 逐条一致。
  *
- * ⚠️ 等 agent 的那四格（新发布 / 已确认需求 / 已确认计划 / 已授权）只有「取消任务」：
+ * ⚠️ 等 agent 的那三格（新发布 / 已确认需求 / 已确认计划）只有「取消任务」：
  * 下一步由 agent 做，人点不动 —— 给它们画一个"看起来能推进"的按钮比不画更坏。
  * ⚠️ 「权限不足」给的是 `revise`（「已修改任务」）与「取消任务」：它等的不是"推进当前事件"，
  * 而是"这条任务已经改过了"（回到新发布重走一遍）。按钮上的字由这里给，界面不自己拼。
@@ -471,7 +475,7 @@ function actionsOf(status) {
   if (status === 'INSUFFICIENT_PERMISSION') {
     return [{ key: 'revise', label: '已修改任务' }, { key: 'cancel', label: '取消任务' }]
   }
-  if (status === 'CONFIRMED_REQUIREMENT' || status === 'CONFIRMED_PLAN' || status === 'AUTHORIZED') {
+  if (status === 'CONFIRMED_REQUIREMENT' || status === 'CONFIRMED_PLAN') {
     return [{ key: 'cancel', label: '取消任务' }]
   }
   return [{ key: 'answer', label: '答复确认项' }, { key: 'cancel', label: '取消任务' }]
@@ -493,7 +497,6 @@ function detailView(task) {
 function waitingType(status) {
   if (status === 'PENDING_REQUIREMENT') return 'REQUIREMENT'
   if (status === 'PENDING_PLAN') return 'PLAN'
-  if (status === 'PENDING_AUTHORIZATION') return 'AUTHORIZATION'
   return null
 }
 
@@ -546,7 +549,7 @@ function visibleTo(task, userId) {
  * "这一格球在谁手上" —— 与真后端 `AgentTaskTransitions.executorFor` **逐条一致**。
  *
  * <p>它填的是卡片上那一格显示谁（`current_executor_id`），**不是**看板按人筛选的依据 ——
- * 收件人判据是 `partyOf`，两者在新发布与三个"待确认"上刻意不同。
+ * 收件人判据是 `partyOf`，两者在新发布与两个"待确认"上刻意不同。
  *
  * <p>「执行中」那一格写的是**任务人**：那一格确实是 agent 在跑（"是哪个 agent"看 `agentId`），
  * 而跑失败时它停在执行中等任务人处置。
@@ -555,10 +558,10 @@ function visibleTo(task, userId) {
  */
 function executorFor(task, status) {
   if (status === 'PENDING_REQUIREMENT' || status === 'PENDING_ACCEPTANCE') return task.publisherId
-  if (status === 'CONFIRMED_REQUIREMENT' || status === 'CONFIRMED_PLAN' || status === 'AUTHORIZED') return null
+  if (status === 'CONFIRMED_REQUIREMENT' || status === 'CONFIRMED_PLAN') return null
   if (status === 'COMPLETED') return null
   if (status === 'CANCELLED') return task.currentExecutorId
-  // 新发布与三个"待确认"里的另外两个、「权限不足」、「执行中」：任务人
+  // 新发布、「待确认计划」、「权限不足」、「执行中」：任务人
   // （任务人为空的行只可能是早期的行 —— 发布时必填）
   return task.assigneeId ?? task.publisherId
 }
@@ -593,16 +596,17 @@ function enterPermissionDenied(task, reason) {
 }
 
 /**
- * 判断授权那一格：先判权限，通过才生成授权确认项 ——
- * 与真后端 `DefaultAgentTaskExecution#askForAuthorization` 一致（两条路都从这里进）。
+ * 判断授权那一格：先判权限，通过就开跑 ——
+ * 与真后端 `DefaultAgentTaskExecution#judgeAuthorization` 一致（两条路都从这里进）。
  */
-function enterAuthorization(task, actions) {
+function judgeThenOpen(task, actions) {
   const verdict = judgeAuthorization(task.assigneeId)
   if (!verdict.allowed) {
     enterPermissionDenied(task, verdict.reason)
     return
   }
-  enterPending(task, 'PENDING_AUTHORIZATION', 'AUTHORIZATION', authorizationText(actions, verdict.reason))
+  // 判过就进「执行中」：链上没有"等人批授权"那一格（授权由平台判）
+  enterAgent(task, 'EXECUTING')
 }
 
 function advance(task, result) {
@@ -620,8 +624,8 @@ function advance(task, result) {
     return null
   }
   return `当前状态「${STATUS_LABELS[task.status]}」没有可推进的事件 —— 能推进的只有「执行中」（登记执行结果）`
-    + '与「待验收」（验收通过）；三个「待确认」在等确认项的答复、「权限不足」要答复的是 revise'
-    + '（「已修改任务」/「取消任务」），「新发布」与三个「已确认」由 agent 任务执行处理。'
+    + '与「待验收」（验收通过）；两个「待确认」在等确认项的答复、「权限不足」要答复的是 revise'
+    + '（「已修改任务」/「取消任务」），「新发布」与两个「已确认」由 agent 任务执行处理。'
 }
 
 /**
@@ -653,7 +657,7 @@ function answer(task, confirmId, text) {
   }
   const waiting = waitingType(task.status)
   if (!waiting) {
-    return { conflict: `当前状态「${STATUS_LABELS[task.status]}」不在等确认项的答复 —— 能答复的只有「待确认需求」/「待确认计划」/「待授权」；要推进请用 advance 那个动作。` }
+    return { conflict: `当前状态「${STATUS_LABELS[task.status]}」不在等确认项的答复 —— 能答复的只有「待确认需求」/「待确认计划」；要推进请用 advance 那个动作。` }
   }
   const confirm = state.confirms.find(c => c.id === confirmId && c.taskId === task.id)
   if (!confirm) {
@@ -671,8 +675,7 @@ function answer(task, confirmId, text) {
   // 答复之后落到对应的"已确认"那一格：球交给 agent，下一条确认项由 agent 那一步生成
   // （与真后端 DefaultAgentTaskService#answer 一致）
   if (waiting === 'REQUIREMENT') enterAgent(task, 'CONFIRMED_REQUIREMENT')
-  else if (waiting === 'PLAN') enterAgent(task, 'CONFIRMED_PLAN')
-  else enterAgent(task, 'AUTHORIZED')
+  else enterAgent(task, 'CONFIRMED_PLAN')
   return null
 }
 
@@ -709,26 +712,20 @@ function runAgentStep(task) {
     }
     else {
       // 任务点少于阈值：跳过计划确认，直接判授权（与真后端 reviewConfirmed 的那条路一致）
-      enterAuthorization(task, actions)
+      judgeThenOpen(task, actions)
     }
     return
   }
   if (task.status === 'CONFIRMED_PLAN') {
-    enterAuthorization(task, breakdownOf(task.description))
+    judgeThenOpen(task, breakdownOf(task.description))
     return
   }
-  if (task.status === 'AUTHORIZED') {
-    // 开跑之前再判一次授权（真后端在 run() 里用**这一次**的工作区目录再判一次）：
-    // 两次判定的目录来自两次模型判定，可能不是同一个
-    const verdict = judgeAuthorization(task.assigneeId)
-    if (!verdict.allowed) {
-      enterPermissionDenied(task, verdict.reason)
-      return
-    }
-    enterAgent(task, 'EXECUTING')
-    // ⚠️ 接着往"待验收"走：执行中那一格写任务人（真后端 `executorFor` 就是这么算的，
-    // 跑失败时他在这一格用「登记执行结果」处置），所以这里不能靠"当前这一格"推下一步，
-    // 落点必须显式写出来 —— 真后端 run() 也是显式 move 到 PENDING_ACCEPTANCE 的
+  if (task.status === 'EXECUTING') {
+    // 真后端这一步是一次 Agent 运行（模型调工具、写文件），假后端只写回一份固定的三段汇总
+    //
+    // ⚠️ 落点必须显式写出来：不能靠"当前这一格"推下一步 —— 「执行中」那一格写的是任务人
+    // （真后端 `executorFor` 就是这么算的，跑失败时他在这一格用「登记执行结果」处置），
+    // 真后端 run() 也是显式 move 到 PENDING_ACCEPTANCE 的
     enterWaiting(task, 'PENDING_ACCEPTANCE')
     task.result = '【产出】假后端：这一步在真后端是一次 Agent 运行，产出由模型汇总。'
       + '\n\n【改动】这次运行没有写操作（只调用了只读工具，或没有调用工具）'

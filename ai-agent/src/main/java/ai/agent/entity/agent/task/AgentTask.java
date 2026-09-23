@@ -20,7 +20,7 @@ import java.time.Instant;
  *   <li>{@code publisherId} 发布人：指派出任务的人 —— 这一次从开始到结束都是他；</li>
  *   <li>{@code assigneeId} 任务人：交付任务的人 —— 也是开始时的执行人；</li>
  *   <li>{@code currentExecutorId} 当前执行人：**这一条现在流转到谁手里** ——
- *       球在人手上时是他的 id（待确认计划 / 待授权 / 权限不足 / 执行中 / 待验收在任务人手上，
+ *       球在人手上时是他的 id（待确认计划 / 权限不足 / 执行中 / 待验收在任务人手上，
  *       需求确认与验收在发布人手上，见 {@code AgentTaskTransitions#executorFor}），
  *       球在 agent 手上（三个"已确认"）或事情已经结束时为空。
  *       它与前两列是两类东西：前两列是"这件事的人"，它是"此刻的球在谁手上" ——

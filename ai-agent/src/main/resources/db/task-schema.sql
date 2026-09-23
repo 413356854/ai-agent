@@ -5,23 +5,28 @@
 --  一次"派给 Agent 的活"从发布到验收要经过几个人的确认，而在它们之前
 --  这件事在系统里无处落点：
 --    ① 谁派的、派给谁、现在轮到谁（发布人 / 任务人 / 当前执行人）；
---    ② 卡在哪一步（需求 / 计划 / 授权 / 执行 / 验收）；
+--    ② 卡在哪一步（需求 / 计划 / 判授权 / 执行 / 验收）；
 --    ③ 每一步当时给的是什么选项、他选/答的是什么（用户确认项）。
 --
---  【状态链：十二个取值，每次推进一格】
+--  【状态链：十个取值，每次推进一格】
 --    新发布 NEW
 --      → 待确认需求 PENDING_REQUIREMENT   （生成一条需求确认项，等答复）
 --      → 已确认需求 CONFIRMED_REQUIREMENT （球交给 agent：再判一次歧义、拆任务点）
 --      → 待确认计划 PENDING_PLAN          （任务点 ≥ 阈值时才有这一格，等答复）
---      → 已确认计划 CONFIRMED_PLAN        （球交给 agent：判断授权）
---      → 待授权     PENDING_AUTHORIZATION （授权判断通过，等答复）
---      → 已授权     AUTHORIZED            （球交给 agent：执行）
+--      → 已确认计划 CONFIRMED_PLAN        （球交给 agent：判断授权 → 开跑）
 --      → 执行中     EXECUTING             （跑完写执行结果）
 --      → 待验收     PENDING_ACCEPTANCE
 --      → 已完成     COMPLETED
---    已确认计划 / 已授权 的判断不通过 → 权限不足 INSUFFICIENT_PERMISSION（结论写进 result，等处置）
+--    已确认计划 的判断不通过 → 权限不足 INSUFFICIENT_PERMISSION（结论写进 result，等处置）
 --    权限不足 ── 人答复「已修改任务」──→ 新发布（重新走一遍）
 --    任一非终态都可 → 已取消 CANCELLED（取消原因与状态同一次写入）
+--
+--    ⚠️ 授权不由人批：它由平台判（任务人角色的目录前缀覆盖不覆盖这次要动的目录），
+--    判过就直接开跑 —— 链上没有"等答复授权"与"已授权"这两格。
+--    库里若还留着 PENDING_AUTHORIZATION / AUTHORIZED 这两行（更早的版本写下的），
+--    读的时候会被折成等价的现有状态（见 AgentTaskStatus#parse）：
+--    PENDING_AUTHORIZATION → CONFIRMED_PLAN（重判一次）、AUTHORIZED → EXECUTING（等处置）。
+--    刻意不落 NEW —— 那会让一条已经过了授权这一关的任务从头重走，包括再跑一次写操作。
 --
 --  【三个"人"的列存的是用户 id，不是姓名】
 --    publisher_id / assignee_id / current_executor_id 三列都是 agent_user.id。
@@ -38,8 +43,8 @@
 --
 --  【current_executor_id 的 NULL 是有含义的】
 --    它回答"此刻球在谁手上"：有值 = 球在那个账号手上（「待确认需求」与「待验收」是发布人
---    ——答复需求与验收这两件只有他能做；「新发布」「待确认计划」「待授权」「权限不足」「执行中」
---    是任务人）；NULL = 球在 agent 手上（三个"已确认"）或这件事已经结束
+--    ——答复需求与验收这两件只有他能做；「新发布」「待确认计划」「权限不足」「执行中」
+--    是任务人）；NULL = 球在 agent 手上（两个"已确认"）或这件事已经结束
 --    （已完成没有执行人；已取消保持取消那一刻的值）。
 --    于是"哪个 agent 在跑"由 agent_id 回答，两列各答一个问题，不挤在一列里。
 --    「执行中」也写任务人：那一格确实是 agent 在跑，而跑失败时它停在执行中等任务人处置。
@@ -51,7 +56,7 @@
 --      · 待确认需求 / 待验收 → 只有发布人（那两件只有他能做）；
 --      · 其余状态 → 只有任务人（球在他手上）。
 --    ⚠️ 它与 current_executor_id **不是同一条判据**（那一列回答的是卡片上"当前执行人"显示谁）：
---    新发布与三个"待确认"上两者刻意不同，拿一列去顶另一件事的后果都是静默的
+--    新发布与两个"待确认"上两者刻意不同，拿一列去顶另一件事的后果都是静默的
 --    （漏卡片，或者把"当前执行人"那一格写错）。
 --    这条判断横跨两列且按状态分组，单列索引用不上，所以没有为它建索引 ——
 --    任务表是人手工发起的规模（理由与"看板一次取全量"同一条）。
@@ -99,15 +104,16 @@ CREATE TABLE IF NOT EXISTS agent_task (
   description         TEXT         NOT NULL COMMENT '任务描述：这次要做什么（也是生成第一条确认项的输入）',
   -- 状态取值见头注的状态链，库里的值一律是枚举名（AgentTaskStatus）。
   -- ⚠️ 读侧对认不出的取值落在 NEW 而不是"某一个看起来正常的中间态"：
-  -- 落成终态会让这一行从看板的活跃列里消失，而"卡片不见了"是最难发现的一种坏法
-  status              VARCHAR(32)  NOT NULL DEFAULT 'NEW' COMMENT '任务状态：NEW / PENDING_REQUIREMENT / CONFIRMED_REQUIREMENT / PENDING_PLAN / CONFIRMED_PLAN / PENDING_AUTHORIZATION / INSUFFICIENT_PERMISSION / AUTHORIZED / EXECUTING / PENDING_ACCEPTANCE / COMPLETED / CANCELLED（认不出的取值落 NEW）',
+  -- 落成终态会让这一行从看板的活跃列里消失，而"卡片不见了"是最难发现的一种坏法。
+  -- 例外是头注里那两个历史取值：它们各有等价的现有状态，折回去比落 NEW 安全
+  status              VARCHAR(32)  NOT NULL DEFAULT 'NEW' COMMENT '任务状态：NEW / PENDING_REQUIREMENT / CONFIRMED_REQUIREMENT / PENDING_PLAN / CONFIRMED_PLAN / INSUFFICIENT_PERMISSION / EXECUTING / PENDING_ACCEPTANCE / COMPLETED / CANCELLED（认不出的取值落 NEW；PENDING_AUTHORIZATION / AUTHORIZED 是历史取值，读时折成 CONFIRMED_PLAN / EXECUTING）',
   -- 当前执行人：这条任务现在流转到谁手里（agent_user.id）。
-  -- NULL 是**有含义的**：球在 agent 手上（三个"已确认"），或者这件事已经结束
+  -- NULL 是**有含义的**：球在 agent 手上（两个"已确认"），或者这件事已经结束
   -- （已完成没有执行人；已取消保持取消那一刻的值）—— 见头注那一段
   current_executor_id BIGINT       NULL COMMENT '当前执行人：球在谁手上（agent_user.id）；NULL = 球在 agent 手上或任务已结束',
-  -- 任务当前步骤，从 1 开始：1 需求 / 2 计划 / 3 授权 / 4 执行 / 5 验收 / 6 完成。
+  -- 任务当前步骤，从 1 开始：1 需求 / 2 计划 / 3 判授权 / 4 执行 / 5 验收 / 6 完成。
   -- 新发布也记 1 —— 它表示"停在第 1 步还没开始"，而不是第 0 步（界面上没有第 0 步这个东西）
-  current_step        INT          NOT NULL DEFAULT 1 COMMENT '任务当前步骤：1 需求 / 2 计划 / 3 授权 / 4 执行 / 5 验收 / 6 完成（新发布也记 1）',
+  current_step        INT          NOT NULL DEFAULT 1 COMMENT '任务当前步骤：1 需求 / 2 计划 / 3 判授权 / 4 执行 / 5 验收 / 6 完成（新发布也记 1）',
   -- 任务交给哪个 Agent 应用。**是字符串**：应用 id 由那张注册表（另一个业务域）定义，
   -- 本仓只管引用它，所以既不做外键、也不假设它长得像数字
   -- （与 agent_run.intent / tenant_id 同一条规矩：归因键的取值由业务侧定义，数据库管不了它有多少个）
@@ -134,10 +140,10 @@ CREATE TABLE IF NOT EXISTS agent_task_confirm (
   id           BIGINT      NOT NULL AUTO_INCREMENT COMMENT '确认项 id',
   task_id      BIGINT      NOT NULL COMMENT '属于哪条任务（agent_task.id）',
   -- 任务步骤：这一条是在任务的第几步提出来的（值来自 agent_task.current_step，
-  -- 即"第 1/2/3 步"= 需求 / 计划 / 授权三种确认）。列轴与 agent_step.step_index 同名同义
-  step_index   INT         NOT NULL COMMENT '任务步骤（1 需求 / 2 计划 / 3 授权，值来自 agent_task.current_step）',
-  -- 类型：REQUIREMENT 需求确认 / PLAN 计划确认 / AUTHORIZATION 授权确认
-  confirm_type VARCHAR(32) NOT NULL COMMENT '确认类型：REQUIREMENT 需求 / PLAN 计划 / AUTHORIZATION 授权',
+  -- 即"第 1/2/3 步"= 需求 / 计划两种确认）。列轴与 agent_step.step_index 同名同义
+  step_index   INT         NOT NULL COMMENT '任务步骤（1 需求 / 2 计划，值来自 agent_task.current_step）',
+  -- 类型：REQUIREMENT 需求确认 / PLAN 计划确认（AUTHORIZATION 授权确认是历史取值：授权不再由人批）
+  confirm_type VARCHAR(32) NOT NULL COMMENT '确认类型：REQUIREMENT 需求 / PLAN 计划（AUTHORIZATION 是历史取值）',
   -- 确认事项描述：要用户确认的那件事
   description  TEXT        NULL COMMENT '确认事项描述：要用户确认的那件事',
   -- 选项集：JSON 数组，如 ["确认","需要补充"]。空/null = 只收自由回复

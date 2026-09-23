@@ -17,16 +17,19 @@ import java.util.List;
  *   <tr><td>{@link #advance}</td>
  *       <td>执行中 / 待验收</td>
  *       <td>待验收（登记执行结果，人工兜底）/ 已完成</td></tr>
- *   <tr><td>{@link #answer}</td><td>三个"待确认"</td><td>对应的"已确认"那一格（已确认需求 / 已确认计划 / 已授权）</td></tr>
+ *   <tr><td>{@link #answer}</td><td>两个"待确认"</td><td>对应的"已确认"那一格（已确认需求 / 已确认计划）</td></tr>
  *   <tr><td>{@link #revise}</td><td>权限不足</td><td>新发布（用户答复「已修改任务」，整条链重走一遍）</td></tr>
  *   <tr><td>{@link #cancel}</td><td>任一非终态</td><td>已取消（写取消原因）</td></tr>
  * </table>
  *
- * <p><b>新发布、已确认需求、已确认计划、已授权这四格没有人工动作</b>：
+ * <p><b>新发布、已确认需求、已确认计划这三格没有人工动作</b>：
  * 它们的球在 agent 手上，由 {@code AgentTaskExecution} 按状态推进（见
  * {@link AgentTaskStatus#awaitingAgent()}）。所以 {@link #advance} 不接受新发布 ——
  * "新发布 → 待确认需求"这一步现在由执行器先判断需求有没有歧义再决定，
  * 人工那条路会让同一条任务有两个不同的第一条确认项。
+ *
+ * <p><b>授权不在这张表里</b>：它由平台判（{@code TaskFileAuthorization}），判过就开跑 ——
+ * 链上没有"等人答复授权"那一格（见 {@link AgentTaskStatus} 的状态链）。
  *
  * <h2>为什么"推进"、"答复"与"重发"是三个动作而不是一个</h2>
  * 回答一个问题（{@code answer}）与报告一件事发生了（{@code advance}）在链上填的格子不同：
@@ -52,7 +55,7 @@ public interface AgentTaskService {
 	 *        <p>判断<b>不是某一列上的等值比较</b>，而是按状态挑列（{@link AgentTaskStatus#party()}）：
 	 *        新发布 / 已完成 / 已取消是发布人**或**任务人（两个人里谁都找得到它）；
 	 *        待确认需求 / 待验收只有发布人（那两件只有他能做）；其余状态只有任务人。
-	 *        球在 agent 手上的三格（三个"已确认"）与谁都不相关，两张列表里都不出现。
+	 *        球在 agent 手上的两格（两个"已确认"）与谁都不相关，两张列表里都不出现。
 	 *        <p>不在账号表里的 id 会被拒（400），理由见 {@code DefaultAgentTaskService#person}。
 	 */
 	Board board(Long userId);
@@ -103,13 +106,13 @@ public interface AgentTaskService {
 	 * 且那一列大多数时候是空的。两者的区别靠卡片上的状态标签与取消原因表达
 	 * （列头的 {@code statusLabels} 也会把"这一列收哪两种"写出来）。
 	 *
-	 * <p>{@link #EXECUTING} 一列收**四个**状态（已确认需求 / 已确认计划 / 已授权 / 执行中）。
+	 * <p>{@link #EXECUTING} 一列收**三个**状态（已确认需求 / 已确认计划 / 执行中）。
 	 * 它们对看板是同一件事：球在 agent 手上，人不该去点它 ——
-	 * 分成四列的话，一眼看去像是"有四件事在等人"，而实际上没有一件在等人。
-	 * 四个状态的进度差别靠卡片上的状态标签表达。
+	 * 分成三列的话，一眼看去像是"有三件事在等人"，而实际上没有一件在等人。
+	 * 三个状态的进度差别靠卡片上的状态标签表达。
 	 *
-	 * <p>{@link #PENDING} 一列收**四个**状态（三个"待确认"与"权限不足"）：它们等的东西不同
-	 * （答复确认项 / 处置一次权限不足），但对看板的答案是同一个 —— <b>有四件事在等人，球都在人手上</b>。
+	 * <p>{@link #PENDING} 一列收**三个**状态（两个"待确认"与"权限不足"）：它们等的东西不同
+	 * （答复确认项 / 处置一次权限不足），但对看板的答案是同一个 —— <b>有三件事在等人，球都在人手上</b>。
 	 * 「权限不足」单开一列的话，那一列在多数时候是空的，而"现在有几件事在等我"这个唯一的问题
 	 * 反而要被两个列名拼起来才答得出。两者的区别靠卡片上的状态标签与动作（答复确认项 / 已修改任务）表达。
 	 */
@@ -118,10 +121,10 @@ public interface AgentTaskService {
 		NEW_TASK("new", "新任务", List.of(AgentTaskStatus.NEW)),
 
 		PENDING("pending", "待处理", List.of(AgentTaskStatus.PENDING_REQUIREMENT, AgentTaskStatus.PENDING_PLAN,
-				AgentTaskStatus.PENDING_AUTHORIZATION, AgentTaskStatus.INSUFFICIENT_PERMISSION)),
+				AgentTaskStatus.INSUFFICIENT_PERMISSION)),
 
 		EXECUTING("executing", "执行中", List.of(AgentTaskStatus.CONFIRMED_REQUIREMENT,
-				AgentTaskStatus.CONFIRMED_PLAN, AgentTaskStatus.AUTHORIZED, AgentTaskStatus.EXECUTING)),
+				AgentTaskStatus.CONFIRMED_PLAN, AgentTaskStatus.EXECUTING)),
 
 		ACCEPTANCE("acceptance", "待验收", List.of(AgentTaskStatus.PENDING_ACCEPTANCE)),
 

@@ -194,14 +194,14 @@ public class AgentTaskTransitions {
 	 * 而 {@code null} 是有含义的两种：球在 agent 手上（agent 不是账号，那一列存不下它），
 	 * 或这件事已经结束。四种落点：
 	 * <ul>
-	 *   <li>{@link AgentTaskStatus#NEW}、「待确认计划」、「待授权」、「权限不足」与
+	 *   <li>{@link AgentTaskStatus#NEW}、「待确认计划」、「权限不足」与
 	 *       {@link AgentTaskStatus#EXECUTING} —— <b>任务人</b>：球在他手上，由他往下做。
 	 *       「执行中」也写他：那一格确实是 agent 正在跑（"是哪个 agent"由 {@code agent_id} 回答），
 	 *       而跑失败时它停在执行中等他用「登记执行结果」处置 —— 写空会让它从他的列表里消失，
 	 *       而他是唯一能处置它的人；</li>
 	 *   <li>{@link AgentTaskStatus#PENDING_REQUIREMENT} 与 {@link AgentTaskStatus#PENDING_ACCEPTANCE}
 	 *       —— <b>发布人</b>：前者等他答复需求确认项、后者等他验收，这两件只有他能做；</li>
-	 *   <li>三个"已确认"（已确认需求 / 已确认计划 / 已授权）—— agent（空；卡片上的 {@code agent#…}
+	 *   <li>「已确认需求」与「已确认计划」—— agent（空；卡片上的 {@code agent#…}
 	 *       由 {@link AgentTask#executorLabel()} 按 {@code agent_id} 拼出来）；</li>
 	 *   <li>{@link AgentTaskStatus#COMPLETED} —— 没有执行人（没有事件在谁手上了），
 	 *       留着 id 会让那张卡片读起来像还卡着；</li>
@@ -217,8 +217,8 @@ public class AgentTaskTransitions {
 			case PENDING_REQUIREMENT, PENDING_ACCEPTANCE -> task.publisherId();
 			// 任务人为空的行只可能是早期的行（发布时必填，见 AgentTask#draft）：它照样要有人接着做
 			case NEW -> task.assigneeId() == null ? task.publisherId() : task.assigneeId();
-			case PENDING_PLAN, PENDING_AUTHORIZATION, INSUFFICIENT_PERMISSION, EXECUTING -> task.assigneeId();
-			case CONFIRMED_REQUIREMENT, CONFIRMED_PLAN, AUTHORIZED -> null;
+			case PENDING_PLAN, INSUFFICIENT_PERMISSION, EXECUTING -> task.assigneeId();
+			case CONFIRMED_REQUIREMENT, CONFIRMED_PLAN -> null;
 			case COMPLETED -> null;
 			case CANCELLED -> task.currentExecutorId();
 		};
@@ -254,6 +254,9 @@ public class AgentTaskTransitions {
 	 *
 	 * <p>需求那一条的按钮与另外两条不同：它的"否"是<b>补充说明</b>而不是拒绝 ——
 	 * 需求有歧义时该发生的是"再问一轮"，不是把任务毙掉。
+	 *
+	 * <p>{@link ConfirmType#AUTHORIZATION} 那一支不再被调用（链上没有"等答复授权"那一格），
+	 * 留着是为了库里已有那几条记录还能取到自己的选项集。
 	 */
 	public static List<String> defaultOptions(ConfirmType type) {
 		return switch (type) {

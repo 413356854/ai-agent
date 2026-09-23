@@ -190,9 +190,9 @@ public class DefaultAgentTaskService implements AgentTaskService {
 			case EXECUTING -> finishExecution(task, result);
 			case PENDING_ACCEPTANCE -> accept(task);
 			default -> throw new TaskConflictException(("当前状态「%s」没有可推进的事件 —— 能推进的只有"
-					+ "「执行中」（登记执行结果）与「待验收」（验收通过）；三个「待确认」在等确认项的答复、"
+					+ "「执行中」（登记执行结果）与「待验收」（验收通过）；两个「待确认」在等确认项的答复、"
 					+ "「权限不足」要答复的是 revise（「已修改任务」/「取消任务」），"
-					+ "「新发布」与三个「已确认」由 agent 任务执行处理（页面上没有按钮就是还没轮到人），"
+					+ "「新发布」与两个「已确认」由 agent 任务执行处理（页面上没有按钮就是还没轮到人），"
 					+ "终态不再流转。详情里的 actions 就是现在能做的事。")
 					.formatted(task.status().label()));
 		};
@@ -210,9 +210,9 @@ public class DefaultAgentTaskService implements AgentTaskService {
 		AgentTask task = transitions.require(id);
 		AgentTaskStatus status = task.status();
 		ConfirmType waiting = status.waitingConfirmation().orElseThrow(() -> new TaskConflictException(
-				("当前状态「%s」不在等确认项的答复 —— 能答复的只有「待确认需求」/「待确认计划」/「待授权」；"
+				("当前状态「%s」不在等确认项的答复 —— 能答复的只有「待确认需求」/「待确认计划」；"
 						+ "「执行中」与「待验收」要推进请用 advance 那个动作；"
-						+ "「新发布」与三个「已确认」由 agent 任务执行处理，人和 advance 都推不动它。")
+						+ "「新发布」与两个「已确认」由 agent 任务执行处理，人和 advance 都推不动它。")
 						.formatted(status.label())));
 		AgentTaskConfirm confirm = requireConfirm(id, confirmId);
 		if (confirm.type() != waiting || confirm.stepIndex() != task.currentStep()) {
@@ -227,11 +227,14 @@ public class DefaultAgentTaskService implements AgentTaskService {
 		}
 
 		// 一步一跳的落点写成 switch 表达式，于是"到哪个状态"与"谁接着做"在同一个分支里
-		// （三个落点都是"等 agent 动手"的状态，生成下一条确认项的是任务执行器 —— 它要按答复内容判断）
+		// （两个落点都是"等 agent 动手"的状态，生成下一条确认项的是任务执行器 —— 它要按答复内容判断）
 		AgentTaskStatus nextStatus = switch (waiting) {
 			case REQUIREMENT -> transitions.enterAgent(task, AgentTaskStatus.CONFIRMED_REQUIREMENT);
 			case PLAN -> transitions.enterAgent(task, AgentTaskStatus.CONFIRMED_PLAN);
-			case AUTHORIZATION -> transitions.enterAgent(task, AgentTaskStatus.AUTHORIZED);
+			// 授权不由人答（判断在平台那一边，见 AgentTaskStatus 的状态链），所以这里没有它的分支
+			case AUTHORIZATION -> throw new TaskConflictException(
+					"授权确认项已经不由人答复了 —— 授权由平台按任务人角色的目录前缀判（判过就开跑）；"
+							+ "这条记录产生于旧版本，它的处置是取消这条任务后重新发布。");
 		};
 		log.info("任务 #{} 的{}已答复（{}）：这次答复把它推到了「{}」", task.id(), waiting.label(), text.strip(),
 				nextStatus.label());
@@ -345,7 +348,7 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	 * 现在能做的动作。它是"界面上该画哪些按钮"的唯一依据
 	 * （与 {@link #advance} / {@link #answer} / {@link #cancel} 允许的状态一一对应）。
 	 *
-	 * <p><b>「新发布」与三个「已确认」没有推进按钮</b>：那四格的下一步由任务执行器做，
+	 * <p><b>「新发布」与两个「已确认」没有推进按钮</b>：那三格的下一步由任务执行器做，
 	 * 人点不动。给它们画一个"看起来能推进"的按钮比不画更坏 —— 用户会反复点，
 	 * 而每次都回一句"当前状态不允许"。
 	 *
@@ -355,12 +358,11 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	private static List<Action> actionsOf(AgentTaskStatus status) {
 		return switch (status) {
 			case NEW -> List.of(new Action("cancel", "取消任务"));
-			case PENDING_REQUIREMENT, PENDING_PLAN, PENDING_AUTHORIZATION ->
+			case PENDING_REQUIREMENT, PENDING_PLAN ->
 					List.of(new Action("answer", "答复确认项"), new Action("cancel", "取消任务"));
 			case INSUFFICIENT_PERMISSION ->
 					List.of(new Action("revise", "已修改任务"), new Action("cancel", "取消任务"));
-			case CONFIRMED_REQUIREMENT, CONFIRMED_PLAN, AUTHORIZED ->
-					List.of(new Action("cancel", "取消任务"));
+			case CONFIRMED_REQUIREMENT, CONFIRMED_PLAN -> List.of(new Action("cancel", "取消任务"));
 			case EXECUTING -> List.of(new Action("advance", "登记执行结果"), new Action("cancel", "取消任务"));
 			case PENDING_ACCEPTANCE -> List.of(new Action("advance", "验收通过"), new Action("cancel", "取消任务"));
 			case COMPLETED, CANCELLED -> List.of();
