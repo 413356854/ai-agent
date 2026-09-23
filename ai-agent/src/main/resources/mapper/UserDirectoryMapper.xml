@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  agent_user_role ⋈ agent_role_dir 的 SQL：一个账号全部角色的目录前缀。
+
+  ⚠️ 这里**没有**按目录匹配的查询，而且这是刻意的（与 RoleDirectoryMapper.xml 同一条）：
+  LIKE CONCAT(dir_prefix, '%') 会让 `_` 变成通配符、也会把 demo-other 算进 demo。
+  判定在 Java 里只有一处（RoleDirectory.covers）。
+
+  ⚠️ 取的是 dir_prefix 原文，不做归一化：界面上要显示的就是用户当初填的那一串
+  （归一化后的路径是一个用户没有输入过的字符串，而"我明明填的是这个"是最常见的争执）。
+
+  ⚠️ INNER JOIN：这里要的是"角色给的目录"，一个没有目录的角色对这个问题没有答案。
+  写成 LEFT JOIN 会让它变成一行 NULL，而调用方漏判空的表现是选项集里多出一个空文件夹。
+-->
+<mapper namespace="ai.agent.mapper.UserDirectoryMapper">
+
+	<select id="folderPrefixesOfUser" resultType="java.lang.String">
+		SELECT d.dir_prefix
+		  FROM agent_user_role ur
+		  JOIN agent_role_dir d ON d.role_id = ur.role_id
+		 WHERE ur.user_id = #{userId}
+		 ORDER BY d.role_id, d.dir_prefix
+	</select>
+
+</mapper>

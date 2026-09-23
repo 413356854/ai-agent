@@ -11,6 +11,7 @@ import { MockLoginBar } from './components/MockLoginBar'
 import { PermissionPanel } from './components/PermissionPanel'
 import { PromptPanel } from './components/PromptPanel'
 import { RagPanel } from './components/RagPanel'
+import { SkillPanel } from './components/SkillPanel'
 import { StructuredResultCard } from './components/StructuredResultCard'
 import { ThemeToggle } from './components/ThemeToggle'
 import { ThreadBudgetPanel } from './components/ThreadBudgetPanel'
@@ -23,6 +24,7 @@ import { mockLoginLabel, useMockLogin } from './hooks/useMockLogin'
 import { usePermissions } from './hooks/usePermissions'
 import { usePrompt } from './hooks/usePrompt'
 import { useRagDiag } from './hooks/useRagDiag'
+import { useSkills } from './hooks/useSkills'
 import { useStructuredChat } from './hooks/useStructuredChat'
 import { useTasks } from './hooks/useTasks'
 import { useThreadDiag } from './hooks/useThreadDiag'
@@ -59,8 +61,11 @@ import type { Mode } from './nav'
  * 第十一个（应用管理 · agent任务）是这一区里唯一**不配东西**的一页：
  * 它是派给 Agent 的活在人之间怎么流转（发布 / 确认 / 执行 / 验收），
  * 所以它画的是卡片看板而不是配置表 —— 一张卡片停在哪一列，就等于现在等谁。
+ * 第十二个（应用管理 · skill管理）回到"配东西"，但它配的是一条条**有主人的记录**：
+ * 文件夹目录来自登录人角色的目录前缀（与权限那一页同源），而改与删只对拥有者开放 ——
+ * 于是这一页上"我现在是谁"第一次成了一个**写操作的判据**（前面十一页里它最多只影响筛选）。
  *
- * 十一个 hook 都挂在 App 上（而不是按视图条件挂载）：切换视图时对话记录和实验数据不会被清空，
+ * 十二个 hook 都挂在 App 上（而不是按视图条件挂载）：切换视图时对话记录和实验数据不会被清空，
  * 来回切两次不会丢掉刚才的结果 —— 这也是把状态放在这一层的理由。
  * **Agent 那一页尤其需要这样**：一次任务会真的调模型花钱、要等十几秒，
  * 切走再切回来就重跑一遍（再花一次钱）的代价太大。
@@ -106,22 +111,31 @@ export default function App(
   // 两个页面共用一个 hook（账号与角色本来就是一次取回的一份快照），所以两边的 active 都要算上
   const permissions = usePermissions(mode === 'users' || mode === 'permissions')
   // 第十一个：页头的模拟登录。它不发请求（选人那一步走搜索端点），也不跟着视图走 ——
-  // 它记的是"现在以谁的身份在用这一页"，按人区分的业务从这里取 id（agent任务那一页的看板就是）
+  // 它记的是"现在以谁的身份在用这一页"，按人区分的业务从这里取 id
+  // （agent任务那一页的看板与 skill管理那一页的归属判据都是）
   const mockLogin = useMockLogin()
   // 第十个（agent任务）：进面板拉一次看板 —— **按当前登录的人筛**（`mockLogin.user.id`）：
   // 筛的是"此刻的球在他手上"的那些，所以它要拿到那个 id 才挂得起来。
   // 写操作（发布 / 推进 / 答复 / 取消）之后 hook 会把看板与打开着的那条详情一起重拉；
   // 登录态换了（登录 / 退出）它也会重拉一次 —— 筛选条件是服务端的，本地那份是按旧条件取的
   const tasks = useTasks(mode === 'tasks', mockLogin.user?.id ?? null)
+  // 第十二个（skill管理）：与 agent任务 同一族的形态 —— 进面板拉一次，
+  // **按当前登录的人筛**（列表只给"他拥有的"），文件夹选项集也按他算（角色的目录前缀）。
+  // 所以它同样要拿到那个 id 才挂得起来：没登录时不筛（全部记录），而写操作一律不可用
+  const skills = useSkills(mode === 'skill', mockLogin.user?.id ?? null)
 
   const listRef = useRef<HTMLElement>(null)
+  // 页头那个「模拟登录」弹窗的开关握在 MockLoginBar 自己手里，而 skill 面板上那个
+  // 「去登录」按钮要能把它打开 —— 于是这里只做一次转发（面板不自己去发搜索请求，
+  // 也不复制一份选人弹窗：那种复制出来的第二份选人逻辑迟早与页头那一份不一致）
+  const loginEntryRef = useRef<(() => void) | null>(null)
 
   // 当前视图对应的数据，只用于"滚动到底部"和空状态判断。
   // 诊断/只读面板没有这两件事（面板自己滚、没有空状态），所以这里不参与，免得白白触发一次 effect；
   // 它们同时也都不显示页头那块 conversationId + 「新会话」—— 那两样属于对话状态。
   const isDiagnostic = mode === 'threads' || mode === 'rag' || mode === 'agent' || mode === 'cost'
     || mode === 'prompt' || mode === 'alerts' || mode === 'users' || mode === 'permissions'
-    || mode === 'tasks'
+    || mode === 'tasks' || mode === 'skill'
   const activeCount = mode === 'stream' ? stream.messages.length : structured.turns.length
   const busy = mode === 'stream' ? stream.streaming : structured.loading
   const conversationId = mode === 'structured' ? structured.conversationId : stream.conversationId
@@ -178,10 +192,14 @@ export default function App(
                 </Button>
               </>
             )}
-            {/* 模拟登录在**所有十一个视图**上都在（与主题开关同理）：它说的是
-                "现在以谁的身份在用这一页"，后续按人区分的业务认的是它记下的那个 id */}
-            <MockLoginBar login={mockLogin} />
-            {/* 主题开关在**所有十一个视图**上都在：它换的是整页的底色，
+            {/* 模拟登录在**所有十二个视图**上都在（与主题开关同理）：它说的是
+                "现在以谁的身份在用这一页"，后续按人区分的业务认的是它记下的那个 id。
+                技能面板上那个「去登录」按的也是这一个入口（`onEntry` 把开弹窗的动作交出去） */}
+            <MockLoginBar
+              login={mockLogin}
+              onEntry={open => { loginEntryRef.current = open }}
+            />
+            {/* 主题开关在**所有十二个视图**上都在：它换的是整页的底色，
                 属于"看这一页的方式"，不跟着某个视图出现或消失 */}
             <ThemeToggle mode={themeMode} onToggle={onToggleTheme} />
           </Flex>
@@ -193,6 +211,13 @@ export default function App(
           <PermissionPanel permissions={permissions} />
         ) : mode === 'tasks' ? (
           <AgentTaskPanel tasks={tasks} loginName={mockLogin.user ? mockLoginLabel(mockLogin.user) : null} />
+        ) : mode === 'skill' ? (
+          <SkillPanel
+            skills={skills}
+            userId={mockLogin.user?.id ?? null}
+            loginName={mockLogin.user ? mockLoginLabel(mockLogin.user) : null}
+            onLoginRequest={() => loginEntryRef.current?.()}
+          />
         ) : mode === 'threads' ? (
           // 面板自己带滚动容器：诊断内容比对话长得多，而且没有"新消息贴底"这个语义
           <ThreadBudgetPanel diag={diag} />

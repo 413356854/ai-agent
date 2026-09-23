@@ -9,11 +9,11 @@
 /**
  * 导航项标识 = 视图标识。前八个是对话台的模式，对应后端的八条链路
  * （逐条见 docs/项目功能点与代码索引.md 第 6 节）；
- * `users` / `permissions` / `tasks` 是应用管理区的三项。
+ * `users` / `permissions` / `tasks` / `skill` 是应用管理区的四项。
  */
 export type Mode =
   | 'stream' | 'structured' | 'threads' | 'rag' | 'agent' | 'cost' | 'prompt' | 'alerts'
-  | 'users' | 'permissions' | 'tasks'
+  | 'users' | 'permissions' | 'tasks' | 'skill'
 
 /** 导航分组 = 一级目录。它不是视觉分组：每个分组是一个独立的功能区，顶栏标题跟着它走 */
 export interface NavGroup {
@@ -55,12 +55,13 @@ export const NAV_SECTIONS: NavGroup[] = [
   {
     key: 'apps',
     label: 'AI Agent 应用管理',
-    title: 'AI Agent 应用管理：账号 / 角色 / 权限 / 任务',
+    title: 'AI Agent 应用管理：账号 / 角色 / 权限 / 任务 / 技能',
     tag: { color: 'geekblue', text: '配一次 · 之后每次调用都按它生效' },
     items: [
       { mode: 'users', label: '用户管理' },
       { mode: 'permissions', label: '权限管理' },
       { mode: 'tasks', label: 'agent任务' },
+      { mode: 'skill', label: 'skill管理' },
     ],
   },
 ]

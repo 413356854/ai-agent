@@ -31,6 +31,7 @@ import { handleCostRoutes } from './cost-routes.mjs'
 import { handlePermissionRoutes } from './permission-routes.mjs'
 import { handlePromptRoutes } from './prompt-routes.mjs'
 import { handleRagRoutes } from './rag-routes.mjs'
+import { handleSkillRoutes } from './skill-routes.mjs'
 import { handleTaskRoutes } from './task-routes.mjs'
 
 const PORT = Number(process.env.MOCK_PORT ?? 8081)
@@ -389,11 +390,25 @@ const server = createServer((req, res) => {
     return
   }
 
+  // ---------------------------------------------------------------
+  //  skill 端点（应用管理 · skill管理）
+  //
+  //  ⚠️ 与 permissions / agent-tasks 同一类：**有写端点，所以状态是进程内可变的**，
+  //  并且必须配一条 `POST /api/skills/__reset`（自检跑第二遍时会用到）。
+  //  这一组的假数据要照搬真后端的四条判据（未登录写操作 400、文件夹必须在
+  //  自己角色的目录前缀里、归属判据是那一行的 owner_id、同名 409），
+  //  否则"只有拥有者能改能删"与"未登录时按钮是禁用的"这两件事在自检里都是假绿。
+  //  三条纪律写在 skill-routes.mjs 开头。
+  // ---------------------------------------------------------------
+  if (url.pathname.startsWith('/api/skills') && handleSkillRoutes(req, res, url, json)) {
+    return
+  }
+
   res.writeHead(404, { 'Content-Type': 'application/json' })
   res.end(
     JSON.stringify({
       message:
-        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async、POST /api/agent/ask、GET /api/agent/*、GET /api/cost/*、GET|POST /api/prompts/*、GET|POST /api/alerts/*、GET|POST /api/canary/*、GET|POST|PUT|DELETE /api/permissions/*、GET|POST /api/agent-tasks/*',
+        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async、POST /api/agent/ask、GET /api/agent/*、GET /api/cost/*、GET|POST /api/prompts/*、GET|POST /api/alerts/*、GET|POST /api/canary/*、GET|POST|PUT|DELETE /api/permissions/*、GET|POST /api/agent-tasks/*、GET|POST|PUT|DELETE /api/skills/*',
     }),
   )
 })

@@ -7,6 +7,7 @@ import ai.agent.entity.agent.permission.PermissionAccess;
 import ai.agent.entity.agent.permission.Role;
 import ai.agent.entity.agent.permission.RoleDirectory;
 import ai.agent.entity.agent.permission.RoleTool;
+import ai.agent.entity.agent.skill.AgentSkill;
 import ai.agent.entity.agent.task.AgentTask;
 import ai.agent.entity.agent.task.AgentTaskConfirm;
 import ai.agent.entity.agent.task.AgentTaskStatus;
@@ -353,6 +354,30 @@ public final class MapperRows {
 		public AgentTaskConfirm toDomain() {
 			return new AgentTaskConfirm(id, taskId, nz(stepIndex), ConfirmType.parse(confirmType), description,
 					ConfirmOptions.decode(optionSet), answer, createdAt, updatedAt);
+		}
+	}
+
+	// ==================================================================
+	//  Agent 技能（agent_skill）
+	// ==================================================================
+
+	/**
+	 * {@code agent_skill} 的一行。
+	 *
+	 * <p>两个姓名（{@code owner_name} / {@code last_modified_name}）是 SQL 关联
+	 * {@code agent_user} 查出来的，表里没有它们 —— 所以它们可能为 null
+	 * （账号那一行不在时），而两个 id 才是库里真正存的那一份（见 {@link AgentSkill}）。
+	 *
+	 * <p>{@code description} / {@code content} / {@code last_modified_by} 为 null 是**正常状态**
+	 * （说明或正文留空、更早的数据没记下修改人），不编默认值 —— 编一个会让"没有写"
+	 * 与"写的就是那个默认值"变成同一件事。
+	 */
+	public record AgentSkillRow(Long id, String folder, String name, String description, String content, Long ownerId,
+			String ownerName, Long lastModifiedBy, String lastModifiedName, Instant createdAt, Instant updatedAt) {
+
+		public AgentSkill toDomain() {
+			return new AgentSkill(id, folder, name, description, content, ownerId, ownerName, lastModifiedBy,
+					lastModifiedName, createdAt, updatedAt);
 		}
 	}
 

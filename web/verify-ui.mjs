@@ -157,7 +157,7 @@ const expect = (label, ok, detail = '') => {
 }
 
 /**
- * 轮询等待某个条件成立（最多 `timeoutMs`）。
+ * 轮询等待某个条件成立（最多 `timeoutMs`），**返回条件成立时的那个值**。
  *
  * <h2>为什么需要它，而不是 `page.waitForTimeout(N)` 一把等够</h2>
  * 这一轮新增的断言里有一大半要等的是**异步状态转移**：
@@ -168,12 +168,20 @@ const expect = (label, ok, detail = '') => {
  *
  * <p>轮询的代价是失败时慢（等满超时才报错），收益是**快的时候立刻继续**且不闪断。
  * 这个取舍与后端那边"等待批登记出来"用的是同一套（见 `AgentApprovalTest.awaitPending`）。
+ *
+ * <h2>★ 返回的是**条件成立时的那个值**，不是 `true`</h2>
+ * 谓词写成 `async () => { const r = await …; return r.total === n ? r : false }` 时，
+ * 调用方拿到的是 `r` —— 于是"等它变成 3 条"之后紧接着就能读那 3 条，不必再查一次。
+ * 谓词返回布尔（`count() === 1` 这类）时拿到的就是 `true`，与以前完全一样。
+ * ⚠️ 超时返回 `false`：调用方判它就行；**把它当对象读会在下一行抛 TypeError**，
+ * 而那时的报错位置离真正的失败很远。
  */
 async function waitFor(check, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
-      if (await check()) return true
+      const value = await check()
+      if (value) return value
     }
     catch {
       // 元素还没出现时 locator 会抛/返回 0 —— 都当作"还没好"，继续等
@@ -218,6 +226,26 @@ async function navMode(label) {
   await sidebar.getByRole('button', { name: label, exact: true }).click()
 }
 
+/**
+ * 读一次响应的"理由那一句话"：<b>先读原文，再试着解析</b>。
+ *
+ * <p>后端两种错误体形状：`{message}`（`ErrorResponseAdvice` 的 400/500）与
+ * `{error}`（控制器自己给的 409）。两种都读 —— 但更关键的是**读不出来时不要变成空串**：
+ * 只写 `await response.json()` 的话，响应体一旦不是 JSON，拿到的是一个空对象，
+ * 而断言的失败信息里就只剩一个 `HTTP 400 · `。那时看起来像"后端没给理由"，
+ * 实际上只是这一次读取没读到 —— 实测为此白查过一轮。
+ */
+async function readReason(response) {
+  const raw = await response.text()
+  try {
+    const parsed = JSON.parse(raw)
+    return String(parsed.message ?? parsed.error ?? raw)
+  }
+  catch {
+    return raw
+  }
+}
+
 console.log('[1] 打开页面:', URL)
 await page.goto(URL, { waitUntil: 'networkidle' })
 
@@ -239,8 +267,8 @@ console.log('[1.5] 布局 —— 左侧目录与页头')
   // 应用管理那一段的**顺序**也是要求的一部分：账号在前、角色在后、任务最后
   const appsItems = (await sidebar.locator('.app-nav-group').nth(1).locator('.app-nav-item').allInnerTexts())
     .map(t => t.trim())
-  expect('应用管理那段列出三项，顺序是 用户管理 / 权限管理 / agent任务',
-    JSON.stringify(appsItems) === JSON.stringify(['用户管理', '权限管理', 'agent任务']),
+  expect('应用管理那段列出四项，顺序是 用户管理 / 权限管理 / agent任务 / skill管理',
+    JSON.stringify(appsItems) === JSON.stringify(['用户管理', '权限管理', 'agent任务', 'skill管理']),
     appsItems.join(' / '))
   expect('当前项被标出来（aria-current）', (await sidebar.locator('[aria-current="page"]').count()) === 1)
   // 默认落在流式模式：这条同时证明"选中的那一项就是当前视图"，而不只是"有一个项被标了"
@@ -309,9 +337,9 @@ console.log('[1.5] 布局 —— 左侧目录与页头')
   expect('收起后标题仍然标出「当前视图在这一段里」',
     (await groupTitle.getAttribute('data-active-inside')) === '1',
     `data-active-inside=${await groupTitle.getAttribute('data-active-inside')}`)
-  // 只收起被点的那一段：应用管理那三项不该跟着消失
+  // 只收起被点的那一段：应用管理那四项不该跟着消失
   expect('另一段不受影响',
-    (await sidebar.locator('.app-nav-group').nth(1).locator('.app-nav-item').count()) === 3)
+    (await sidebar.locator('.app-nav-group').nth(1).locator('.app-nav-item').count()) === 4)
 
   await groupTitle.click()
   const unfoldedGroup = await waitFor(
@@ -3463,6 +3491,285 @@ else {
   const panelText = await page.locator('.task-panel').innerText()
   expect('真后端的任务看板可读（空库时给的是「还没有任务」而不是报错）',
     /任务看板/.test(panelText), panelText.slice(0, 80).replace(/\n/g, ' '))
+}
+
+// ---------- 应用管理 · skill管理 ----------
+//
+// 这一节验的是三件事，每一件都对应这一页最容易出错、而且**错了不报错**的形态：
+//   ① **未登录时的边界**：列表给全部记录、写按钮禁用、三个写端点回 400。
+//      不验这一条的话，"未登录"与"登录了但没有技能"在屏幕上长得一模一样；
+//   ② **文件夹目录的来历**：那个下拉里的选项来自"登录人角色的目录前缀"，
+//      而不是一个能随便填的路径 —— 所以既要断下拉里只有那一个，
+//      也要**绕开下拉框按接口打一次**（客户端那一层拦不住 curl）；
+//   ③ **归属判据是那一行的 owner_id**：别人的行上两个按钮禁用，
+//      而"改成别人的记录"按接口打过去必须是 400。
+//
+// ⚠️ 这一节的第一段是**未登录**态（前面几节都没登录过），而 [11] 那节会自己登录一次 ——
+// 所以第二段在这里直接把 localStorage 里那条记录写上再进页面（判据与 [11] 用的是同一个键），
+// 而不是提前把登录 UI 走一遍：登录控件本身在 [11] 里验，两处各验一件事。
+//
+// ⚠️ 真后端那条路径上**一个字节都不写库**：这一页的写端点会真的建技能，
+// 而 `db_ai_agent` 是用户自己的库（与 [8.6] 用户管理同一条纪律）。
+console.log('[8.9] 应用管理 · skill管理')
+if (EXPECT_REFLECTION) {
+  // 复位：自检跑两遍，第二遍会继承第一遍建出来的技能（与 permissions / tasks 同一条经验）
+  const skillReset = await page.request.post(`${URL}/api/skills/__reset`)
+  expect('skill 假后端复位成功', skillReset.ok(), `HTTP ${skillReset.status()}`)
+
+  await navMode('skill管理')
+  await waitFor(async () => (await page.locator('.skill-panel .ant-table').count()) > 0, 8000)
+
+  expect('页头标题跟着应用管理那一区走',
+    /AI Agent 应用管理/.test(await page.locator('.app-topbar .app-title').innerText()))
+
+  // ---- ① 未登录 ----
+  const guestApi = await (await page.request.get(`${URL}/api/skills`)).json()
+  const guestText = await page.locator('.skill-panel').innerText()
+  expect('★ 未登录时列表是**全部**记录，而说明那一行把它说出来了',
+    guestApi.userId === null && guestApi.total > 0 && /未登录：这是全部技能/.test(guestText),
+    `total=${guestApi.total} · ${guestText.split('\n').slice(0, 3).join(' ').slice(0, 90)}`)
+  expect('未登录时没有文件夹可选（它是"登录人的角色"给的，没有他就不存在这一份）',
+    guestApi.folders.length === 0 && /没有可选的文件夹/.test(guestText))
+  expect('★ 未登录时「新建技能」是禁用的，而且旁边写着为什么',
+    await page.locator('.skill-panel .skill-create').isDisabled() && /还没有登录/.test(guestText))
+  const guestRows = await page.$$eval('.skill-panel tbody tr', els => els.length)
+  expect('未登录也能看见别人的记录（读是公开的，写才要登录）', guestRows === guestApi.total,
+    `屏幕上 ${guestRows} 行 / 接口 ${guestApi.total} 条`)
+
+  // 写端点按接口打一次：界面禁用按钮只是**一条**路，接口那一层才是真判据。
+  // 后端两种错误体形状都读（400/500 是 `{message}`、409 是 `{error}`，见 api/skills.ts 的头注）——
+  // 只读一种的话，一条"文案其实到了、只是键名不同"的断言会红，而红的原因看起来像文案丢了
+  const guestWrite = await page.request.post(`${URL}/api/skills`, {
+    data: { folder: 'D:\\work\\demo', name: '未登录不该建出来' },
+  })
+  const guestWriteRaw = await guestWrite.text()
+  let guestWriteBody = {}
+  try { guestWriteBody = JSON.parse(guestWriteRaw) } catch { /* 非 JSON */ }
+  const guestWriteReason = String(guestWriteBody.message ?? guestWriteBody.error ?? guestWriteRaw)
+  expect('★ 未登录直接打写接口是 400，且那句话说明去哪儿登录',
+    guestWrite.status() === 400 && /模拟登录/.test(guestWriteReason),
+    `HTTP ${guestWrite.status()} · ${guestWriteReason.slice(0, 90)}`)
+
+  // ---- ② 登录：走**真实登录弹窗**（页面里那个「去登录」入口），不是往 localStorage 里塞一条记录 ----
+  //
+  // ⚠️ 这一条是实测踩出来的：登录态是**内存里的一份状态**（`useState` 初值来自挂载时读一次
+  // localStorage），所以"往 localStorage 里写一条记录"**不会**让页面变成登录态 ——
+  // App 挂载时读的是写之前的那一份，没有任何东西会因此重渲染。
+  // 现象是：页头还是「模拟登录」、这一页还是全量视图，而"按人筛"的断言全部为假阴性。
+  const admin = (await (await page.request.get(`${URL}/api/permissions/users/search?keyword=admin`)).json())
+    .users[0]
+
+  // ---- ★ 归属：别人的行上那两个按钮是禁用的 ----
+  //
+  // ⚠️ 这一条**必须在登录之前**跑：登录之后列表只留自己拥有的那些，别人的行根本不在屏幕上 ——
+  // 那时再去等 `tr[data-skill-id=别人的]` 会一直等到超时，而报错看起来像"那一行没渲染出来"
+  // （第一版就是这么红的）。未登录时列表是**全部**记录，那一行正好在，也正好该是禁用的。
+  // ⚠️ 它只能放在 `admin` 之后：`const` 在初始化之前读会抛 ReferenceError（第一版也这么红过一次）
+  const otherRow = guestApi.skills.find(s => s.ownerId !== admin.id)
+  const otherRowLocator = page.locator(`.skill-panel tbody tr[data-skill-id="${otherRow.id}"]`)
+  expect('★ 别人的记录上「编辑 / 删除」都是禁用的（而不是点下去才报错）',
+    await otherRowLocator.locator('.skill-edit').isDisabled()
+    && await otherRowLocator.locator('.skill-delete').isDisabled(),
+    `#${otherRow.id} 拥有者 #${otherRow.ownerId}`)
+
+  await page.locator('.skill-panel .skill-login-entry').click()
+  const loginDialog = page.locator('.ant-modal:visible', { hasText: '模拟登录' })
+  await loginDialog.locator('input[role="combobox"], input.ant-select-selection-search-input').first().fill('adm')
+  const adminOption = page.locator('.ant-select-dropdown:visible .ant-select-item-option',
+    { hasText: admin.name }).first()
+  await adminOption.waitFor({ state: 'visible', timeout: 8000 })
+  await adminOption.click()
+  await loginDialog.locator('.ant-btn-primary').click()
+  await waitFor(async () => (await page.locator('.mock-login-chip').count()) === 1, 8000)
+
+  // 换人要重进这一页：登录态是 App 的状态，而"筛"是**服务端**算的（useSkills 的 userId 一变就重取）。
+  // 切走再切回来就是一次重新挂载、重新拉取 —— 不用 reload
+  // （那会把前面几节攒下的结果丢掉，[9] 正在验它们还在）
+  await navMode('用户管理')
+  await page.waitForTimeout(200)
+  await navMode('skill管理')
+  await waitFor(async () => (await page.locator('.skill-panel .skill-scope').innerText()).includes('只看'),
+    8000)
+
+  const scopeText = await page.locator('.skill-panel .skill-scope').innerText()
+  expect('★ 登录之后说明它按谁筛（少掉的那几行在屏幕上没有别的痕迹）',
+    new RegExp(`用户 id\\s*${admin.id}`).test(scopeText), scopeText.replace(/\n/g, ' ').slice(0, 90))
+
+  const mineApi = await (await page.request.get(`${URL}/api/skills?userId=${admin.id}`)).json()
+  const allApi = await (await page.request.get(`${URL}/api/skills`)).json()
+  const screenRows = () => page.$$eval('.skill-panel tbody tr',
+    els => els.map(el => Number(el.dataset.skillId)).sort((a, b) => a - b))
+  expect('★ 这一页收的是"他拥有的那些"（接口那一份与屏幕上一致，而且比全量少）',
+    mineApi.ownershipJudged === true && mineApi.total > 0 && mineApi.total < allApi.total
+    && JSON.stringify(await screenRows())
+      === JSON.stringify(mineApi.skills.map(s => s.id).sort((a, b) => a - b)),
+    `屏幕上 ${JSON.stringify(await screenRows())} / 接口 ${JSON.stringify(mineApi.skills.map(s => s.id))}`)
+  expect('★ 别人的那一条一条都不在（只断"该出现的出现了"的话，一个没筛的实现照样全绿）',
+    mineApi.skills.every(s => s.ownerId === admin.id)
+    && allApi.skills.some(s => s.ownerId !== admin.id))
+  expect('列表标题上的条数是筛过之后的数（不是全库的条数）',
+    (await page.locator('.skill-panel .ant-card-head-title').innerText()).includes(`技能（${mineApi.total}）`))
+  expect('★ 拥有者那一列写的是姓名（后端 JOIN 出来的那一份，不是我这一页按 id 拼的）',
+    mineApi.skills.every(s => s.ownerName === (admin.displayName || admin.name))
+    && (await page.locator('.skill-panel').innerText()).includes(admin.displayName || admin.name))
+
+  // 文件夹选项集 = 他全部角色的目录前缀（admin 是「管理员」，假数据里配了 D:\work\demo）
+  expect('★ 文件夹选项集就是他角色的目录前缀（不是全库的目录、也不是随便填）',
+    mineApi.folders.length > 0 && JSON.stringify(mineApi.folders) === JSON.stringify(['D:\\work\\demo'])
+    && (await page.locator('.skill-panel .skill-folders').innerText()).includes('D:\\work\\demo'),
+    JSON.stringify(mineApi.folders))
+
+  // 归属：别人的行已经验过（未登录那一段），这里只断**自己的**行可以点
+  const myRowLocator = page.locator(`.skill-panel tbody tr[data-skill-id="${mineApi.skills[0].id}"]`)
+  expect('自己的记录上那两个按钮是可点的',
+    !(await myRowLocator.locator('.skill-edit').isDisabled())
+    && !(await myRowLocator.locator('.skill-delete').isDisabled()))
+
+  // ---- ③ 按接口打的三条边界：越界文件夹 / 别人的记录 / 同名 ----
+  //
+  // ⚠️ 错误体一律**先读原文再解析**（`readReason` 那个小工具）：只写 `await r.json()` 的话，
+  // 一旦响应体不是 JSON（或为空），拿到的是一个空对象，而断言的失败信息里**什么都没有** ——
+  // 看起来像"后端没给理由"，其实是这一次读取没读到。实测踩过：两条断言的红字只有一个
+  // `HTTP 400 · `，查了半天才发现是读取方式的问题，而不是文案丢了
+  const outside = 'D:\\work\\demo-x'
+  const outsideWrite = await page.request.post(`${URL}/api/skills?userId=${admin.id}`, {
+    data: { folder: outside, name: '越界文件夹' },
+  })
+  const outsideReason = await readReason(outsideWrite)
+  expect('★ 文件夹不在他的选项集里是 400，而且报错里带着可选项（没有它下一个还会填错）',
+    outsideWrite.status() === 400
+    && /不在当前登录人的可选范围里/.test(outsideReason)
+    && outsideReason.includes('D:\\work\\demo'),
+    `HTTP ${outsideWrite.status()} · ${outsideReason.slice(0, 90)}`)
+  const afterOutside = await (await page.request.get(`${URL}/api/skills?userId=${admin.id}`)).json()
+  expect('越界那一次没有留下任何记录（读到的条数没变）', afterOutside.total === mineApi.total)
+
+  const stealEdit = await page.request.put(`${URL}/api/skills/${otherRow.id}?userId=${admin.id}`, {
+    data: { name: '改别人的' },
+  })
+  const stealReason = await readReason(stealEdit)
+  expect('★ 改别人的记录是 400，理由是"拥有者不是当前登录的人"',
+    stealEdit.status() === 400 && /只能修改 \/ 删除自己拥有的技能/.test(stealReason),
+    `HTTP ${stealEdit.status()} · ${stealReason.slice(0, 80)}`)
+  const stealDelete = await page.request.delete(`${URL}/api/skills/${otherRow.id}?userId=${admin.id}`)
+  expect('★ 删别人的记录也是 400，而它一动没动',
+    stealDelete.status() === 400
+    && (await (await page.request.get(`${URL}/api/skills`)).json()).skills.some(s => s.id === otherRow.id))
+
+  // ---- ④ 新建：拥有者由服务端填 ----
+  //
+  // ⚠️ 三条实测验出来的写法（这一节翻来覆去红过好几轮，全栽在这上面）：
+  //   ① **每次操作前重新取一次 locator**，不要把一个 `page.locator(...)` 存成常量跨多次交互用 ——
+  //      写完一次数据之后表格会重渲染，之前取到的那个元素**已经不在 DOM 里**了，
+  //      而 Playwright 的报错是"等那个元素出现"超时，看起来像功能坏了；
+  //   ② 下拉展开之后要**等选项渲染出来再读**（antd 的下拉是异步挂到 body 上的，点了就立刻读会读到空）；
+  //   ③ 输入类的选择器**不要写"类名 + 后代 input"** —— antd 6 把 `className` 落在
+  //      `<input>` 自己身上，那种写法一个都匹配不到（详见下面那条注释）。
+  await page.locator('.skill-panel .skill-create').click()
+  await page.locator('.ant-modal:visible', { hasText: '新建技能' }).locator('.ant-select').click()
+  const folderChoice = page.locator('.ant-select-dropdown:visible .ant-select-item-option')
+  const dropdownReady = await waitFor(async () => {
+    const texts = await folderChoice.allInnerTexts()
+    return texts.some(t => t.trim().length > 0)
+  }, 5000)
+  const folderOptions = await folderChoice.allInnerTexts()
+  expect('★ 下拉里只有他角色的那几个目录前缀（选不到别处）',
+    dropdownReady
+    && JSON.stringify(folderOptions.map(t => t.trim())) === JSON.stringify(mineApi.folders),
+    `下拉=${JSON.stringify(folderOptions.map(t => t.trim()))} / 接口=${JSON.stringify(mineApi.folders)}`)
+  await folderChoice.first().click()
+  // ⚠️ 选择器直接指向那个**输入元素**，不写成 `.skill-name-input input`：
+  // antd 6 把 `className` 落在 `<input>` 自己身上（不是包一层 div），
+  // 于是"类名 + 后代 input"的写法**一个都匹配不到** —— 而失败信息是
+  // "waiting for locator(…) 超时"，看起来像弹窗没渲染出来（实测为此白查过一轮：
+  // 弹窗在、`.skill-name-input` 有 1 个，而 `.skill-name-input input` 是 0 个）
+  await page.locator('.ant-modal:visible', { hasText: '新建技能' }).locator('.skill-name-input').fill('自检技能')
+  await page.locator('.ant-modal:visible', { hasText: '新建技能' }).locator('.skill-description-input').fill('自检建的这一条')
+  await page.locator('.ant-modal:visible', { hasText: '新建技能' }).locator('.skill-content-input').fill('第一版正文')
+  await page.locator('.ant-modal:visible', { hasText: '新建技能' }).locator('.ant-btn-primary').click()
+
+  // 等界面上真的建出来那一条（**按名字判**，不只等"多了 1 条"：
+  // 只等计数的话，等到的可能是另一次写入留下的记录），返回那一份
+  const fresh = await waitFor(async () => {
+    const now = await (await page.request.get(`${URL}/api/skills?userId=${admin.id}`)).json()
+    return now.skills.find(s => s.name === '自检技能') || false
+  }, 8000)
+  expect('★ 点「创建」真的建出来了一条（列表里读得到它）', !!fresh, fresh ? `#${fresh.id}` : '没等到')
+  expect('★ 拥有者与最后修改人都是当前登录的人（请求体里根本没有这两个字段）',
+    fresh && fresh.ownerId === admin.id && fresh.lastModifiedBy === admin.id,
+    `owner=${fresh && fresh.ownerId} lastModifiedBy=${fresh && fresh.lastModifiedBy}`)
+  expect('最后修改时间也写上了（列表按它排）',
+    !!fresh && !!fresh.updatedAt && fresh.updatedAt.length > 10)
+  expect('★ 新建的反馈里写着拥有者是谁（不是一句没有主语的"成功"）',
+    /已建技能/.test(await page.locator('.skill-panel .ant-alert').first().innerText()))
+  // ★ 屏幕上真的多了那一行（只断接口的话，"建出来了但列表没刷新"会全绿）
+  const rowAppeared = await waitFor(async () =>
+    (await page.locator(`.skill-panel tbody tr[data-skill-id="${fresh.id}"]`).count()) === 1, 8000)
+  expect('★ 那一行真的出现在表格里（不是只在库里）', rowAppeared, `#${fresh.id}`)
+
+  const sameName = await page.request.post(`${URL}/api/skills?userId=${admin.id}`, {
+    data: { folder: fresh.folder, name: '自检技能' },
+  })
+  expect('★ 同一个人的同一个文件夹下重名是 409（换个名字，或者去改那一条）',
+    sameName.status() === 409, `HTTP ${sameName.status()}`)
+
+  // ---- ⑤ 改自己的那一条 ----
+  await page.locator('.skill-panel .skill-create').click()   // 先确认空表单建不出来
+  expect('★ 空表单时「创建」是禁用的（名字与文件夹都为空的请求后端会 400）',
+    await page.locator('.ant-modal:visible .ant-btn-primary').isDisabled())
+  await page.locator('.ant-modal:visible .ant-btn-default').click()
+
+  await page.locator(`.skill-panel tbody tr[data-skill-id="${fresh.id}"] .skill-edit`).click()
+  await page.locator('.ant-modal:visible', { hasText: '编辑技能' }).locator('.skill-content-input').fill('第二版正文')
+  await page.locator('.ant-modal:visible', { hasText: '编辑技能' }).locator('.ant-btn-primary').click()
+  const edited = await waitFor(async () => {
+    const now = await (await page.request.get(`${URL}/api/skills?userId=${admin.id}`)).json()
+    const hit = now.skills.find(s => s.id === fresh.id)
+    return hit && hit.content === '第二版正文' ? hit : false
+  }, 8000)
+  expect('★ 改自己的记录成功，正文真的换了', !!edited, edited?.content)
+  expect('改完之后拥有者没有变（一次编辑不该顺手改归属）', edited?.ownerId === admin.id)
+  expect('最后修改人也还是当前登录的人', edited?.lastModifiedBy === admin.id)
+
+  // ---- ⑥ 删自己的那一条：弹窗里要说清删的是哪一条 ----
+  await page.locator(`.skill-panel tbody tr[data-skill-id="${fresh.id}"] .skill-delete`).click()
+  const delDialog = page.locator('.ant-modal:visible', { hasText: '删除技能' })
+  const delText = await delDialog.innerText()
+  expect('★ 删除确认里写着是哪一条（文件夹 + 名字），以及"没有回头路"',
+    delText.includes('自检技能') && delText.includes('D:\\work\\demo') && /没有回头路/.test(delText),
+    delText.replace(/\n/g, ' ').slice(0, 90))
+  await delDialog.locator('.ant-btn-primary').click()
+  const afterDelete = await waitFor(async () => {
+    const now = await (await page.request.get(`${URL}/api/skills?userId=${admin.id}`)).json()
+    return now.total === mineApi.total ? now : false
+  }, 8000)
+  expect('★ 删掉之后那一行真的没了（列表回到建之前那一份）',
+    !!afterDelete && !afterDelete.skills.some(s => s.id === fresh.id))
+
+  // ---- ⑦ 收尾：退出登录 + 复位，别把状态留给 [11] 与下一次 ----
+  // 「退出」在页头上（与 [11] 用的是同一枚按钮）：点它同时验了"这一页会跟着回到全量"
+  await page.locator('.mock-login-exit').click()
+  await waitFor(async () => (await page.locator('.mock-login-entry').count()) === 1, 8000)
+  expect('自检收尾把 skill 假后端复位（不留状态给下一次）',
+    (await page.request.post(`${URL}/api/skills/__reset`)).ok())
+  await navMode('用户管理')
+  await page.waitForTimeout(200)
+  await navMode('skill管理')
+  const outScope = await waitFor(async () =>
+    /未登录：这是全部技能/.test(await page.locator('.skill-panel .skill-scope').innerText()), 8000)
+  expect('★ 退出登录之后这一页回到"全部技能"，写按钮也回到禁用（筛是服务端算的）',
+    outScope && await page.locator('.skill-panel .skill-create').isDisabled())
+
+  await page.screenshot({ path: `${SHOT_DIR}/skill-panel.png` })
+}
+else {
+  // 真后端：只断言这一页渲染得出来 —— 库里没有技能时它是空状态，而不是报错
+  // （这一族端点的写路径会真的往 `db_ai_agent` 里写记录，所以一条都不跑，理由同 [8.6]）
+  await navMode('skill管理')
+  await waitFor(async () => (await page.locator('.skill-panel').count()) > 0, 8000)
+  const panelText = await page.locator('.skill-panel').innerText()
+  expect('真后端的技能页可读（空库时给的是「还没有技能」而不是报错）',
+    /技能（/.test(panelText), panelText.slice(0, 80).replace(/\n/g, ' '))
 }
 
 // ---------- 切回流式：历史不能被清掉 ----------

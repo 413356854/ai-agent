@@ -79,7 +79,9 @@ public class SchemaIndexInitializer implements InitializingBean {
 			// agent_task：看板按列（状态）取全量、列内最近变更在前
 			new Definition("idx_agent_task_status", "agent_task (status, updated_at)"),
 			// agent_task_confirm：任务详情按任务取它的确认项，按步骤排
-			new Definition("idx_agent_task_confirm_task", "agent_task_confirm (task_id, step_index)"));
+			new Definition("idx_agent_task_confirm_task", "agent_task_confirm (task_id, step_index)"),
+			// agent_skill：列表按拥有者取（登录时）并按最近修改排在前
+			new Definition("idx_agent_skill_owner", "agent_skill (owner_id, updated_at)"));
 
 	private final DataSource dataSource;
 

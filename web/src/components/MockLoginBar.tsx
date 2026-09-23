@@ -1,5 +1,5 @@
 import { Button, Flex, Modal, Typography } from 'antd'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { PermissionUserOption } from '../api/permissions'
 import type { UseMockLoginResult } from '../hooks/useMockLogin'
 import { mockLoginLabel } from '../hooks/useMockLogin'
@@ -27,8 +27,26 @@ const { Text } = Typography
  * <h2>为什么退出只是"把记录删掉"</h2>
  * 没有服务端会话可退 —— 退出就是删掉 `localStorage` 里那条记录，
  * 于是刷新之后仍然是未登录（自检钉住了这一条）。
+ *
+ * <h2>为什么还要把"开弹窗"这个动作交出去（`onEntry`）</h2>
+ * skill 管理那一页未登录时写按钮是禁用的，而那句提示里要给一个能直接点的入口。
+ * 入口必须落到**这一个**弹窗上（同一个 `useMockLogin`）——
+ * 面板自己再写一份选人弹窗的话，"页头显示的是张三、业务用的是李四"就有了第二条产生路径。
  */
-export function MockLoginBar({ login }: { login: UseMockLoginResult }) {
+export function MockLoginBar({ login, onEntry }: {
+  login: UseMockLoginResult
+  /**
+   * 把「打开登录弹窗」这个动作交给外面（可选）。
+   *
+   * <p>需要它的是 skill 管理那一页：未登录时它的写按钮是禁用的，而那句提示里要有一个
+   * 能直接点的入口。让面板自己再写一份选人弹窗是不行的 —— 选出来的身份要落到
+   * **同一个** `useMockLogin` 上，两个弹窗各记一份的话，"页头显示的是张三、业务用的是李四"
+   * 这种分裂就有了第二条产生路径。
+   *
+   * <p>回调挂载时给出开弹窗的函数、卸载时给 `null`。
+   */
+  onEntry?: (open: (() => void) | null) => void
+}) {
   const [open, setOpen] = useState(false)
   /** 弹窗里选中的那一条候选（含 id / 显示名 / 是否停用）。 */
   const [picked, setPicked] = useState<PermissionUserOption | null>(null)
@@ -37,6 +55,14 @@ export function MockLoginBar({ login }: { login: UseMockLoginResult }) {
     setOpen(false)
     setPicked(null)
   }
+
+  // 把开弹窗的动作交出去。依赖里带上 onEntry 会每次渲染都重挂一遍，
+  // 所以刻意只在挂载 / 卸载时登记（外面的那个 ref 只需要拿到"最近一次"的这一个函数）
+  useEffect(() => {
+    onEntry?.(() => setOpen(true))
+    return () => onEntry?.(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const confirm = () => {
     if (!picked) return
