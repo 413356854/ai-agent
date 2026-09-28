@@ -125,10 +125,6 @@ export default function App(
   const skills = useSkills(mode === 'skill', mockLogin.user?.id ?? null)
 
   const listRef = useRef<HTMLElement>(null)
-  // 页头那个「模拟登录」弹窗的开关握在 MockLoginBar 自己手里，而 skill 面板上那个
-  // 「去登录」按钮要能把它打开 —— 于是这里只做一次转发（面板不自己去发搜索请求，
-  // 也不复制一份选人弹窗：那种复制出来的第二份选人逻辑迟早与页头那一份不一致）
-  const loginEntryRef = useRef<(() => void) | null>(null)
 
   // 当前视图对应的数据，只用于"滚动到底部"和空状态判断。
   // 诊断/只读面板没有这两件事（面板自己滚、没有空状态），所以这里不参与，免得白白触发一次 effect；
@@ -193,12 +189,8 @@ export default function App(
               </>
             )}
             {/* 模拟登录在**所有十二个视图**上都在（与主题开关同理）：它说的是
-                "现在以谁的身份在用这一页"，后续按人区分的业务认的是它记下的那个 id。
-                技能面板上那个「去登录」按的也是这一个入口（`onEntry` 把开弹窗的动作交出去） */}
-            <MockLoginBar
-              login={mockLogin}
-              onEntry={open => { loginEntryRef.current = open }}
-            />
+                "现在以谁的身份在用这一页"，后续按人区分的业务认的是它记下的那个 id */}
+            <MockLoginBar login={mockLogin} />
             {/* 主题开关在**所有十二个视图**上都在：它换的是整页的底色，
                 属于"看这一页的方式"，不跟着某个视图出现或消失 */}
             <ThemeToggle mode={themeMode} onToggle={onToggleTheme} />
@@ -216,7 +208,6 @@ export default function App(
             skills={skills}
             userId={mockLogin.user?.id ?? null}
             loginName={mockLogin.user ? mockLoginLabel(mockLogin.user) : null}
-            onLoginRequest={() => loginEntryRef.current?.()}
           />
         ) : mode === 'threads' ? (
           // 面板自己带滚动容器：诊断内容比对话长得多，而且没有"新消息贴底"这个语义

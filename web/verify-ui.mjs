@@ -3581,8 +3581,8 @@ if (EXPECT_REFLECTION) {
     `total=${guestApi.total} · ${guestText.split('\n').slice(0, 3).join(' ').slice(0, 90)}`)
   expect('未登录时没有文件夹可选（它是"登录人的角色"给的，没有他就不存在这一份）',
     guestApi.folders.length === 0 && /没有可选的文件夹/.test(guestText))
-  expect('★ 未登录时「新建技能」是禁用的，而且旁边写着为什么',
-    await page.locator('.skill-panel .skill-create').isDisabled() && /还没有登录/.test(guestText))
+  expect('★ 未登录时「新建技能」是禁用的，而且列表里写着为什么（请先登录）',
+    await page.locator('.skill-panel .skill-create').isDisabled() && /请先登录/.test(guestText))
   const guestRows = await page.$$eval('.skill-panel tbody tr', els => els.length)
   expect('未登录也能看见别人的记录（读是公开的，写才要登录）', guestRows === guestApi.total,
     `屏幕上 ${guestRows} 行 / 接口 ${guestApi.total} 条`)
@@ -3601,7 +3601,7 @@ if (EXPECT_REFLECTION) {
     guestWrite.status() === 400 && /模拟登录/.test(guestWriteReason),
     `HTTP ${guestWrite.status()} · ${guestWriteReason.slice(0, 90)}`)
 
-  // ---- ② 登录：走**真实登录弹窗**（页面里那个「去登录」入口），不是往 localStorage 里塞一条记录 ----
+  // ---- ② 登录：走**真实登录弹窗**（页头那个「模拟登录」入口），不是往 localStorage 里塞一条记录 ----
   //
   // ⚠️ 这一条是实测踩出来的：登录态是**内存里的一份状态**（`useState` 初值来自挂载时读一次
   // localStorage），所以"往 localStorage 里写一条记录"**不会**让页面变成登录态 ——
@@ -3623,7 +3623,7 @@ if (EXPECT_REFLECTION) {
     && await otherRowLocator.locator('.skill-delete').isDisabled(),
     `#${otherRow.id} 拥有者 #${otherRow.ownerId}`)
 
-  await page.locator('.skill-panel .skill-login-entry').click()
+  await page.locator('.app-topbar .mock-login-entry').click()
   const loginDialog = page.locator('.ant-modal:visible', { hasText: '模拟登录' })
   await loginDialog.locator('input[role="combobox"], input.ant-select-selection-search-input').first().fill('adm')
   const adminOption = page.locator('.ant-select-dropdown:visible .ant-select-item-option',

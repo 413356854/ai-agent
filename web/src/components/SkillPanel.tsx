@@ -44,14 +44,12 @@ const { Text, Paragraph } = Typography
  * 完整的那一份留在 `title` 上 —— 一张写着长说明的表格会把其它行挤到看不见，
  * 而这一页要看的是"有哪些技能"。
  */
-export function SkillPanel({ skills, userId, loginName, onLoginRequest }: {
+export function SkillPanel({ skills, userId, loginName }: {
   skills: UseSkillsResult
   /** 当前登录那个人的用户 id（`useMockLogin` 记下的那一份）；没登录是 `null`。 */
   userId: number | null
   /** 当前登录那个人的显示名（`mockLoginLabel` 算出来的那一份）；没登录是 `null`。 */
   loginName: string | null
-  /** 「去登录」那一个按钮：登录控件在页头上，这一层只负责告诉它"该开门了"。 */
-  onLoginRequest: () => void
 }) {
   const { snapshot } = skills
   const data = snapshot.status === 'ok' ? snapshot.data : null
@@ -171,20 +169,6 @@ export function SkillPanel({ skills, userId, loginName, onLoginRequest }: {
     <div className="diag-panel skill-panel">
       <SkillFeedback skills={skills} />
 
-      {/* 未登录那一句：它解释的是"为什么按钮点不动"，而按钮上写不下这句话 */}
-      {!loggedIn && (
-        <Alert
-          type="warning"
-          showIcon
-          className="skill-login-notice"
-          title="还没有登录：现在看得到全部技能，但新建 / 修改 / 删除都不可用"
-          description={<Flex gap={8} align="center" wrap>
-            <Text>拥有的判定要看"我是谁"（拥有者 = 当前登录的人）。技能不会因此消失，登录之后就只看自己的那些。</Text>
-            <Button size="small" className="skill-login-entry" onClick={onLoginRequest}>去登录</Button>
-          </Flex>}
-        />
-      )}
-
       <Card
         size="small"
         className="diag-card diag-card-wide"
@@ -206,10 +190,11 @@ export function SkillPanel({ skills, userId, loginName, onLoginRequest }: {
         </Space>}
       >
         {/* 筛没筛、按谁筛，由**后端回显的那一格**说了算（`data.userId`）——
-            这里再推一份"我登录了没有"就是第二份判据 */}
+            这里再推一份"我登录了没有"就是第二份判据。
+            未登录那一句同时是这一页上"为什么那三个写按钮点不动"的唯一解释（按钮上写不下） */}
         <div className="skill-scope">
           {data?.userId == null
-            ? '未登录：这是全部技能（先在上方「模拟登录」里选一个人，就只看自己拥有的那些）。'
+            ? '未登录：这是全部技能，新建 / 修改 / 删除都不可用 —— 请先登录（页头右上角的「模拟登录」）。'
             : `只看 ${loginName ?? data.userName ?? '当前登录人'} 拥有的技能（用户 id ${data.userId}）`
               + ' —— 别人建的不在这一份里，退出登录即可看全部。'}
         </div>

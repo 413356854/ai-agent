@@ -2585,6 +2585,8 @@ body {
       `text-overflow: ellipsis` 兜住过长的路径，完整值在 `title` 上。
    =========================================================================== */
 
+/* 未登录时它写的是"请先登录"：那一句同时是这一页上"为什么三个写按钮点不动"的唯一解释
+   （按钮上写不下这句话），所以它不能只是被省略掉的一行灰字 */
 .skill-scope {
   font-size: 12px;
   color: var(--text-tertiary);
@@ -2599,11 +2601,6 @@ body {
   margin-bottom: 8px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   word-break: break-all;
-}
-
-/* 未登录那一句要占住一行：它是这一页上"为什么按钮点不动"的唯一解释 */
-.skill-login-notice {
-  margin-bottom: 8px;
 }
 
 .skill-folder {
