@@ -1,5 +1,6 @@
 package ai.agent.service.prompt;
 
+import ai.agent.entity.agent.task.TaskReviewPrompt;
 import ai.agent.entity.prompt.PromptVersion;
 import java.util.ArrayList;
 import java.util.List;
@@ -232,6 +233,25 @@ public final class PromptValidator {
 			}
 			if (!content.contains("编造") && !content.contains("查不到")) {
 				missing.add("「不编造」那一条（少了它，查不到时模型会用看起来合理的数字填空）");
+			}
+		}
+		else if (kind == PromptKind.TASK_REVIEW) {
+			// 【这三样是判定这份提示词的承重结构】
+			// ① 输出契约：判定唯一能被解析的形态是一个 JSON 对象。
+			//    `response_format=json_object` 那个协议开关不在这条链路上
+			//    （判定的模型调用走的是 AgentLoop + ModelTurn），所以格式只能靠这句话 + 应用侧解析兜住；
+			// ② 工具边界：少了它，模型会在"没有工作区、写类工具不可用"的前提下反复试工具，
+			//    而那件事只表现为"判定老是不通过"；
+			if (!content.contains("JSON")) {
+				missing.add("输出契约（「只输出一个 JSON 对象」那一句）");
+			}
+			if (!content.contains("工具")) {
+				missing.add("对「工具」的说明（判定要取技能正文、要知道写类工具在这次不可用）");
+			}
+			// ⚠️ schema 占位符不能删：它是模型看到字段定义的唯一途径（见 TaskReviewPrompt）
+			if (!content.contains(TaskReviewPrompt.SCHEMA_PLACEHOLDER)) {
+				missing.add("JSON Schema 占位符 " + TaskReviewPrompt.SCHEMA_PLACEHOLDER
+						+ "（模型看不到字段定义就只能靠猜，而那种失败只表现为「判定老是不通过」）");
 			}
 		}
 		else if (!content.contains("助手") && !content.contains("你是")) {

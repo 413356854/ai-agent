@@ -183,7 +183,7 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 	 * {@link AgentTaskTransitions#openFirstConfirmation}），没有歧义就直接进"已确认需求"。
 	 */
 	private AgentTaskStatus reviewFirst(AgentTask task) {
-		AgentTaskAnalyst.RequirementReview review = analyst.reviewRequirement(task.description(), answered(task.id()));
+		AgentTaskAnalyst.RequirementReview review = analyst.reviewRequirement(task, answered(task.id()));
 		if (review.ambiguous()) {
 			log.info("任务 #{} 的需求描述有歧义：先问用户一轮", task.id());
 			return transitions.openFirstConfirmation(task, question(review, task));
@@ -201,13 +201,13 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 	 */
 	private AgentTaskStatus reviewConfirmed(AgentTask task) {
 		List<AgentTaskConfirm> history = answered(task.id());
-		AgentTaskAnalyst.RequirementReview review = analyst.reviewRequirement(task.description(), history);
+		AgentTaskAnalyst.RequirementReview review = analyst.reviewRequirement(task, history);
 		if (review.ambiguous()) {
 			log.info("任务 #{} 答复之后需求仍有歧义：再问一轮", task.id());
 			return transitions.enterPending(task, AgentTaskStatus.PENDING_REQUIREMENT, ConfirmType.REQUIREMENT,
 					question(review, task));
 		}
-		AgentTaskAnalyst.TaskBreakdown breakdown = analyst.breakdown(task.description(), history);
+		AgentTaskAnalyst.TaskBreakdown breakdown = analyst.breakdown(task, history);
 		List<String> actions = normalizedActions(breakdown);
 		if (actions.size() >= properties.planConfirmThreshold()) {
 			log.info("任务 #{} 拆出 {} 个任务点（≥ 阈值 {}）：计划要人确认", task.id(), actions.size(),
@@ -233,7 +233,7 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 	 * 用当下的描述重算一次比存一份旧的更准。
 	 */
 	private AgentTaskStatus askAuthorization(AgentTask task) {
-		AgentTaskAnalyst.TaskBreakdown breakdown = analyst.breakdown(task.description(), answered(task.id()));
+		AgentTaskAnalyst.TaskBreakdown breakdown = analyst.breakdown(task, answered(task.id()));
 		return judgeAuthorization(task, breakdown);
 	}
 
@@ -272,7 +272,7 @@ public class DefaultAgentTaskExecution implements AgentTaskExecution {
 	 * 下一个周期再判 —— 宁可停着等下一轮，也不按猜出来的清单去动文件。
 	 */
 	private AgentTaskStatus run(AgentTask task) {
-		AgentTaskAnalyst.TaskBreakdown breakdown = analyst.breakdown(task.description(), answered(task.id()));
+		AgentTaskAnalyst.TaskBreakdown breakdown = analyst.breakdown(task, answered(task.id()));
 		return run(task, breakdown);
 	}
 

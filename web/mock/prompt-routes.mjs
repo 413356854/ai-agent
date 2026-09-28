@@ -61,6 +61,33 @@ const CHAT_V1 = `你是「AI Agent 项目」的对话助手。
 - 用中文回答，除非用户用其他语言提问。
 `
 
+/**
+ * 初始的判定提示词（真后端 `PromptKind.TASK_REVIEW`，与 `prompts/task-review.st` 同形但短一些）。
+ *
+ * ⚠️ `{{schema}}` 必须留着：真后端在读取时把它换成 `BeanOutputConverter` 生成的 JSON Schema，
+ * 而 `PromptValidator` 会拦下漏了它的正文 —— 假数据少了它，"提交一份坏提示词"那条分支
+ * 在自检里就断不出来（假数据不校验的话那条路永远走不到）。
+ */
+const REVIEW_V1 = `你是「agent 任务」的需求分析器。你要做的是两件事之一：判断一条派给 Agent 的任务描述够不够清楚，或者把它拆成可以直接执行的小任务点。
+
+## 你可以用的工具
+
+- 系统提示词末尾列着你这一次能用的全部工具与它们的完整说明。
+- 取技能正文用 get_skill_content。最多查两三次就要给结论。
+
+## 你可以用的技能
+
+- 「你当前可以使用的技能」那一节就是这次能用的技能（名字 + 一句说明）。
+
+## 输出要求
+
+- 最后只输出一个 JSON 对象，不要解释、不要用 markdown 代码块包裹。
+- 必须满足下面这份 JSON Schema（字段由它定义，不要增减字段）：
+
+JSON Schema：
+{{schema}}
+`
+
 /** 估算 token：与真后端一样是"字数 / 3"这类粗略口径，够界面显示即可。 */
 function estimateTokens(text) {
   return Math.max(1, Math.round(text.length / 2.2))
@@ -112,11 +139,16 @@ function initialState() {
         '出厂版本（来自 prompts/system-agent.st）—— 这一版由启动时的自动初始化写入',
         'system', null, '2026-09-16T01:00:00Z'),
     ],
+    'task-review': [
+      version('task-review', 1, REVIEW_V1,
+        '出厂版本（来自 prompts/task-review.st）—— 这一版由启动时的自动初始化写入',
+        'system', null, '2026-09-24T01:00:00Z'),
+    ],
   }
 }
 
 let versions = initialState()
-let active = { 'system-agent-tools': 2, 'system-agent': 1 }
+let active = { 'system-agent-tools': 2, 'system-agent': 1, 'task-review': 1 }
 /** 自增计数：新版本号取"当前最大 + 1"，与真后端一致。 */
 let authorCounter = 0
 
@@ -130,6 +162,11 @@ const KIND_META = {
     summary: '对话与结构化输出的系统提示词：角色设定与回答风格',
     classpathLocation: 'prompts/system-agent.st',
     readBy: 'SSE 流式对话与结构化输出（每轮请求读一次）',
+  },
+  'task-review': {
+    summary: 'agent 任务判定的系统提示词：需求歧义判定与任务点拆分的工作方式、工具与技能的使用边界、JSON 输出口径',
+    classpathLocation: 'prompts/task-review.st',
+    readBy: 'agent 任务判定（需求歧义 / 拆任务点，每次判定开始时读一次）',
   },
 }
 
@@ -220,6 +257,14 @@ function validate(kind, content, note, force) {
       if (!text.includes('工具')) missing.push('对「工具」的说明（没有它模型不知道可以调用工具）')
       if (!text.includes('编造') && !text.includes('查不到')) {
         missing.push('「不编造」那一条（少了它，查不到时模型会用看起来合理的数字填空）')
+      }
+    }
+    else if (kind === 'task-review') {
+      // 与真后端 PromptValidator 的 TASK_REVIEW 分支逐条一致
+      if (!text.includes('JSON')) missing.push('输出契约（「只输出一个 JSON 对象」那一句）')
+      if (!text.includes('工具')) missing.push('对「工具」的说明（判定要取技能正文、要知道写类工具在这次不可用）')
+      if (!text.includes('{{schema}}')) {
+        missing.push('JSON Schema 占位符 {{schema}}（模型看不到字段定义就只能靠猜，而那种失败只表现为「判定老是不通过」）')
       }
     }
     else if (!text.includes('你是')) {
@@ -394,7 +439,9 @@ export function handlePromptRoutes(req, res, url, json) {
   // 于是"存一版之后数量 +1"这类断言第二遍必红，而红的原因与功能无关
   if (req.method === 'POST' && pathname === '/api/prompts/__reset') {
     versions = initialState()
-    active = { 'system-agent-tools': 2, 'system-agent': 1 }
+    // ⚠️ 这一行必须与 initialState() 的键逐一对应：漏掉一个 kind 时那一份的 activeVersion
+    // 会变成 null，而"版本表里没有任何一行标着生效中"看起来像提示词没被激活
+    active = { 'system-agent-tools': 2, 'system-agent': 1, 'task-review': 1 }
     authorCounter = 0
     json(res, { ok: true, reset: true, prompts: Object.keys(versions) })
     return true
@@ -407,6 +454,7 @@ export function handlePromptRoutes(req, res, url, json) {
       hotReload: {
         takesEffect: [
           '下一次 Agent 运行（每次运行开始时读一次系统提示词）',
+          '下一次 agent 任务判定（判定走同一条循环，也是每次开始时读一次）',
           '下一轮对话与结构化输出（每轮请求重新注入系统提示词）',
         ],
         doesNotAffect: [
@@ -428,7 +476,7 @@ export function handlePromptRoutes(req, res, url, json) {
   if (req.method === 'GET' && versionsMatch) {
     const kind = versionsMatch[1]
     if (!versions[kind]) {
-      json(res, { error: 'not-found', message: `没有名为「${kind}」的提示词；可用的是 ['system-agent-tools', 'system-agent']` }, 404)
+      json(res, { error: 'not-found', message: `没有名为「${kind}」的提示词；可用的是 ${JSON.stringify(Object.keys(versions))}` }, 404)
       return true
     }
     setTimeout(() => json(res, {

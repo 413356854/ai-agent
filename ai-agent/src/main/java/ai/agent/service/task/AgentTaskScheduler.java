@@ -1,6 +1,7 @@
 package ai.agent.service.task;
 
 import ai.agent.config.AgentTaskProperties;
+import ai.agent.config.TaskReviewLimits;
 import ai.agent.entity.agent.task.AgentTask;
 import ai.agent.entity.agent.task.AgentTaskStatus;
 import jakarta.annotation.PostConstruct;
@@ -68,6 +69,14 @@ public class AgentTaskScheduler implements AgentTaskDispatch {
 	private final AgentTaskProperties properties;
 
 	/**
+	 * 判定的上线参数（只为启动日志那一行）。
+	 *
+	 * <p>判定现在也是一次真正的 Agent 运行（会调工具、会跑好几步），所以"它最多能跑多少"
+	 * 必须能一眼看到 —— 否则"一条判定失败"与"一条判定被上限拦下"在日志里长得一样。
+	 */
+	private final TaskReviewLimits reviewLimits;
+
+	/**
 	 * 跑任务用的执行器（容器里那个虚拟线程执行器）。
 	 *
 	 * <p>用它而不是自己 new 一个线程池：执行里包含<b>阻塞</b>的模型调用与工具调用，
@@ -87,9 +96,10 @@ public class AgentTaskScheduler implements AgentTaskDispatch {
 	private final AtomicBoolean scheduled = new AtomicBoolean(false);
 
 	public AgentTaskScheduler(AgentTaskExecution execution, AgentTaskProperties properties,
-			@Qualifier("virtualThreadExecutor") ExecutorService worker) {
+			TaskReviewLimits reviewLimits, @Qualifier("virtualThreadExecutor") ExecutorService worker) {
 		this.execution = execution;
 		this.properties = properties;
+		this.reviewLimits = reviewLimits;
 		this.worker = worker;
 	}
 
@@ -101,6 +111,9 @@ public class AgentTaskScheduler implements AgentTaskDispatch {
 				+ "任务点 ≥ {} 个要人确认计划，执行权限档位 {}，本应用在 Agent 应用注册表里的 id {}",
 				properties.enabled(), properties.fixedDelay(), properties.maxTasksPerRound(),
 				properties.planConfirmThreshold(), properties.level().describe(), properties.agentId());
+		// 判定那一半的参数单独一行：它与执行不是同一套（判定只查不改、上限与循环同源），
+		// 而"这一格卡住了是模型不听话还是撞上限"只能靠它所带的数字回答
+		reviewLimits.report();
 	}
 
 	/**

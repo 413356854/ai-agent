@@ -138,6 +138,36 @@ public class AgentLoop {
 	private final SkillCatalog skills;
 
 	/**
+	 * <b>这一次运行读哪一份系统提示词</b>。
+	 *
+	 * <h2>为什么它是一个字段，而不是"循环里写死 AGENT_LOOP"</h2>
+	 * 判定（agent 任务的需求歧义判定与任务点拆分）与执行同源 —— 走同一个循环、同一套工具与技能装配。
+	 * 两者的差别之一正是系统提示词：执行那一份写的是"回答用户问题的技术助手，不要输出 JSON"，
+	 * 而判定要求"只输出一个 JSON 对象"，两句正好相反。所以"读哪一份"必须由调用方在开跑之前定下来，
+	 * 与 {@link #permission} / {@link #skills} 完全同一类事实。
+	 *
+	 * <p>容器里那一个固定是 {@link PromptKind#AGENT_LOOP}（它由公开构造器装入），
+	 * 判定那一条由 {@link #withPromptKind} 派生。
+	 */
+	private final PromptKind promptKind;
+
+	/**
+	 * <b>这一次运行用的系统提示词正文</b>（已经拼好的那一份）；{@code null} = 按
+	 * {@link #promptKind} 去提示词版本库读当前生效那一版。
+	 *
+	 * <h2>为什么需要"给正文"这条入口，而不总是给种类</h2>
+	 * 因为有些提示词的正文里有<b>运行期才知道的占位内容</b>：
+	 * agent 任务判定那一份里有 {@code {{schema}}}（JSON Schema 由 {@code BeanOutputConverter}
+	 * 从 record 生成），而 {@code PromptService} 只回答"当前生效的正文是什么" ——
+	 * 它不知道占位符这回事。替换只做一次、做在调用点上，于是版本库里存的仍然是
+	 * 一份人能读、能改的模板，而模型看到的是填好的那一份。
+	 *
+	 * <p>指纹与灰度仍然按 {@link #promptKind} 算（那一版正文的内容哈希因此覆盖不到替换结果）——
+	 * 这一点写在 {@link #loadSystemPrompt} 的注释里。
+	 */
+	private final String systemPrompt;
+
+	/**
 	 * 容器装配用的那一个（<b>标了 `@Autowired` 是必需的，不是风格</b>）。
 	 *
 	 * <p>类里有两个构造器，而 Spring 只在"只有一个候选"时才自动选它。有了第二个之后
@@ -150,7 +180,7 @@ public class AgentLoop {
 	@org.springframework.beans.factory.annotation.Autowired
 	public AgentLoop(ToolRegistry registry, ToolCallExecutor executor, ModelTurn modelTurn,
 			AgentLoopProperties properties, PromptService prompts, CanaryService canary) {
-		this(registry, executor, modelTurn, properties, prompts, canary, null, null);
+		this(registry, executor, modelTurn, properties, prompts, canary, null, null, PromptKind.AGENT_LOOP, null);
 	}
 
 	/**
@@ -164,14 +194,15 @@ public class AgentLoop {
 	 * `required a bean of type 'RunPermission' that could not be found`，
 	 * 指向的是"少一个 bean"，而真正的原因是"注解标错了构造器"。
 	 *
-	 * <p>权限与技能都由 {@code ResumableAgentService} 每次运行用 {@link #withPermission} /
-	 * {@link #withSkills} 派生实例带进来（它本来就为换模型这么做过），
-	 * 所以容器里那个循环的这两个字段永远是 {@code null} —— 语义是"没有上下文"，
-	 * 判定侧按最严的一档处理、提示词里不加技能那一节。
+	 * <p>权限、技能与"读哪一份系统提示词"都由 {@code ResumableAgentService} 每次运行用
+	 * {@link #withPermission} / {@link #withSkills} / {@link #withPromptKind} /
+	 * {@link #withSystemPrompt} 派生实例带进来（它本来就为换模型这么做过），
+	 * 所以容器里那个循环的这几个字段初始是 {@code null} / {@link PromptKind#AGENT_LOOP} ——
+	 * 语义是"没有上下文"：判定侧按最严的一档处理、提示词里不加技能那一节、读循环自己那一份提示词。
 	 */
 	private AgentLoop(ToolRegistry registry, ToolCallExecutor executor, ModelTurn modelTurn,
 			AgentLoopProperties properties, PromptService prompts, CanaryService canary, RunPermission permission,
-			SkillCatalog skills) {
+			SkillCatalog skills, PromptKind promptKind, String systemPrompt) {
 		this.registry = registry;
 		this.executor = executor;
 		this.modelTurn = modelTurn;
@@ -180,6 +211,8 @@ public class AgentLoop {
 		this.canary = canary;
 		this.permission = permission;
 		this.skills = skills;
+		this.promptKind = promptKind == null ? PromptKind.AGENT_LOOP : promptKind;
+		this.systemPrompt = systemPrompt == null || systemPrompt.isBlank() ? null : systemPrompt;
 	}
 
 	/**
@@ -291,14 +324,14 @@ public class AgentLoop {
 			// 顺序不能反：如果先读 stable 那一版的正文、再决定"其实该走候选版"，
 			// 那么正文与指纹就会来自两个不同的版本 —— 而指纹是要落库的，
 			// 于是库里会出现一个"对不上任何版本"的指纹，且**只在读 trace 时才发现**。
-			CanaryDecision decision = canary.decide(PromptKind.AGENT_LOOP, runId);
+			CanaryDecision decision = canary.decide(promptKind, runId);
 			canaryVariant = decision.variant();
 			promptFingerprint = decision.fingerprint();
 			messages.add(new SystemMessage(loadSystemPrompt(decision)));
 			messages.add(new UserMessage(question));
 			if (!canaryVariant.isEmpty()) {
 				log.info("灰度分流 runId={} → {}（kind={}）", runId, decision.describe(),
-						PromptKind.AGENT_LOOP.defaultValue());
+						promptKind.defaultValue());
 			}
 		}
 		else {
@@ -630,8 +663,19 @@ public class AgentLoop {
 	 */
 	private String loadSystemPrompt(CanaryDecision decision) {
 		// 兜底链（库 → classpath → 抛异常）在 PromptService 里，这里不重复实现 ——
-		// 两处兜底就意味着两处会漂移
-		String base = decision.candidate() ? candidateContent(decision) : prompts.currentContent(PromptKind.AGENT_LOOP);
+		// 两处兜底就意味着两处会漂移。
+		//
+		// 【正文被调用方指定时，不读版本库】判定那一份正文里的 {{schema}} 是运行期才知道的，
+		// 版本库里存的是模板、不是填好的那一份（见 withSystemPrompt 的注释）。
+		// 指纹与灰度仍按 promptKind 算：那一版正文的内容哈希覆盖不到这次替换 ——
+		// 与技能目录同一条已知边界（同一份提示词、两次运行的动态内容可以不同）。
+		String base;
+		if (systemPrompt != null) {
+			base = systemPrompt;
+		}
+		else {
+			base = decision.candidate() ? candidateContent(decision) : prompts.currentContent(promptKind);
+		}
 		String catalog = registry.renderCatalog();
 		if (!catalog.isBlank()) {
 			base = base + "\n\n## 你当前可以使用的工具\n\n" + catalog;
@@ -668,12 +712,12 @@ public class AgentLoop {
 	 * </ul>
 	 */
 	private String candidateContent(CanaryDecision decision) {
-		return canary.candidateContent(PromptKind.AGENT_LOOP, decision.version())
+		return canary.candidateContent(promptKind, decision.version())
 				.orElseGet(() -> {
 					log.warn("灰度候选版 v{} 读不到正文 —— 这一次运行用稳定版正文兜底"
 							+ "（trace 里的指纹仍是候选版：分流判定已经发生了，这一格如实记录那次的不一致）",
 							decision.version());
-					return prompts.currentContent(PromptKind.AGENT_LOOP);
+					return prompts.currentContent(promptKind);
 				});
 	}
 
@@ -695,7 +739,8 @@ public class AgentLoop {
 	 * （这个坑阶段一的钉住实验踩过：一个"只在第一次算"的字段在真并发下会互相干扰）。
 	 */
 	public AgentLoop withModelTurn(ModelTurn otherModel) {
-		return new AgentLoop(registry, executor, otherModel, properties, prompts, canary, permission, skills);
+		return new AgentLoop(registry, executor, otherModel, properties, prompts, canary, permission, skills,
+				promptKind, systemPrompt);
 	}
 
 	/**
@@ -706,7 +751,8 @@ public class AgentLoop {
 	 * 在恢复之后拿到完全权限，而那种放大在页面上完全看不出来。
 	 */
 	public AgentLoop withPermission(RunPermission other) {
-		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, other, skills);
+		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, other, skills, promptKind,
+				systemPrompt);
 	}
 
 	/**
@@ -720,7 +766,38 @@ public class AgentLoop {
 	 * {@code messages.isEmpty()} 那一个分支 —— 它只有新起的运行才会注入系统消息）。
 	 */
 	public AgentLoop withSkills(SkillCatalog other) {
-		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, permission, other);
+		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, permission, other, promptKind,
+				systemPrompt);
+	}
+
+	/**
+	 * 换<b>这一次运行读哪一份系统提示词</b>，其余装配照旧 —— 返回一个<b>新实例</b>，不改动自己。
+	 *
+	 * <p>与 {@link #withPermission} / {@link #withSkills} 同一条做法，理由也一样：
+	 * 它是"这一次运行怎么跑"的一个前提，由服务层在开跑之前定好。
+	 * 容器里那一个循环永远是 {@link PromptKind#AGENT_LOOP}，所以这个方法只被
+	 * agent 任务判定那一侧调用（{@code TaskReviewRunner} → {@code ResumableAgentService}）。
+	 *
+	 * <p>⚠️ 它同时决定灰度分流用哪一份的配置（{@code canary.decide(promptKind, runId)}），
+	 * 而 {@code CanaryService.CANARY_KIND} 与界面上那个下拉框仍然只认 {@code AGENT_LOOP} ——
+	 * 给判定开灰度现在只能走接口（{@code POST /api/canary/start} 传 {@code kind=task-review}）。
+	 */
+	public AgentLoop withPromptKind(PromptKind other) {
+		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, permission, skills, other,
+				systemPrompt);
+	}
+
+	/**
+	 * 换<b>这一次运行用的系统提示词正文</b>（已经拼好的那一份），其余装配照旧 —— 返回一个新实例。
+	 *
+	 * <p>它与 {@link #withPromptKind} 是两件事，两个都要有：
+	 * 种类决定"读哪一份模板、指纹与灰度按哪一份算"（版本库里存的是模板），
+	 * 正文决定"模型实际看到什么"（模板里的占位符已经被替换掉）。
+	 * 判定那条链路上两者一起传：{@code TASK_REVIEW} + 填好 schema 的正文。
+	 */
+	public AgentLoop withSystemPrompt(String other) {
+		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, permission, skills, promptKind,
+				other);
 	}
 
 }

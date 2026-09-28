@@ -49,7 +49,20 @@ public enum PromptKind {
 	 * （{@code ChatServiceImpl} / {@code StructuredChatServiceImpl} 的 {@code .system(...)}）。
 	 */
 	CHAT_SYSTEM("system-agent", "prompts/system-agent.st",
-			"对话与结构化输出的系统提示词：角色设定与回答风格");
+			"对话与结构化输出的系统提示词：角色设定与回答风格"),
+
+	/**
+	 * agent 任务判定（需求歧义判定 / 任务点拆分）的系统提示词。
+	 *
+	 * <p>判定与执行同源（走同一个 {@code AgentLoop}），所以这一份的读法与
+	 * {@link #AGENT_LOOP} 完全一样：<b>每次判定开始时读一次</b>，正文与工具目录、技能目录
+	 * 一起拼成那次运行的系统消息。热更新的粒度因此是「下一次判定」。
+	 *
+	 * <p>它不能复用 {@link #AGENT_LOOP}：那一份写的角色是"回答用户问题的技术助手"，
+	 * 而且明确要求"不输出 JSON、不暴露字段名" —— 与判定"只输出一个 JSON 对象"的契约正好相反。
+	 */
+	TASK_REVIEW("task-review", "prompts/task-review.st",
+			"agent 任务判定的系统提示词：需求歧义判定与任务点拆分的工作方式、工具与技能的使用边界、JSON 输出口径");
 
 	private final String defaultValue;
 

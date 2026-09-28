@@ -13,6 +13,7 @@ import ai.agent.entity.tool.ApprovalGrant;
 import ai.agent.entity.tool.RunPermission;
 import ai.agent.entity.tool.ToolInvocation;
 import ai.agent.entity.agent.AgentPermissionLevel;
+import ai.agent.service.prompt.PromptKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -248,15 +249,44 @@ public class ResumableAgentService {
 	 */
 	public AgentRun runWithSkills(String runId, String question, ModelTurn modelTurn, String intent,
 			String conversationId, String tenantId, RunPermission permission, SkillCatalog skills) {
+		return runWithSkills(runId, question, modelTurn, intent, conversationId, tenantId, permission, skills, null, null);
+	}
+
+	/**
+	 * 完整入口，再多<b>这一次运行读哪一份系统提示词</b>（agent 任务判定那一侧用）。
+	 *
+	 * <h2>为什么它是另一个具名入口</h2>
+	 * 与上面那条理由一字不差：这个类上的重载已经够多，而"多一个位置参数"的坏法是
+	 * 某条链路把会话 id 传到了种类的位置上（两个都是 String 时编译器拦不住）。
+	 * 种类用枚举而不是字符串：拼错的枚举是编译错误，拼错的字符串只是"读不到那一份"。
+	 *
+	 * <h2>"哪一份提示词"为什么与权限、技能是同一类东西</h2>
+	 * 它们都是<b>调用方在开跑之前给出的事实</b>，运行自己推不出来：
+	 * 执行那条链路用 {@code AGENT_LOOP}（回答用户问题的技术助手），
+	 * 判定那条链路用 {@code TASK_REVIEW}（只输出 JSON 的分析器）—— 两者不能互换。
+	 *
+	 * @param promptKind 这一次运行的系统提示词种类；{@code null} = 不指定，循环用它自带的那一份
+	 *            （容器里是 {@code AGENT_LOOP}）。它同时决定灰度按哪一份的配置分流
+	 * @param systemPrompt <b>已经拼好的系统提示词正文</b>；{@code null} / 空白 = 按
+	 *            {@code promptKind} 去提示词版本库读当前生效那一版。
+	 *            <p>为什么要允许直接给正文：判定那一份正文里有 {@code {{schema}}} 占位符
+	 *            （由 {@code BeanOutputConverter} 在运行期生成），而 {@code PromptService}
+	 *            只回答"当前生效的正文是什么"，不知道占位符这回事。
+	 *            替换只做一次、做在调用点上，于是版本库里存的仍是可以被人读、被人改的模板
+	 */
+	public AgentRun runWithSkills(String runId, String question, ModelTurn modelTurn, String intent,
+			String conversationId, String tenantId, RunPermission permission, SkillCatalog skills,
+			PromptKind promptKind, String systemPrompt) {
 		RunPermission effective = permission == null ? RunPermission.none() : permission;
 		store.start(new AgentRunStore.Start(runId, question, properties.node(), intent, conversationId, tenantId)
 				.withPermissions(effective));
 		// 把"这次实际用哪个模型"传给监听器 —— 它是成本归因的一部分（见 PersistingListener.override）
 		PersistingListener listener = new PersistingListener(runId, modelTurn);
 		try {
-			// 传了模型 / 权限 / 技能就临时换一个 loop：AgentLoop 是无状态的（所有可变状态都在方法局部变量里），
-			// 所以这里 new 一个是安全的 —— 不是"共享可变状态"那种危险做法
-			AgentLoop effectiveLoop = effectiveLoop(modelTurn, effective, skills);
+			// 传了模型 / 权限 / 技能 / 提示词种类或正文就临时换一个 loop：AgentLoop 是无状态的
+			// （所有可变状态都在方法局部变量里），所以这里 new 一个是安全的 ——
+			// 不是"共享可变状态"那种危险做法
+			AgentLoop effectiveLoop = effectiveLoop(modelTurn, effective, skills, promptKind, systemPrompt);
 			AgentRun run = effectiveLoop.run(runId, question, listener);
 			store.persistCompletedRun(runId, run);
 			return run;
@@ -272,19 +302,31 @@ public class ResumableAgentService {
 	}
 
 	/**
-	 * 这一次用哪个循环实例：模型、权限与技能各可能被这一次运行覆盖。
+	 * 这一次用哪个循环实例：模型、权限、技能与提示词各可能被这一次运行覆盖。
 	 *
-	 * <p>做成一个方法而不是在三处各写一遍 {@code modelTurn == null ? loop : loop.withModelTurn(...)}：
+	 * <p>做成一个方法而不是在四处各写一遍 {@code modelTurn == null ? loop : loop.withModelTurn(...)}：
 	 * 漏掉权限那一半的表现是"完全权限的运行仍然弹审批"，
-	 * 漏掉技能那一半的表现是"执行者指定的技能没有出现在提示词里" ——
-	 * 两者看起来都像"参数没传到"，排查方向会跑到控制器上去。
+	 * 漏掉技能那一半的表现是"执行者指定的技能没有出现在提示词里"，
+	 * 漏掉提示词那一半的表现是"判定读了执行那份系统提示词"（它写的是技术助手、
+	 * 而且明确要求不要输出 JSON）—— 三者看起来都像"参数没传到"，
+	 * 排查方向会跑到控制器上去。
+	 *
+	 * @param systemPrompt 已经拼好的系统提示词正文；空白表示按 {@code promptKind} 去版本库读
 	 */
-	private AgentLoop effectiveLoop(ModelTurn modelTurn, RunPermission permission, SkillCatalog skills) {
+	private AgentLoop effectiveLoop(ModelTurn modelTurn, RunPermission permission, SkillCatalog skills,
+			PromptKind promptKind, String systemPrompt) {
 		AgentLoop effective = modelTurn == null ? loop : loop.withModelTurn(modelTurn);
 		if (permission != null) {
 			effective = effective.withPermission(permission);
 		}
-		return skills == null ? effective : effective.withSkills(skills);
+		if (skills != null) {
+			effective = effective.withSkills(skills);
+		}
+		if (promptKind != null) {
+			effective = effective.withPromptKind(promptKind);
+		}
+		// 正文覆盖排在种类之后：给了正文就以正文为准（种类此时只剩"指纹与灰度按哪一份算"这一层含义）
+		return systemPrompt == null || systemPrompt.isBlank() ? effective : effective.withSystemPrompt(systemPrompt);
 	}
 
 	/**
