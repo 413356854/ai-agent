@@ -50,12 +50,16 @@ import java.time.Instant;
  *        由平台在第一次接手这条任务时写入（见 {@code AgentTaskProperties#agentId}）
  * @param result 执行结果；还没执行完时为空
  * @param cancelReason 取消原因；未取消时为空（取消时必填，判据在服务层的唯一写入口）
+ * @param incompleteReason 未完成原因；状态不是 {@link AgentTaskStatus#NOT_COMPLETED} 时为空。
+ *        与取消原因不同，它<b>选填</b>：验收那一刻"没做成"这件事本身就是要记的东西，
+ *        而原因可能一时说不清 —— 逼着人写一句他写不出来的话，结果是那一格被填成"没做完"
  * @param createdAt 落库时间（未落库时为 {@code null}）
  * @param updatedAt 最近一次变更时间（未落库时为 {@code null}）
  */
 public record AgentTask(Long id, Long publisherId, String publisher, Long assigneeId, String assignee,
 		String description, AgentTaskStatus status, Long currentExecutorId, String currentExecutor, int currentStep,
-		String agentId, String result, String cancelReason, Instant createdAt, Instant updatedAt) {
+		String agentId, String result, String cancelReason, String incompleteReason, Instant createdAt,
+		Instant updatedAt) {
 
 	/** 与 DDL 的 {@code agent_id VARCHAR(128)} 对齐。 */
 	public static final int MAX_AGENT_ID_CHARS = 128;
@@ -76,6 +80,14 @@ public record AgentTask(Long id, Long publisherId, String publisher, Long assign
 	/** 与 DDL 的 {@code cancel_reason VARCHAR(512)} 对齐。 */
 	public static final int MAX_REASON_CHARS = 512;
 
+	/**
+	 * 未完成原因的上限（与 {@link #MAX_REASON_CHARS} 同源，DDL 里也是 {@code VARCHAR(512)}）。
+	 *
+	 * <p>超限<b>拒绝而不是截断</b>：一段被砍掉尾巴的说明读起来完全正常，
+	 * 而它说的可能正是"差在哪"那一句。
+	 */
+	public static final int MAX_INCOMPLETE_REASON_CHARS = 512;
+
 	public AgentTask {
 		publisherId = requiredId(publisherId, "发布人");
 		publisher = blankToNull(publisher);
@@ -90,6 +102,8 @@ public record AgentTask(Long id, Long publisherId, String publisher, Long assign
 		agentId = blankToNull(agentId, "Agent 应用 id", MAX_AGENT_ID_CHARS);
 		result = blankToNull(result, "执行结果", MAX_DESCRIPTION_CHARS);
 		cancelReason = blankToNull(cancelReason, "取消原因", MAX_REASON_CHARS);
+		// 空 = 没写原因（选填），不报错；写了的就按上限拦（与取消原因同一条"拒绝而不截断"）
+		incompleteReason = blankToNull(incompleteReason, "未完成原因", MAX_INCOMPLETE_REASON_CHARS);
 	}
 
 	/**
@@ -109,7 +123,7 @@ public record AgentTask(Long id, Long publisherId, String publisher, Long assign
 			String description) {
 		return new AgentTask(null, publisherId, publisher, requiredId(assigneeId, "任务人"),
 				required(assignee, "任务人姓名", MAX_NAME_CHARS), description, AgentTaskStatus.NEW, assigneeId,
-				assignee, 1, null, null, null, null, null);
+				assignee, 1, null, null, null, null, null, null);
 	}
 
 	/**

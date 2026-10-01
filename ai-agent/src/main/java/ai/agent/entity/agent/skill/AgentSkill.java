@@ -46,6 +46,87 @@ public record AgentSkill(Long id, String folder, String name, String description
 	/** 与 DDL 的 {@code description VARCHAR(512)} 对齐。 */
 	public static final int MAX_DESCRIPTION_CHARS = 512;
 
+	// ==================================================================
+	//  大模型自补充规则：那一段的边界标记
+	// ==================================================================
+	//
+	// 【为什么正文里要有标记，而不是"往里追加一段"】
+	// 技能正文是**用户的内容**，而"验收通过之后由模型汇出几条规则"是系统写的。
+	// 两者混在一段文本里，如果不划边界，下一次补充就只能"往末尾接"——
+	// 接几次之后没人分得清哪一段是用户写的、哪一段是系统补的，
+	// 而"把用户的内容改掉了"这件事在界面上看不出来（那段文字看起来只是变长了）。
+	// 所以系统只在自己那一段里写，边界由下面两个标记回答。
+
+	/**
+	 * 自补充段的开始标记。
+	 *
+	 * <p>写法是 Markdown 的三级标题：技能正文本身大多是 Markdown，
+	 * 用标题能让人在编辑器里一眼看到这一段的边界（用 HTML 注释也能做到，但那样折叠时看不见）。
+	 */
+	public static final String SUPPLEMENT_START = "### 大模型自补充规则 ###";
+
+	/** 自补充段的结束标记（{@link #SUPPLEMENT_START} 的那一半）。 */
+	public static final String SUPPLEMENT_END = "###end###";
+
+	/**
+	 * 建一条技能时放在两个标记之间的占位行。
+	 *
+	 * <p>它的作用是让"标记之间"从一建出来就是一段可识别的内容：
+	 * 第一次补充时<b>替换</b>它、之后的补充在它原来那个位置<b>插入</b> ——
+	 * 少一个占位行的话，"标记之间现在是空的"与"标记被删掉了"在字符串上长得一样。
+	 */
+	public static final String SUPPLEMENT_PLACEHOLDER = "（暂无：每完成一条 agent 任务，系统会在这里追加一条经验规则）";
+
+	/**
+	 * 每一条补充内容的开头那一行里的任务标识 —— 幂等判据。
+	 *
+	 * <p>"这条任务的经验已经补过了"必须能从正文里读出来：不看它的后果是
+	 * 同一条任务被补两次（界面上重复的两条规则看起来像模型啰嗦，而不像重复写入）。
+	 */
+	public static final String RULE_BLOCK_TASK_PREFIX = "<!-- 任务 #";
+
+	/** {@link #RULE_BLOCK_TASK_PREFIX} 的收尾（与 {@code "#id"} 拼成一条完整注释）。 */
+	public static final String RULE_BLOCK_TASK_SUFFIX = " -->";
+
+	/** 一条新建的自补充段落：只有两个标记与占位行，没有任何规则。 */
+	public static String initialSupplementContent() {
+		return SUPPLEMENT_START + "\n" + SUPPLEMENT_PLACEHOLDER + "\n" + SUPPLEMENT_END;
+	}
+
+	/**
+	 * 正文里自补充那一段的原文（<b>含</b>两个标记）；找不到成对的标记时返回 {@code null}。
+	 *
+	 * <p>它是"系统只动自己那一段"的唯一判据 —— 调用方拿它去比对/拼接，
+	 * 而<b>不要</b>各自写一遍 {@code indexOf}：两处判据不一致时的形态是
+	 * "这次改动落到了标记之外"，而那时用户的正文已经被改掉了（看不出、也回不来）。
+	 *
+	 * <p>成对要求是刻意的：只有开始标记（或只有结束标记）时返回 {@code null}，
+	 * 调用方据此走"重新贴一个完整段落"那条路，而不是把正文从半截标记处切开。
+	 */
+	public String supplementSegment() {
+		if (content == null) {
+			return null;
+		}
+		int start = content.indexOf(SUPPLEMENT_START);
+		if (start < 0) {
+			return null;
+		}
+		int end = content.indexOf(SUPPLEMENT_END, start + SUPPLEMENT_START.length());
+		if (end < 0) {
+			return null;
+		}
+		return content.substring(start, end + SUPPLEMENT_END.length());
+	}
+
+	/** 这条技能的自补充段里有没有 {@code 任务 #id} 那条记录（幂等判据，见 {@link #RULE_BLOCK_TASK_PREFIX}）。 */
+	public boolean hasSupplementFor(Long taskId) {
+		if (taskId == null) {
+			return false;
+		}
+		String segment = supplementSegment();
+		return segment != null && segment.contains(RULE_BLOCK_TASK_PREFIX + taskId + RULE_BLOCK_TASK_SUFFIX);
+	}
+
 	public AgentSkill {
 		if (ownerId == null) {
 			throw new IllegalArgumentException("拥有者不能为空 —— 一条没有主人的技能，它的列表与改删判权都没有主语");

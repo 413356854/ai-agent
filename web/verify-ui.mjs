@@ -3056,6 +3056,18 @@ const closeTaskModal = async () => {
     `还开着 ${await page.locator('.ant-modal:visible').count()} 个`)
 }
 
+/**
+ * 技能正文里**自补充段之前**那一份（用户自己写的内容）。
+ *
+ * <p>它是"系统只动自己那一段"那条断言的读数：断言"新正文以旧正文开头"在
+ * 技能一开始就带着占位段时是不成立的（用户的内容在标记**之前**，不在它之后）——
+ * 第一版就是这么红的。所以两边都取"标记之前那一份"来比。
+ */
+const beforeSegmentOf = content => {
+  const at = String(content ?? '').indexOf('### 大模型自补充规则 ###')
+  return at < 0 ? String(content ?? '') : String(content).slice(0, at)
+}
+
 if (EXPECT_REFLECTION) {
   // 这一节的基准：全量（未登录）下每一列各有几张卡片
   const initialCounts = await taskColumnCounts()
@@ -3070,6 +3082,12 @@ if (EXPECT_REFLECTION) {
   expect('卡片写出「发布人 → 任务人」与当前执行人',
     /admin → zhou/.test(boardText) && /当前执行人/.test(boardText))
   expect('待验收那条带着执行结果', /已补上说明段落/.test(boardText))
+  // ★ 验收那一格的两个答案都能被看见：一张「任务未完成」的卡片带着原因落在「已完成」列里 ——
+  // 少了这一条，一个"只加了一个状态、卡片上什么都不写"的实现照样全绿（而那一列里
+  // 三件事的结局各不相同，读者只能靠标签与那两行说明去分）
+  expect('★ 「任务未完成」那张卡片带着未完成原因（与"已完成"「已取消」同列，只靠标签分不开）',
+    /任务未完成/.test(boardText) && /未完成原因：/.test(boardText)
+    && /产出里少了第三页/.test(boardText))
 
   // ---- 三个"人"各给两份：库里那份是用户 id，显示那份是关联查询出来的姓名 ----
   //
@@ -3192,8 +3210,12 @@ if (EXPECT_REFLECTION) {
   const completedText = await page.locator('.task-column[data-column="completed"]').innerText()
   expect('★ 已取消那条落在「已完成」列里，并带着取消原因',
     /需求方撤回了这条调研/.test(completedText) && /已取消/.test(completedText)
-    // 同列另一条（验收通过的）也在：一列收两个状态，只放一条就看不出这件事
-    && /已改成 CI_MOCK_PORT/.test(completedText), initialCounts.completed + ' 条')
+    // 同列另外两条（验收通过的 / 任务未完成的）也在：一列收三个状态，只放一条就看不出这件事
+    && /已改成 CI_MOCK_PORT/.test(completedText) && /任务未完成/.test(completedText),
+    initialCounts.completed + ' 条')
+  expect('★ 「已完成」列收三个状态，列头把它们都写出来',
+    ['已完成', '任务未完成', '已取消'].every(label => completedText.includes(label)),
+    initialCounts.completed + ' 条')
 
   /**
    * 显式推一轮 agent 那几格（真后端由定时任务驱动，见 web/mock/task-routes.mjs 文件头）。
@@ -3288,8 +3310,12 @@ if (EXPECT_REFLECTION) {
   //
   // ⚠️ 推之前先**关掉详情**：`__run-agent` 之后脚本要点看板上的「刷新」，
   // 而 `.ant-modal-wrap` 铺满视口时那次点击会一直重试到超时（见 runAgent 里那段说明）
+  // ⚠️ `steps=1` 不能省：这一条要断的是"再推一格之后的落点"。不给它的话，
+  // 假后端会一路把这条任务推到推不动（`AGENT_STATUSES` 里含「执行中」——
+  // 那一格正是它下一步要跑的），于是断言看到的是「待验收」，
+  // 而失败信息看起来像"授权判断没通过"。
   await closeTaskModal()
-  await runAgent(`?id=${openedId}`)
+  await runAgent(`?id=${openedId}&steps=1`)
   const judgedRun = await (await page.request.get(`${URL}/api/agent-tasks/${openedId}`)).json()
   expect('★ agent 再推一格：授权判断通过就直接进「执行中」，不生成授权确认项',
     judgedRun.task.status === 'EXECUTING'
@@ -3532,6 +3558,172 @@ if (EXPECT_REFLECTION) {
     afterBlank.task.status === 'INSUFFICIENT_PERMISSION'
     && afterBlank.task.description === judged.task.description,
     `${afterBlank.task.status} / 「${afterBlank.task.description}」`)
+
+  // ★ 验收那一格：**两个选项**（任务已完成 / 任务未完成）+ 一个选填的未完成原因。
+  //
+  // 这一节验的是三件事，每一件都对应一种"看起来正常、其实没做"的坏法：
+  //   ① 两个按钮都在，而**没有**一个"一步完成"的按钮 —— 只画一个「验收通过」的实现，
+  //      会让"没做成"这件事无处可记（用户只能去取消，而取消与没做成是两回事）；
+  //   ② 「任务未完成」不需要写原因（选填）：原因那一格空着时按钮**可点**；
+  //   ③ 两个落点各自把状态 / 原因 / 执行人写对 —— 按接口读回来核对，而不是只看屏幕。
+  //
+  // id 9 是一条「待验收」的卡片（任务人是 zhou），而它的任务人在假数据里只有**一条**技能：
+  // 后面「任务已完成」那一条据此断言"规则真的写进了那一条技能里"。
+  const acceptDetailId = 9
+  await page.locator(`.task-column[data-column="acceptance"] .task-card[data-task-id="${acceptDetailId}"]`).click()
+  const acceptanceDetail = page.locator('.ant-modal:visible', { hasText: '确认项' })
+  await waitFor(async () => /两个选项/.test(await acceptanceDetail.innerText()), 8000)
+  const acceptanceText = await acceptanceDetail.innerText()
+  expect('★ 「待验收」那两个选项都在：左「任务已完成」、右「任务未完成」',
+    (await acceptanceDetail.locator('button.task-accept').count()) === 1
+    && (await acceptanceDetail.locator('button.task-reject').count()) === 1
+    && /任务已完成/.test(acceptanceText) && /任务未完成/.test(acceptanceText))
+  expect('★ 没有「验收通过」那种一步完成的按钮（没做成这件事必须也有地方可记）',
+    (await acceptanceDetail.getByRole('button', { name: '验收通过', exact: true }).count()) === 0)
+  expect('★ 原因那一格是选填：空着时「任务未完成」仍然点得动，而界面上写明了"选填"',
+    !(await acceptanceDetail.locator('button.task-reject').isDisabled())
+    && /选填/.test(acceptanceText))
+  expect('★ 这一格不写"这一步由 agent 任务执行做"（它就在等人自己点）',
+    !/这一步由 agent 任务执行做/.test(acceptanceText))
+
+  // 先按"不写原因"提交一次：这一格的判据是"原因**选填**"，
+  // 而一个把原因做成必填的实现会被这一条断出来（它的表现是按钮点不动、或后端回 400）。
+  // 基准**就地取一次**（不复用 initialCounts）：这一段之前已经有点过验收的动作，
+  // 拿最初那份数去比时红的是计数，而原因看起来像"卡片没换列"
+  const noReasonBefore = await taskColumnCounts()
+  await acceptanceDetail.locator('button.task-reject').click()
+  const rejectedNoReason = await waitFor(async () =>
+    /已记为「任务未完成」/.test(await page.locator('.task-panel').innerText()), 8000)
+  const noReasonApi = await (await page.request.get(`${URL}/api/agent-tasks/${acceptDetailId}`)).json()
+  expect('★ 不写原因也提交得了（选填），而接口那一份的 incompleteReason 是 null',
+    rejectedNoReason && noReasonApi.task.status === 'NOT_COMPLETED'
+    && noReasonApi.task.incompleteReason === null,
+    `${noReasonApi.task.status} / 原因「${noReasonApi.task.incompleteReason}」`)
+  const afterNoReason = await taskColumnCounts()
+  expect('★ 不写原因那一次也把卡片移进了「已完成」列（选填不等于"提交了不算数"）',
+    afterNoReason.completed === noReasonBefore.completed + 1
+    && afterNoReason.acceptance === noReasonBefore.acceptance - 1,
+    `acceptance ${noReasonBefore.acceptance}→${afterNoReason.acceptance}`
+    + ` / completed ${noReasonBefore.completed}→${afterNoReason.completed}`)
+  const noReasonCard = page.locator(`.task-column[data-column="completed"] .task-card[data-task-id="${acceptDetailId}"]`)
+  expect('★ 没写原因时卡片上写「（未填原因）」而不是留一格空白（留空与"这一段没渲染出来"看起来一样）',
+    /未完成原因：（未填原因）/.test(await noReasonCard.innerText()),
+    (await noReasonCard.innerText()).replace(/\n/g, ' ').slice(0, 120))
+  await closeTaskModal()
+  expect('（准备）把这条退回「待验收」之前先复位，后面那一段要重新走一遍带原因的那条路',
+    (await page.request.post(`${URL}/api/agent-tasks/__reset`)).ok())
+  // 复位之后**必须点一次刷新**再回到看板：屏幕上的卡片还是按复位之前那一份渲染的
+  // （自检不轮询，见 useTasks 的注释），直接找 id 9 会找不到它
+  await page.locator('.task-panel button', { hasText: /刷\s*新/ }).first().click()
+  // 复位是**全局**的：看板回到初始数据，所以后面每一段的"前后对比"都要重新取一次基准
+  // （拿复位之前那份 initialCounts 去比，红的会是计数断言，而原因看起来像"卡片没换列"）
+  await waitFor(async () => (await taskColumnCounts()).acceptance === initialCounts.acceptance, 8000)
+  expect('（准备）复位之后看板回到初始那五列（后面每一段的基准都重新取）',
+    JSON.stringify(await taskColumnCounts()) === JSON.stringify(initialCounts),
+    JSON.stringify(await taskColumnCounts()))
+
+  // 带原因的那一遍：卡片上要把那句话显示出来（"没做成"与"差在哪"是两件事）
+  const beforeReject = await taskColumnCounts()
+  await page.locator(`.task-column[data-column="acceptance"] .task-card[data-task-id="${acceptDetailId}"]`).click()
+  const rejectAgain = page.locator('.ant-modal:visible', { hasText: '确认项' })
+  await waitFor(async () => /两个选项/.test(await rejectAgain.innerText()), 8000)
+  await rejectAgain.locator('input.task-reject-reason').fill('自检：产出里少了第三页')
+  await rejectAgain.locator('button.task-reject').click()
+  const rejectedWithReason = await waitFor(async () =>
+    /已记为「任务未完成」/.test(await page.locator('.task-panel').innerText()), 8000)
+  expect('★ 点了「任务未完成」之后反馈说清这条任务到此结束、要重做请重新发布',
+    rejectedWithReason && /重新发布一条/.test(await page.locator('.task-panel').innerText()))
+  const afterReject = await taskColumnCounts()
+  expect('★ 记为「任务未完成」之后卡片从「待验收」列移进「已完成」列',
+    afterReject.acceptance === beforeReject.acceptance - 1
+    && afterReject.completed === beforeReject.completed + 1,
+    `acceptance ${beforeReject.acceptance}→${afterReject.acceptance}`
+    + ` / completed ${beforeReject.completed}→${afterReject.completed}`)
+  const rejectedCard = page.locator(`.task-column[data-column="completed"] .task-card[data-task-id="${acceptDetailId}"]`)
+  expect('★ 卡片上写着「任务未完成」与那句原因（原因落库了，而屏幕上也要看得见）',
+    /未完成原因：自检：产出里少了第三页/.test(await rejectedCard.innerText()),
+    (await rejectedCard.innerText()).replace(/\n/g, ' ').slice(0, 140))
+  const rejectedApi = await (await page.request.get(`${URL}/api/agent-tasks/${acceptDetailId}`)).json()
+  expect('★ 接口那一份也对得上：状态 NOT_COMPLETED、原因落库、执行人清空、没有可做的动作',
+    rejectedApi.task.status === 'NOT_COMPLETED'
+    && rejectedApi.task.incompleteReason === '自检：产出里少了第三页'
+    && rejectedApi.task.currentExecutorId === null
+    && rejectedApi.actions.length === 0,
+    `${rejectedApi.task.status} / 原因「${rejectedApi.task.incompleteReason}」`
+    + ` / 执行人 ${rejectedApi.task.currentExecutorId} / actions ${rejectedApi.actions.length}`)
+  await closeTaskModal()
+
+  // ★ 另一条待验收的任务走「任务已完成」：状态落定 + 技能里多出一段规则，
+  //   而**标记之外那一份用户正文必须一个字节都没变**（这就是"隔离用户内容"那条验收）。
+  //
+  // 任务人刻意用 admin（他的角色授权了假后端那个固定工作目录 D:\work\demo）：
+  // zhou 没有任何角色，他当任务人的任务会停在「权限不足」—— 而这一节要验的是验收那条路。
+  // 他名下那两条技能是**给断言用的**：规则应当写进同名的那一条
+  // （「【自补充】任务经验规则」），而另一条（「周报整理」）必须一个字都不动 ——
+  // 后者是这一条的对照组：少掉它，一个"抓到谁写谁"的实现照样全绿。
+  const acceptCreate = await page.request.post(`${URL}/api/agent-tasks`, {
+    data: { publisher: 'admin', assignee: 'admin', description: '自检：小任务 —— 验收通过之后要补经验规则的那一条' },
+  })
+  expect('（准备）发布一条任务人是 admin 的任务（他名下有两条技能，其中一条是同名的）', acceptCreate.ok(),
+    `HTTP ${acceptCreate.status()}`)
+  const acceptId = (await acceptCreate.json()).task.id
+  // ⚠️ `?steps=` 必须够大：`?id=` 那一支从这一条身上一路推到推不动（走完"已确认需求 →
+  // 待确认计划 → 已确认计划 → 执行中 → 待验收"要 5 格），而默认只推 10 格、
+  // 实测在第 4 格就停了（停在「执行中」）—— 那种失败看起来像"这条任务走不到待验收"
+  const acceptRound = await runAgent(`?id=${acceptId}&steps=99`)
+  const beforeAccept = await (await page.request.get(`${URL}/api/agent-tasks/${acceptId}`)).json()
+  expect('（准备）它被推到「待验收」',
+    beforeAccept.task.status === 'PENDING_ACCEPTANCE',
+    `${acceptRound.moved.map(m => `${m.from}→${m.to}`).join(' / ')}`
+    + ` / 实际状态 ${beforeAccept.task.status} / moved=${JSON.stringify(acceptRound.moved)}`)
+  // 任务人的 id 直接用假后端账号表里那个数（admin=1 / zhou=2 / li=3，与真后端同形）：
+  // 这一段跑在 agent任务 那一节里，而 `admin` 那个常量要到 skill管理 那一节才取回来
+  // （下面这条断言把它与接口对一个账，写错时当场红，而不是让后面几条一起跟着红）
+  const assigneeId = 1
+  const ownedBefore = (await (await page.request.get(`${URL}/api/skills?userId=${assigneeId}`)).json()).skills
+  const skillBefore = ownedBefore.find(s => s.name === '【自补充】任务经验规则')
+  const otherBefore = ownedBefore.find(s => s.name === '周报整理')
+  expect('（准备）任务人名下同时有「【自补充】任务经验规则」与「周报整理」两条',
+    !!skillBefore && !!otherBefore,
+    ownedBefore.map(s => s.name).join(' / '))
+  await page.locator(`.task-column[data-column="acceptance"] .task-card[data-task-id="${acceptId}"]`).click()
+  const acceptDetail = page.locator('.ant-modal:visible', { hasText: '确认项' })
+  await waitFor(async () => /两个选项/.test(await acceptDetail.innerText()), 8000)
+  const acceptBefore = await taskColumnCounts()
+  await acceptDetail.locator('button.task-accept').click()
+  const acceptedShown = await waitFor(async () =>
+    /已验收为「已完成」/.test(await page.locator('.task-panel').innerText()), 8000)
+  const afterAccept = await taskColumnCounts()
+  expect('★ 点「任务已完成」：卡片进「已完成」列，反馈说明这条任务的经验会被汇成规则',
+    acceptedShown && afterAccept.acceptance === acceptBefore.acceptance - 1
+    && afterAccept.completed === acceptBefore.completed + 1,
+    `acceptance ${acceptBefore.acceptance}→${afterAccept.acceptance}`
+    + ` / completed ${acceptBefore.completed}→${afterAccept.completed}`)
+  const acceptedApi = await (await page.request.get(`${URL}/api/agent-tasks/${acceptId}`)).json()
+  expect('★ 接口那一份是已完成、执行人清空、没有可做的动作',
+    acceptedApi.task.status === 'COMPLETED' && acceptedApi.task.currentExecutorId === null
+    && acceptedApi.actions.length === 0,
+    `${acceptedApi.task.status} / 执行人 ${acceptedApi.task.currentExecutorId}`)
+  await closeTaskModal()
+
+  const skillAfter = await waitFor(async () => {
+    const owned = (await (await page.request.get(`${URL}/api/skills?userId=${assigneeId}`)).json()).skills
+    const hit = owned.find(s => s.name === '【自补充】任务经验规则')
+    return hit && hit.content.includes(`<!-- 任务 #${acceptId} -->`) ? hit : false
+  }, 8000)
+  expect('★ 验收通过之后规则写进了**同名的那一条**技能（`ai.agent.skill.supplement-skill-name`）',
+    !!skillAfter && skillAfter.content.includes('### 大模型自补充规则 ###')
+    && skillAfter.content.includes('###end###'),
+    skillAfter ? skillAfter.content.replace(/\n/g, ' ').slice(0, 140) : '没等到')
+  expect('★ 标记之外那一份用户正文一个字节都没变（系统只动自己那一段）',
+    !!skillAfter && beforeSegmentOf(skillAfter.content) === beforeSegmentOf(skillBefore.content)
+    && beforeSegmentOf(skillAfter.content).includes('规则的适用范围是 demo 目录下的任务'),
+    skillAfter ? `标记之前那一份：「${beforeSegmentOf(skillAfter.content)}」` : '没等到')
+  const otherAfter = (await (await page.request.get(`${URL}/api/skills?userId=${assigneeId}`)).json()).skills
+    .find(s => s.name === '周报整理')
+  expect('★ 任务人另一条技能一个字都没动（对照组：一个"抓到谁写谁"的实现会被这一条断出来）',
+    otherAfter.content === otherBefore.content,
+    `「${otherBefore.content.slice(0, 30)}…」→「${(otherAfter.content ?? '').slice(0, 30)}…」`)
 
   // 收尾复位：与权限那一节同一条纪律（自检跑两遍，第二遍不该继承第一遍改出来的状态）
   const taskReset = await page.request.post(`${URL}/api/agent-tasks/__reset`)

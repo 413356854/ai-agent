@@ -63,6 +63,37 @@ public interface AgentSkillMapper {
 			@Param("description") String description, @Param("content") String content,
 			@Param("lastModifiedBy") Long lastModifiedBy);
 
+	/**
+	 * 只改正文，而且<b>当前正文必须还是 {@code expectedContent} 那一份</b>。
+	 *
+	 * <h2>为什么要这个条件</h2>
+	 * 大模型自补充规则那一件事的形态是"读出来 → 在标记之间拼接 → 写回去"，
+	 * 而两次同时发生的拼接（两个人同时验收，或有人正在界面上改这条技能）会静默丢掉其中一次 ——
+	 * 两边都会显示成功，而库里只剩后写的那一份。条件更新把这件事交给数据库：
+	 * 拿着过期正文的那一次改不到行（受影响行数 0），由调用方说一句"这条技能刚被别处改过"。
+	 *
+	 * <p>刻意<b>不</b>比较受影响行数与"新旧正文不等"：两者相同（重复追加同一份内容）时
+	 * 影响行数也是 0，那时什么都没丢，把它报成冲突只会制造一次假的"被别处改过"。
+	 *
+	 * <h2>★ 判据是 {@code COALESCE(content, sentinel) = expected}，不是某个 NULL 安全等号</h2>
+	 * 实测这一对库**互不认对方的 NULL 安全等于**（两个错法的现象都是"验收成功、技能静默没变"）：
+	 * <ul>
+	 *   <li>MySQL 的 {@code <=>} → H2 2.3.232（{@code MODE=MySQL}）报 42001 语法错误；</li>
+	 *   <li>SQL 标准的 {@code IS NOT DISTINCT FROM} → MySQL 8.0.17 报 42000 语法错误。</li>
+	 * </ul>
+	 * 所以改成"把库里的 NULL 用一个 Java 侧传来的哨兵替换掉再比"，
+	 * {@code COALESCE} 与参数绑定在两边都是同一套语义（写法与三条实测见 XML 里那段注释）。
+	 *
+	 * @param sentinel 库那一列是 NULL 时用它参与比较（由 {@code SkillStore} 的常量给，
+	 *        调用方不用自己拼：写成别的值会让"库里是 NULL"的行永远匹配不上）
+	 * @param expectedContent 调用方读到的那一份正文；<b>传 {@code null} 表示"只认库里那份不是 NULL"</b>
+	 *        —— 那不是常用路径（调用方读到的就是 null 时用 sentinel 表达"库里也是 NULL"）
+	 * @return 真的改到了返回 true；库里那一份已经变了返回 false
+	 */
+	int replaceContent(@Param("id") Long id, @Param("content") String content,
+			@Param("expectedContent") String expectedContent, @Param("sentinel") String sentinel,
+			@Param("lastModifiedBy") Long lastModifiedBy);
+
 	/** 删一条技能。归属判定在服务层（它要在删除之前先读一次那一行）。 */
 	int delete(@Param("id") Long id);
 

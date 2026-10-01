@@ -8,7 +8,7 @@
 --    ② 卡在哪一步（需求 / 计划 / 判授权 / 执行 / 验收）；
 --    ③ 每一步当时给的是什么选项、他选/答的是什么（用户确认项）。
 --
---  【状态链：十个取值，每次推进一格】
+--  【状态链：十一个取值，每次推进一格】
 --    新发布 NEW
 --      → 待确认需求 PENDING_REQUIREMENT   （生成一条需求确认项，等答复）
 --      → 已确认需求 CONFIRMED_REQUIREMENT （球交给 agent：再判一次歧义、拆任务点）
@@ -17,9 +17,14 @@
 --      → 执行中     EXECUTING             （跑完写执行结果）
 --      → 待验收     PENDING_ACCEPTANCE
 --      → 已完成     COMPLETED
+--    待验收 ── 人答复「任务未完成」──→ 任务未完成 NOT_COMPLETED（未完成原因写 incomplete_reason，选填）
 --    已确认计划 的判断不通过 → 权限不足 INSUFFICIENT_PERMISSION（结论写进 result，等处置）
 --    权限不足 ── 人答复「已修改任务」──→ 新发布（重新走一遍）
 --    任一非终态都可 → 已取消 CANCELLED（取消原因与状态同一次写入）
+--
+--    ⚠️ 「任务未完成」是**终态**，不是"待重做"：把它做成待重做之后，链上会出现"重新执行一遍"
+--    这一步 —— 而重跑会把上一次已经发生的写操作再做一遍（重复副作用是事故，不是浪费）。
+--    要重做由人重新发布一条：那时描述、目录授权、确认项都是新的。
 --
 --    ⚠️ 授权不由人批：它由平台判（任务人角色的目录前缀覆盖不覆盖这次要动的目录），
 --    判过就直接开跑 —— 链上没有"等答复授权"与"已授权"这两格。
@@ -51,7 +56,7 @@
 --
 --  【"我的任务"按谁算 —— 不是这一列，而是按状态挑 publisher_id / assignee_id】
 --    GET /api/agent-tasks?userId= 收哪些任务，判据是 AgentTaskStatus#party()：
---      · 新发布 / 已完成 / 已取消 → 发布人**或**任务人（刚发出来、已经结束、被取消的，
+--      · 新发布 / 已完成 / 任务未完成 / 已取消 → 发布人**或**任务人（刚发出来、已经结束、被取消的，
 --        两个人里谁都该在自己的列表里找得到它）；
 --      · 待确认需求 / 待验收 → 只有发布人（那两件只有他能做）；
 --      · 其余状态 → 只有任务人（球在他手上）。
@@ -106,7 +111,7 @@ CREATE TABLE IF NOT EXISTS agent_task (
   -- ⚠️ 读侧对认不出的取值落在 NEW 而不是"某一个看起来正常的中间态"：
   -- 落成终态会让这一行从看板的活跃列里消失，而"卡片不见了"是最难发现的一种坏法。
   -- 例外是头注里那两个历史取值：它们各有等价的现有状态，折回去比落 NEW 安全
-  status              VARCHAR(32)  NOT NULL DEFAULT 'NEW' COMMENT '任务状态：NEW / PENDING_REQUIREMENT / CONFIRMED_REQUIREMENT / PENDING_PLAN / CONFIRMED_PLAN / INSUFFICIENT_PERMISSION / EXECUTING / PENDING_ACCEPTANCE / COMPLETED / CANCELLED（认不出的取值落 NEW；PENDING_AUTHORIZATION / AUTHORIZED 是历史取值，读时折成 CONFIRMED_PLAN / EXECUTING）',
+  status              VARCHAR(32)  NOT NULL DEFAULT 'NEW' COMMENT '任务状态：NEW / PENDING_REQUIREMENT / CONFIRMED_REQUIREMENT / PENDING_PLAN / CONFIRMED_PLAN / INSUFFICIENT_PERMISSION / EXECUTING / PENDING_ACCEPTANCE / COMPLETED / NOT_COMPLETED / CANCELLED（认不出的取值落 NEW；PENDING_AUTHORIZATION / AUTHORIZED 是历史取值，读时折成 CONFIRMED_PLAN / EXECUTING）',
   -- 当前执行人：这条任务现在流转到谁手里（agent_user.id）。
   -- NULL 是**有含义的**：球在 agent 手上（两个"已确认"），或者这件事已经结束
   -- （已完成没有执行人；已取消保持取消那一刻的值）—— 见头注那一段
@@ -130,6 +135,10 @@ CREATE TABLE IF NOT EXISTS agent_task (
   -- 取消原因：用户取消时填写，与 status=CANCELLED 同一次写入。
   -- 允许 NULL 只为了非取消状态的那一行；取消时由写入路径强制非空（服务层唯一入口）
   cancel_reason       VARCHAR(512) NULL COMMENT '取消原因：与 status=CANCELLED 同一次写入（取消时写入路径强制非空）',
+  -- 未完成原因：验收那一格选「任务未完成」时补的一句说明，与 status=NOT_COMPLETED 同一次写入。
+  -- 与 cancel_reason 唯一的差别是**选填**：这一格要记的是"没做成"这个判断本身，
+  -- 而原因可能一时说不清 —— 逼着人写一句他写不出来的话，结果是那一格被填成"没做完"
+  incomplete_reason   VARCHAR(512) NULL COMMENT '未完成原因：与 status=NOT_COMPLETED 同一次写入（选填）',
   created_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   updated_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
   PRIMARY KEY (id)

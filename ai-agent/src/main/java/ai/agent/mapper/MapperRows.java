@@ -322,8 +322,13 @@ public final class MapperRows {
 	 *
 	 * <p>{@code status} 保持字符串：宽松解析（认不出落 NEW）在
 	 * {@link AgentTaskStatus#parse} 里，理由见那个方法。
-	 * {@code cancel_reason} 与 {@code result} 为 null 是**正常状态**（未取消 / 未执行完），
-	 * 不编默认值 —— 编一个会让"还没有结果"与"结果就是那个默认值"变成同一件事。
+	 * {@code cancel_reason} / {@code incomplete_reason} 与 {@code result} 为 null 是**正常状态**
+	 * （未取消 / 未完成原因没写 / 未执行完），不编默认值 ——
+	 * 编一个会让"还没有结果"与"结果就是那个默认值"变成同一件事。
+	 *
+	 * <p><b>⚠️ 这是构造器映射</b>：这里的参数顺序必须与 {@code AgentTaskMapper.xml} 里
+	 * resultMap 的 {@code <arg>} 顺序、以及 {@link AgentTask} 的构造参数顺序逐字对齐 ——
+	 * 错位不报错，只表现为某几列静默串到别人身上（两个 {@code String} 之间尤其看不出来）。
 	 *
 	 * <p>三个姓名（{@code publisher_name} / {@code assignee_name} / {@code current_executor_name}）
 	 * 是 SQL 关联 {@code agent_user} 查出来的，表里没有它们 —— 所以它们可能为 null
@@ -331,12 +336,13 @@ public final class MapperRows {
 	 */
 	public record AgentTaskRow(Long id, Long publisherId, String publisherName, Long assigneeId, String assigneeName,
 			String description, String status, Long currentExecutorId, String currentExecutorName, Integer currentStep,
-			String agentId, String result, String cancelReason, Instant createdAt, Instant updatedAt) {
+			String agentId, String result, String cancelReason, String incompleteReason, Instant createdAt,
+			Instant updatedAt) {
 
 		public AgentTask toDomain() {
 			return new AgentTask(id, publisherId, publisherName, assigneeId, assigneeName, description,
 					AgentTaskStatus.parse(status), currentExecutorId, currentExecutorName, nz(currentStep), agentId,
-					result, cancelReason, createdAt, updatedAt);
+					result, cancelReason, incompleteReason, createdAt, updatedAt);
 		}
 	}
 

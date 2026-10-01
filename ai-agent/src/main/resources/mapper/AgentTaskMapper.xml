@@ -34,6 +34,7 @@
 			<arg column="agent_id" javaType="java.lang.String"/>
 			<arg column="result" javaType="java.lang.String"/>
 			<arg column="cancel_reason" javaType="java.lang.String"/>
+			<arg column="incomplete_reason" javaType="java.lang.String"/>
 			<arg column="created_at" javaType="java.time.Instant"
 				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
 			<arg column="updated_at" javaType="java.time.Instant"
@@ -46,7 +47,8 @@
 		t.id, t.publisher_id, publisher_user.name AS publisher_name,
 		t.assignee_id, assignee_user.name AS assignee_name,
 		t.current_executor_id, executor_user.name AS current_executor_name,
-		t.description, t.status, t.current_step, t.agent_id, t.result, t.cancel_reason, t.created_at, t.updated_at
+		t.description, t.status, t.current_step, t.agent_id, t.result, t.cancel_reason, t.incomplete_reason,
+		t.created_at, t.updated_at
 	</sql>
 
 	<!-- 三个 LEFT JOIN 是"姓名从哪来"的唯一出处（理由见文件头） -->
@@ -150,6 +152,11 @@
 
 	<update id="updateCancel">
 		UPDATE agent_task SET cancel_reason = #{cancelReason} WHERE id = #{id}
+	</update>
+
+	<!-- 未完成原因：与 updateCancel 分开一条（两列、两种状态，见 AgentTaskMapper#updateIncompleteReason） -->
+	<update id="updateIncompleteReason">
+		UPDATE agent_task SET incomplete_reason = #{incompleteReason} WHERE id = #{id}
 	</update>
 
 </mapper>

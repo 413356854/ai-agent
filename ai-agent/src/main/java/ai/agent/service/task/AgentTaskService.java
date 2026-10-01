@@ -9,14 +9,14 @@ import java.util.List;
 /**
  * agent 任务的读写契约（应用管理区 · agent任务）。
  *
- * <h2>五个写动作，各对应链上的一段</h2>
+ * <h2>六个写动作，各对应链上的一段</h2>
  * <table border="1">
  *   <caption>动作与它推着链走的那一格</caption>
  *   <tr><th>动作</th><th>允许的状态</th><th>之后到哪</th></tr>
  *   <tr><td>{@link #create}</td><td>—（产生一条新任务）</td><td>新发布</td></tr>
- *   <tr><td>{@link #advance}</td>
- *       <td>执行中 / 待验收</td>
- *       <td>待验收（登记执行结果，人工兜底）/ 已完成</td></tr>
+ *   <tr><td>{@link #advance}</td><td>执行中</td><td>待验收（登记执行结果）</td></tr>
+ *   <tr><td>{@link #accept}</td><td>待验收</td><td>已完成（验收通过，另触发一次"经验规则"补充）</td></tr>
+ *   <tr><td>{@link #reject}</td><td>待验收</td><td>任务未完成（写未完成原因，选填）</td></tr>
  *   <tr><td>{@link #answer}</td><td>两个"待确认"</td><td>对应的"已确认"那一格（已确认需求 / 已确认计划）</td></tr>
  *   <tr><td>{@link #revise}</td><td>权限不足</td><td>新发布（用户答复「已修改任务」+ 改过的任务描述，整条链重走一遍）</td></tr>
  *   <tr><td>{@link #cancel}</td><td>任一非终态</td><td>已取消（写取消原因）</td></tr>
@@ -76,8 +76,36 @@ public interface AgentTaskService {
 	 */
 	Detail create(String publisher, String assignee, String description);
 
-	/** 推进当前事件（允许的状态与落点见类注释的表格）。 */
+	/**
+	 * 推进当前事件：{@link AgentTaskStatus#EXECUTING} → 待验收（登记执行结果，可空）。
+	 *
+	 * <p><b>验收不在这里</b>：那一格的两个落点是两个动作（{@link #accept} / {@link #reject}），
+	 * 见下面那条说明。
+	 */
 	Detail advance(Long id, String result);
+
+	/**
+	 * 验收通过：待验收 → {@link AgentTaskStatus#COMPLETED}。
+	 *
+	 * <p>验收之后这条任务<b>已经交付</b>了，所以顺带做一件事：把这条任务上"问过什么、答过什么"
+	 * 交给模型汇成规则，追加到任务人的技能里（见 {@code TaskRuleDigest}）——
+	 * 目的是下一次相似的任务不再问同样的问题。它<b>做成异步且失败不阻断</b>：
+	 * 验收这条事务提交之后在另一个线程上跑，模型调不通只记一条日志，
+	 * 用户看到的仍然是"已验收"。
+	 */
+	Detail accept(Long id);
+
+	/**
+	 * 任务未完成：待验收 → {@link AgentTaskStatus#NOT_COMPLETED}。
+	 *
+	 * <p>与 {@link #accept} 是**两个动作**而不是一个带布尔的动作：它们后续该做的事不同 ——
+	 * 一个触发经验补充，一个要记原因；合成一个之后，"这次点的是哪一个"只能靠请求体里
+	 * 有没有 reason 去猜，而猜错是静默的（一次"没做成"被记成"做成了"）。
+	 *
+	 * @param reason 未完成原因，<b>选填</b>：这一格要记的是"没做成"这个判断本身，
+	 *        而原因可能一时说不清；非空时与状态同一次写入（≤ 512 字符，超限 400）
+	 */
+	Detail reject(Long id, String reason);
 
 	/** 答复一条确认项；答完按状态链推进并生成下一条确认项。 */
 	Detail answer(Long id, Long confirmId, String answer);
@@ -108,10 +136,10 @@ public interface AgentTaskService {
 	 * 界面上一眼看到的是"有几件事在等人"还是"分成三列各几条"。所以它写在服务层，
 	 * 与状态链一起被复用（界面只按 key 画，不自己算归属）。
 	 *
-	 * <p>{@link #COMPLETED} 一列收**两个**状态（已完成与已取消）：看板只画"这件事结束了没有"，
-	 * 而两者都是结束 —— 给已取消单开一列会让一条流程里最边缘的结局占掉一整列宽度，
-	 * 且那一列大多数时候是空的。两者的区别靠卡片上的状态标签与取消原因表达
-	 * （列头的 {@code statusLabels} 也会把"这一列收哪两种"写出来）。
+	 * <p>{@link #COMPLETED} 一列收**三个**状态（已完成 / 任务未完成 / 已取消）：看板只画"这件事结束了没有"，
+	 * 而三者都是结束 —— 给已取消单开一列会让一条流程里最边缘的结局占掉一整列宽度，
+	 * 且那一列大多数时候是空的。"没做成"与"没做"（取消）的区别靠卡片上的状态标签
+	 * 与那两行说明（未完成原因 / 取消原因）表达（列头的 {@code statusLabels} 也会把"这一列收哪几种"写出来）。
 	 *
 	 * <p>{@link #EXECUTING} 一列收**三个**状态（已确认需求 / 已确认计划 / 执行中）。
 	 * 它们对看板是同一件事：球在 agent 手上，人不该去点它 ——
@@ -135,7 +163,8 @@ public interface AgentTaskService {
 
 		ACCEPTANCE("acceptance", "待验收", List.of(AgentTaskStatus.PENDING_ACCEPTANCE)),
 
-		COMPLETED("completed", "已完成", List.of(AgentTaskStatus.COMPLETED, AgentTaskStatus.CANCELLED));
+		COMPLETED("completed", "已完成", List.of(AgentTaskStatus.COMPLETED, AgentTaskStatus.NOT_COMPLETED,
+				AgentTaskStatus.CANCELLED));
 
 		private final String key;
 
@@ -183,7 +212,7 @@ public interface AgentTaskService {
 	 *
 	 * @param key 列的 key（对应 {@link Column#key}）
 	 * @param label 列名
-	 * @param statusLabels 这一列收的状态名（「待处理」靠它说清自己收的是哪三种、「已完成」收的是哪两种）
+	 * @param statusLabels 这一列收的状态名（「待处理」靠它说清自己收的是哪三种、「已完成」收的是哪三种）
 	 * @param tasks 这一列的任务（最近变更在前）
 	 */
 	record BoardColumn(String key, String label, List<String> statusLabels, List<AgentTask> tasks) {
@@ -203,9 +232,10 @@ public interface AgentTaskService {
 	/**
 	 * 一个可做的动作。
 	 *
-	 * @param key 动作标识：{@code advance} / {@code answer} / {@code revise} / {@code cancel}
+	 * @param key 动作标识：{@code advance} / {@code accept} / {@code reject} / {@code answer} /
+	 *        {@code revise} / {@code cancel}
 	 * @param label 按钮上那句话（同一动作在不同状态下说法不同：执行中是「登记执行结果」，
-	 *        待验收是「验收通过」，权限不足是「已修改任务」）
+	 *        待验收的两个落点是「任务已完成」与「任务未完成」，权限不足是「已修改任务」）
 	 */
 	record Action(String key, String label) {
 	}

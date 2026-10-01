@@ -108,6 +108,22 @@ public class JdbcSkillStore implements SkillStore {
 	}
 
 	@Override
+	public boolean replaceContent(Long id, String content, String expectedContent, Long lastModifiedBy) {
+		// 库里读到 NULL 时换成哨兵再比：两种库的 NULL 安全等号互不兼容，而 `= NULL` 永远不成立
+		// （理由与三条实测见 SkillStore#replaceContent 与 AgentSkillMapper.xml 里那段注释）
+		String expected = expectedContent == null ? NULL_CONTENT_SENTINEL : expectedContent;
+		int affected;
+		try {
+			affected = skills.replaceContent(id, content, expected, NULL_CONTENT_SENTINEL, lastModifiedBy);
+		}
+		catch (DataAccessException e) {
+			// 这条路不碰唯一键，所以这里没有"撞名字"要翻译：任何 DataAccessException 都是库的问题
+			throw new SkillStoreException("改技能正文失败 id=" + id, e);
+		}
+		return affected > 0;
+	}
+
+	@Override
 	public boolean delete(Long id) {
 		int affected;
 		try {

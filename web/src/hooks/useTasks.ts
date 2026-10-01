@@ -20,6 +20,16 @@ export interface UseTasksResult {
 
   create: (payload: { publisher: string; assignee: string; description: string }) => Promise<boolean>
   advance: (id: number, result?: string) => Promise<boolean>
+  /**
+   * 验收通过：`PENDING_ACCEPTANCE` → 已完成。
+   * 后端会顺带把这条任务的经验汇成规则补进技能（异步、失败不影响验收）。
+   */
+  accept: (id: number) => Promise<boolean>
+  /**
+   * 记为任务未完成：`PENDING_ACCEPTANCE` → 未完成。`reason` 是**选填**的原因
+   * （没写就不带；> 512 字符后端回 400）。
+   */
+  reject: (id: number, reason?: string) => Promise<boolean>
   answer: (id: number, confirmId: number, answer: string) => Promise<boolean>
   /**
    * 答复「已修改任务」：权限不足 → 新发布（整条链重走一遍）。
@@ -140,9 +150,24 @@ export function useTasks(active: boolean, userId: number | null): UseTasksResult
     }), [mutate])
 
   const advance = useCallback(async (id: number, result?: string) =>
-    mutate('推进任务', async () => {
+    mutate('登记执行结果', async () => {
       const r = await taskApi.advance(id, result)
       return `任务 #${id} 已推进到「${r.task.statusLabel}」（第 ${r.task.currentStep} 步）`
+    }), [mutate])
+
+  const accept = useCallback(async (id: number) =>
+    mutate('验收', async () => {
+      const r = await taskApi.accept(id)
+      return `任务 #${id} 已验收为「${r.task.statusLabel}」（第 ${r.task.currentStep} 步）—— `
+        + '这次问过、答过的内容由后端汇成规则补进技能；有没有补上，去 skill 管理那一页看'
+    }), [mutate])
+
+  const reject = useCallback(async (id: number, reason?: string) =>
+    mutate('记为任务未完成', async () => {
+      const r = await taskApi.reject(id, reason)
+      return `任务 #${id} 已记为「${r.task.statusLabel}」（第 ${r.task.currentStep} 步）`
+        + (r.task.incompleteReason ? `：${r.task.incompleteReason}` : '（没写原因）')
+        + ' —— 这条任务到此结束，要重做请重新发布一条'
     }), [mutate])
 
   const answer = useCallback(async (id: number, confirmId: number, text: string) =>
@@ -197,6 +222,8 @@ export function useTasks(active: boolean, userId: number | null): UseTasksResult
     },
     create,
     advance,
+    accept,
+    reject,
     answer,
     revise,
     cancel,

@@ -45,7 +45,7 @@ public class TaskSchemaCheck implements InitializingBean {
 
 	static {
 		REQUIRED.put("agent_task", List.of("id", "publisher_id", "assignee_id", "description", "status",
-				"current_executor_id", "current_step", "agent_id", "result", "cancel_reason"));
+				"current_executor_id", "current_step", "agent_id", "result", "cancel_reason", "incomplete_reason"));
 		REQUIRED.put("agent_task_confirm", List.of("id", "task_id", "step_index", "confirm_type", "description",
 				"option_set", "answer"));
 	}

@@ -81,6 +81,9 @@ import {
   mockCoversDirectory,
   mockPermissionsOfId,
 } from './permission-routes.mjs'
+// 验收通过之后那一步（把这次问过、答过的汇成规则补进技能）在真后端是一次模型调用，
+// 假后端照搬的是它的**产物形态**：标记、幂等标识、只动标记之间 —— 见那个函数的注释
+import { appendSupplementToSkill } from './skill-routes.mjs'
 
 const STATUS_LABELS = {
   NEW: '新发布',
@@ -92,6 +95,7 @@ const STATUS_LABELS = {
   EXECUTING: '执行中',
   PENDING_ACCEPTANCE: '待验收',
   COMPLETED: '已完成',
+  NOT_COMPLETED: '任务未完成',
   CANCELLED: '已取消',
 }
 
@@ -110,8 +114,9 @@ const CONFIRM_LABELS = {
  *
  * ⚠️ 「待处理」一列收**三个**状态（两个"待确认" + 权限不足）：它们等的东西不同
  * （答复确认项 / 处置一次权限不足），但对看板是同一个答案 —— 球都在人手上。
- * ⚠️ 「已完成」一列收**两个**状态（已完成与已取消）：两者都是"这件事结束了"，
- * 而给已取消单开一列会让最边缘的结局占掉一整列宽度。区别靠卡片上的状态标签与取消原因表达。
+ * ⚠️ 「已完成」一列收**三个**状态（已完成 / 任务未完成 / 已取消）：三者都是"这件事结束了"，
+ * 而给已取消单开一列会让最边缘的结局占掉一整列宽度。区别靠卡片上的状态标签
+ * 与那两行说明（未完成原因 / 取消原因）表达。
  * ⚠️ 「执行中」一列收**三个**状态：它们对看板是同一件事 —— 球在 agent 手上，人不必点它。
  */
 const COLUMNS = [
@@ -127,11 +132,17 @@ const COLUMNS = [
     statuses: ['CONFIRMED_REQUIREMENT', 'CONFIRMED_PLAN', 'EXECUTING'],
   },
   { key: 'acceptance', label: '待验收', statuses: ['PENDING_ACCEPTANCE'] },
-  { key: 'completed', label: '已完成', statuses: ['COMPLETED', 'CANCELLED'] },
+  { key: 'completed', label: '已完成', statuses: ['COMPLETED', 'NOT_COMPLETED', 'CANCELLED'] },
 ]
 
-/** 等 agent 处理的那几格（与真后端 `AgentTaskStatus.awaitingAgent()` 一致）。 */
-const AGENT_STATUSES = ['NEW', 'CONFIRMED_REQUIREMENT', 'CONFIRMED_PLAN']
+/**
+ * 等 agent 处理的那几格（与真后端 `AgentTaskStatus.awaitingAgent()` 一致）。
+ *
+ * ⚠️ **「执行中」也在里面**：真后端那一格的"下一步"有两件事 —— 判断授权通过时落进去，
+ * 以及**真的跑一次运行**（`run(task)` 跑完转到待验收）。少掉它的话，"把这条任务推到推不动"
+ * 会停在「执行中」，而那个现象看起来像"这条任务走不到待验收"。
+ */
+const AGENT_STATUSES = ['NEW', 'CONFIRMED_REQUIREMENT', 'CONFIRMED_PLAN', 'EXECUTING']
 
 /**
  * 本应用在 Agent 应用注册表里的 id —— 与真后端的 `ai.agent.task.agent-id` 同一个键。
@@ -373,6 +384,15 @@ function initialState() {
         status: 'CANCELLED', currentExecutorId: 3, currentStep: 1, agentId: null, result: null,
         cancelReason: '需求方撤回了这条调研，等定下来再重新发布',
       },
+      // 任务未完成：验收那一格选了"没做成"，原因写下来了 —— 它与「已完成」「已取消」同列，
+      // 而那一列里三件事的结局各不相同，所以卡片上必须能一眼分出它（状态标签 + 原因那一段 +
+      // 左侧那条警示边）。自检据此断言"未完成原因显示在卡片上"
+      {
+        id: 13, publisherId: 1, assigneeId: 1, description: '把告警阈值那一页的配色改成统一色板',
+        status: 'NOT_COMPLETED', currentExecutorId: null, currentStep: 7, agentId: AGENT_ID,
+        result: '【产出】改了两页，第三页的色板来源没查到。',
+        cancelReason: null, incompleteReason: '产出里少了第三页，验收标准里那份对照表没给',
+      },
       // 权限不足：授权判断不通过（任务人 zhou 没有任何角色 ⇒ 没有任何目录授权），
       // 等用户选「已修改任务」或「取消任务」。结论落在 result 上（与执行结果同一个字段），
       // 界面按状态换标签显示 —— 这一格一次都没跑，"执行结果"四个字会读成"跑过了"
@@ -398,7 +418,7 @@ function initialState() {
       { id: 20, taskId: 7, stepIndex: 1, type: 'REQUIREMENT', description: '请确认任务需求：把 README 里的端口说明改成环境变量法', options: DEFAULT_OPTIONS.REQUIREMENT, answer: '确认' },
       { id: 21, taskId: 7, stepIndex: 3, type: 'PLAN', description: '请确认执行计划（假后端：真后端这一步由模型按任务生成）', options: DEFAULT_OPTIONS.PLAN, answer: '同意' },
     ],
-    nextTaskId: 13,
+    nextTaskId: 14,
     nextConfirmId: 26,  }
 }
 
@@ -417,7 +437,7 @@ function executorLabel(task) {
   const executor = findMockAccountById(task.currentExecutorId)
   if (executor) return executor.name
   if (task.currentExecutorId != null) return `用户#${task.currentExecutorId}`
-  const terminal = task.status === 'COMPLETED' || task.status === 'CANCELLED'
+  const terminal = task.status === 'COMPLETED' || task.status === 'NOT_COMPLETED' || task.status === 'CANCELLED'
   return !terminal && task.agentId != null ? `agent#${task.agentId}` : ''
 }
 
@@ -445,6 +465,8 @@ function taskView(task) {
     agentId: task.agentId ?? null,
     result: task.result ?? null,
     cancelReason: task.cancelReason ?? null,
+    // 未完成原因与取消原因一样：null 是有含义的（不是未完成 / 未完成但没写原因），不编默认值
+    incompleteReason: task.incompleteReason ?? null,
     createdAt: null,
     updatedAt: null,
   }
@@ -473,12 +495,21 @@ function confirmView(confirm) {
  * 下一步由 agent 做，人点不动 —— 给它们画一个"看起来能推进"的按钮比不画更坏。
  * ⚠️ 「权限不足」给的是 `revise`（「已修改任务」）与「取消任务」：它等的不是"推进当前事件"，
  * 而是"这条任务已经改过了"（回到新发布重走一遍）。按钮上的字由这里给，界面不自己拼。
+ * ⚠️ 「待验收」给的是 `accept` / `reject` **两个**动作（「任务已完成」/「任务未完成」）：
+ * 它们不是"一个动作的两种参数"，而是那一次验收的两个选项 —— 后端也是两个端点。
+ * 「执行中」那一格的 `advance`（「登记执行结果」）与它无关。
  */
 function actionsOf(status) {
-  if (status === 'COMPLETED' || status === 'CANCELLED') return []
+  if (status === 'COMPLETED' || status === 'NOT_COMPLETED' || status === 'CANCELLED') return []
   if (status === 'NEW') return [{ key: 'cancel', label: '取消任务' }]
   if (status === 'EXECUTING') return [{ key: 'advance', label: '登记执行结果' }, { key: 'cancel', label: '取消任务' }]
-  if (status === 'PENDING_ACCEPTANCE') return [{ key: 'advance', label: '验收通过' }, { key: 'cancel', label: '取消任务' }]
+  if (status === 'PENDING_ACCEPTANCE') {
+    return [
+      { key: 'accept', label: '任务已完成' },
+      { key: 'reject', label: '任务未完成' },
+      { key: 'cancel', label: '取消任务' },
+    ]
+  }
   if (status === 'INSUFFICIENT_PERMISSION') {
     return [{ key: 'revise', label: '已修改任务' }, { key: 'cancel', label: '取消任务' }]
   }
@@ -539,7 +570,9 @@ function enterAgent(task, status) {
  * @returns 'BOTH'（发布人或任务人）/ 'PUBLISHER'（只有发布人）/ 'ASSIGNEE'（只有任务人）
  */
 function partyOf(status) {
-  if (status === 'NEW' || status === 'COMPLETED' || status === 'CANCELLED') return 'BOTH'
+  if (status === 'NEW' || status === 'COMPLETED' || status === 'NOT_COMPLETED' || status === 'CANCELLED') {
+    return 'BOTH'
+  }
   if (status === 'PENDING_REQUIREMENT' || status === 'PENDING_ACCEPTANCE') return 'PUBLISHER'
   return 'ASSIGNEE'
 }
@@ -566,7 +599,7 @@ function visibleTo(task, userId) {
 function executorFor(task, status) {
   if (status === 'PENDING_REQUIREMENT' || status === 'PENDING_ACCEPTANCE') return task.publisherId
   if (status === 'CONFIRMED_REQUIREMENT' || status === 'CONFIRMED_PLAN') return null
-  if (status === 'COMPLETED') return null
+  if (status === 'COMPLETED' || status === 'NOT_COMPLETED') return null
   if (status === 'CANCELLED') return task.currentExecutorId
   // 新发布、「待确认计划」、「权限不足」、「执行中」：任务人
   // （任务人为空的行只可能是早期的行 —— 发布时必填）
@@ -616,6 +649,16 @@ function judgeThenOpen(task, actions) {
   enterAgent(task, 'EXECUTING')
 }
 
+/** 未完成原因的上限 —— 与真后端 `AgentTask.MAX_INCOMPLETE_REASON_CHARS` 同一个数。 */
+const MAX_INCOMPLETE_REASON_CHARS = 512
+
+/**
+ * 推进当前事件（只剩「执行中」那一格：登记执行结果）。
+ *
+ * ⚠️ 验收**不在这里**：那一格的两个落点是 `accept()` / `reject()` 两个函数（与真后端的
+ * 两个端点、两个动作一一对应）。合成一个带布尔的分支之后，"这次点的是哪一个"
+ * 只能靠请求体里有没有 reason 去猜，而猜错是静默的。
+ */
 function advance(task, result) {
   if (task.status === 'EXECUTING') {
     task.status = 'PENDING_ACCEPTANCE'
@@ -624,15 +667,57 @@ function advance(task, result) {
     if (result != null && String(result).trim()) task.result = String(result).trim()
     return null
   }
-  if (task.status === 'PENDING_ACCEPTANCE') {
-    task.status = 'COMPLETED'
-    task.currentStep += 1
-    task.currentExecutorId = null
-    return null
-  }
-  return `当前状态「${STATUS_LABELS[task.status]}」没有可推进的事件 —— 能推进的只有「执行中」（登记执行结果）`
-    + '与「待验收」（验收通过）；两个「待确认」在等确认项的答复、「权限不足」要答复的是 revise'
+  return `当前状态「${STATUS_LABELS[task.status]}」没有可推进的事件 —— 能推进的只有「执行中」（登记执行结果）；`
+    + '「待验收」有两个落点，走的是 accept（「任务已完成」）与 reject（「任务未完成」）那两个端点；'
+    + '两个「待确认」在等确认项的答复、「权限不足」要答复的是 revise'
     + '（「已修改任务」/「取消任务」），「新发布」与两个「已确认」由 agent 任务执行处理。'
+}
+
+/**
+ * 「任务已完成」：待验收 → 已完成。
+ *
+ * <p>与真后端 `DefaultAgentTaskService#accept` 一致：状态落成已完成、执行人清空、步骤 +1，
+ * 然后<b>顺带</b>把这条任务的经验规则补进技能（真后端那一步是一次模型调用 + 一次技能写入，
+ * 而且跑在事务提交之后的另一个线程上；假后端不调模型，直接照那种**产物形态**写：
+ * 见 skill-routes 的 `appendSupplementToSkill`）。
+ *
+ * <p>这一条也是自检里"验收之后技能里真的有规则"那两条断言的驱动 ——
+ * 假后端不实现它的话，那件事在自检里永远走不到。
+ *
+ * @returns 出错时返回一句给界面的话（conflict = 409）；成功返回 null
+ */
+function accept(task) {
+  if (task.status !== 'PENDING_ACCEPTANCE') {
+    return { conflict: `当前状态「${STATUS_LABELS[task.status]}」不能验收 —— 能验收的只有「待验收」那一格；`
+      + '「执行中」要先「登记执行结果」把它推到待验收、终态不再流转。' }
+  }
+  task.status = 'COMPLETED'
+  task.currentStep += 1
+  task.currentExecutorId = null
+  appendSupplementToSkill(task.assigneeId, task.id, task.description,
+    `验收通过之后把这次问过、答过的汇成规则（假后端：真后端这一步是一次模型调用）：${task.description}`)
+  return null
+}
+
+/**
+ * 「任务未完成」：待验收 → 未完成。原因**选填**。
+ *
+ * <p>先落原因再挪状态（与真后端 `reject` 同一条）：原因超长时当场 400、状态一动不动。
+ */
+function reject(task, reason) {
+  if (task.status !== 'PENDING_ACCEPTANCE') {
+    return { conflict: `当前状态「${STATUS_LABELS[task.status]}」不能记成未完成 —— 能选这一格的只有「待验收」；`
+      + '要中止一条还没到验收的任务请用「取消任务」。' }
+  }
+  const text = reason == null ? '' : String(reason).trim()
+  if (text.length > MAX_INCOMPLETE_REASON_CHARS) {
+    return { error: `未完成原因过长（${text.length} 字符 > 上限 ${MAX_INCOMPLETE_REASON_CHARS}）` }
+  }
+  if (text) task.incompleteReason = text
+  task.status = 'NOT_COMPLETED'
+  task.currentStep += 1
+  task.currentExecutorId = null
+  return null
 }
 
 /**
@@ -841,7 +926,8 @@ export function handleTaskRoutes(req, res, url, json) {
       columns,
       total: visible.length,
       userId,
-      howToAdvance: 'POST /api/agent-tasks/{id}/advance | /confirms/{confirmId}/answer | /revise | /cancel',
+      howToAdvance: 'POST /api/agent-tasks/{id}/advance | /accept | /reject | /confirms/{confirmId}/answer'
+        + ' | /revise | /cancel',
     })
     return true
   }
@@ -897,6 +983,39 @@ export function handleTaskRoutes(req, res, url, json) {
     readBody(req, res, json, b => {
       const conflict = advance(task, b ? b.result : null)
       if (conflict) return json(res, { ok: false, error: conflict }, 409)
+      json(res, { ok: true, ...detailView(task) })
+    })
+    return true
+  }
+
+  // 「任务已完成」：待验收 → 已完成。请求体是空对象（与真后端那一族端点同一条约定）
+  const acceptMatch = pathname.match(/^\/api\/agent-tasks\/(\d+)\/accept$/)
+  if (acceptMatch && req.method === 'POST') {
+    const task = state.tasks.find(t => t.id === Number(acceptMatch[1]))
+    if (!task) {
+      json(res, { ok: false, error: `任务不存在：#${acceptMatch[1]}` }, 400)
+      return true
+    }
+    readBody(req, res, json, () => {
+      const outcome = accept(task)
+      if (outcome && outcome.conflict) return json(res, { ok: false, error: outcome.conflict }, 409)
+      json(res, { ok: true, ...detailView(task) })
+    })
+    return true
+  }
+
+  // 「任务未完成」：待验收 → 未完成，`reason` 选填（超长 → 400）
+  const rejectMatch = pathname.match(/^\/api\/agent-tasks\/(\d+)\/reject$/)
+  if (rejectMatch && req.method === 'POST') {
+    const task = state.tasks.find(t => t.id === Number(rejectMatch[1]))
+    if (!task) {
+      json(res, { ok: false, error: `任务不存在：#${rejectMatch[1]}` }, 400)
+      return true
+    }
+    readBody(req, res, json, b => {
+      const outcome = reject(task, b ? b.reason : null)
+      if (outcome && outcome.conflict) return json(res, { ok: false, error: outcome.conflict }, 409)
+      if (outcome && outcome.error) return json(res, { ok: false, error: outcome.error }, 400)
       json(res, { ok: true, ...detailView(task) })
     })
     return true

@@ -2473,6 +2473,23 @@ body {
   color: var(--warn-ink);
 }
 
+/* 「任务未完成」的原因：与取消原因同一族底色（两者都是"这件事没成"），但卡片左侧另有一条边
+   —— 它与「已完成」同处一列，而那一列里两件事的结局相反，只靠一个标签区分太弱。
+   `white-space: pre-wrap` 与上面那几段同理：原因里可能有换行 */
+.task-card-incomplete {
+  display: block;
+  white-space: pre-wrap;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+}
+
+.task-card.is-not_completed {
+  border-left: 3px solid var(--warn);
+}
+
 /* 展开/收起：文字层整体不接收指针事件，所以这一个要自己收回来，并浮在点开层之上
    （两者都是定位元素且都没写 z-index，DOM 在后的 `.task-card-body` 本来就压在上面 ——
    显式写出来是为了不让"改一下结构顺序"把开关变成点不动） */

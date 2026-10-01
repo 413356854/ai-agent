@@ -42,6 +42,43 @@ public interface SkillStore {
 	AgentSkill update(Long id, String folder, String name, String description, String content, Long lastModifiedBy);
 
 	/**
+	 * <b>只改正文</b>，而且要求库里那一份还是 {@code expectedContent} ——
+	 * 拿的是一份过期的正文时一行都不改，返回 false。
+	 *
+	 * <h2>为什么它与 {@link #update} 并存，而不是把那一个加个参数</h2>
+	 * 两者的调用者不是同一类：{@code update} 是人在界面上编辑（他看到的正文就是他以为的那一份，
+	 * 覆盖掉别人的改动是"后写的赢"这种正常语义）；这一条服务的是"大模型自补充规则"——
+	 * 它读正文、只在两个标记之间拼接、再写回去，而那一份算出新正文的正文
+	 * **必须是库里当下那一份**，否则两次同时发生的拼接会静默丢掉其中一次。
+	 * 把这两种语义塞进一个方法，读的人得先判断"这一次是哪种"，而判断错的表现是丢内容。
+	 *
+	 * <p>不碰 folder / name / description：这一条每多写一列，就多一种顺手动坏用户内容的可能。
+	 *
+	 * <h2>★ NULL 由这个常量表达，不由调用方拼</h2>
+	 * 两种库互不认对方的 NULL 安全等号（MySQL 的 {@code <=>} 与 SQL 标准的
+	 * {@code IS NOT DISTINCT FROM} 各在某一边是语法错，两端都表现为静默不写），
+	 * 所以判据是"把库里的 NULL 换成 {@link #NULL_CONTENT_SENTINEL} 再比"。
+	 * 那个哨兵只有一处定义 —— 让调用方自己拼一个的话，写成别的值会让
+	 * "库里正文是 NULL 的那一条"永远补不上，而日志上看起来是"刚被别处改过"。
+	 *
+	 * @param content 新的正文
+	 * @param expectedContent 调用方读到的那一份正文；库里读到 {@code null} 时，
+	 *        <b>由这里换上哨兵</b>（传 {@code null} 进去等于说"库里那份不是 NULL 就别匹配"）
+	 * @param lastModifiedBy 最后修改人（自补充这一条写的是任务人）
+	 * @return 真的改到了返回 true；库里那一份已经变了返回 false（调用方据此报"刚被别处改过"）
+	 */
+	boolean replaceContent(Long id, String content, String expectedContent, Long lastModifiedBy);
+
+	/**
+	 * 正文列为 NULL 时的替身（见 {@link #replaceContent}）。
+	 *
+	 * <p>它带一个控制字符：正常正文里不会出现 {@code \u0001}，
+	 * 而"哨兵恰好与真正文撞上"那种错的形态是<b>该拦下的写入被放行</b>（静默丢内容），
+	 * 所以宁可让它不可能撞上。两种库都把它当普通字符串参数处理，不需要任何函数支持。
+	 */
+	String NULL_CONTENT_SENTINEL = "\u0001<<null-content>>\u0001";
+
+	/**
 	 * 删一条技能。
 	 *
 	 * @return 真的删掉了返回 true；那一行已经不在了返回 false ——

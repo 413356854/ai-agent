@@ -18,6 +18,7 @@ import java.util.Optional;
  *     → 执行中     EXECUTING             （任务执行器正在跑；跑完写执行结果）
  *     → 待验收     PENDING_ACCEPTANCE
  *     → 已完成     COMPLETED
+ *   待验收 ──人答复「任务未完成」──▶ 任务未完成 NOT_COMPLETED（写未完成原因，选填）
  *   已确认计划 ──判断授权不通过──▶ 权限不足 INSUFFICIENT_PERMISSION（结论写进 result）
  *   权限不足 ──人答复「已修改任务」──▶ 新发布（重新走一遍）
  *   任一非终态 → 已取消 CANCELLED（取消原因与状态同一次写入）
@@ -48,7 +49,13 @@ import java.util.Optional;
  * 合成一个之后，"这一步该干什么"只能靠"再看看它前面答过哪些确认项"推出来 ——
  * 那是把判据散进查询，而推错的形态是"重复拆一次任务点"或"跳过授权直接执行"。
  *
- * <h2>为什么两个"待确认"是两个状态，而不是一个</h2>
+ * <h2>「任务未完成」为什么是终态，而不是"待重做"</h2>
+ * 它记的是发布人的一次判断：这条活没做成。把它做成"待重做"之后，链上就会出现
+ * "重新执行一遍"这一步 —— 而重跑会把上一次已经发生的写操作再做一遍，那是事故不是浪费。
+ * 要重做由人在界面上重新发布一条：那时任务描述、目录授权、确认项都是新的，
+ * 而这一条留着"当时为什么没做成"（{@code agent_task.incomplete_reason}，选填）。
+ *
+ * <h2>两个"待确认"是两个状态，而不是一个</h2>
  * 见 {@code db/task-schema.sql} 的头注：一个状态装不下"现在等的是谁、等的是什么"。
  *
  * <h2>为什么"等哪一条确认项"由这个枚举回答，而不是散在服务层的 switch 里</h2>
@@ -76,6 +83,8 @@ public enum AgentTaskStatus {
 
 	COMPLETED("已完成"),
 
+	NOT_COMPLETED("任务未完成"),
+
 	CANCELLED("已取消");
 
 	private final String label;
@@ -93,9 +102,9 @@ public enum AgentTaskStatus {
 		return name().toUpperCase(Locale.ROOT);
 	}
 
-	/** 终态：不会再流转（{@link #COMPLETED} / {@link #CANCELLED}）。 */
+	/** 终态：不会再流转（{@link #COMPLETED} / {@link #NOT_COMPLETED} / {@link #CANCELLED}）。 */
 	public boolean terminal() {
-		return this == COMPLETED || this == CANCELLED;
+		return this == COMPLETED || this == NOT_COMPLETED || this == CANCELLED;
 	}
 
 	/**
@@ -141,7 +150,7 @@ public enum AgentTaskStatus {
 	 * <p>三组的判据：
 	 * <ul>
 	 *   <li>{@link #BOTH} —— 发布人与任务人都算：刚发出来（还没落到谁手上）、
-	 *       已经结束、已被取消。这三格上"这件事是谁的"不再有区别，两个人里谁都该找得到它；</li>
+	 *       已经结束、已被取消。这几格上"这件事是谁的"不再有区别，两个人里谁都该找得到它；</li>
 	 *   <li>{@link #PUBLISHER} —— 只有发布人：「待确认需求」与「待验收」那两件只有他能做；</li>
 	 *   <li>{@link #ASSIGNEE} —— 只有任务人：其余七个状态。球在 agent 手上的三格
 	 *       （三个"已确认"）<b>也在这一组里</b> —— 那一格确实是 agent 在拆在做，
@@ -150,7 +159,7 @@ public enum AgentTaskStatus {
 	 */
 	public enum Party {
 
-		/** 发布人<b>或</b>任务人都算（新发布 / 已完成 / 已取消）。 */
+		/** 发布人<b>或</b>任务人都算（新发布 / 已完成 / 任务未完成 / 已取消）。 */
 		BOTH("发布人或任务人"),
 
 		/** 只有发布人算（待确认需求 / 待验收）。 */
@@ -178,7 +187,7 @@ public enum AgentTaskStatus {
 	 */
 	public Party party() {
 		return switch (this) {
-			case NEW, COMPLETED, CANCELLED -> Party.BOTH;
+			case NEW, COMPLETED, NOT_COMPLETED, CANCELLED -> Party.BOTH;
 			case PENDING_REQUIREMENT, PENDING_ACCEPTANCE -> Party.PUBLISHER;
 			case PENDING_PLAN, INSUFFICIENT_PERMISSION,
 					CONFIRMED_REQUIREMENT, CONFIRMED_PLAN, EXECUTING -> Party.ASSIGNEE;
@@ -194,7 +203,7 @@ public enum AgentTaskStatus {
 	 *
 	 * <p>与 {@code AccountStatus.parse} 的取向一致（认不出落最保守的一档），但"保守"在这里的含义
 	 * 不同：账号那边落 DISABLED 是因为它决定"能不能用"；这里落 NEW 是因为它决定"看不看得见" ——
-	 * 落成 {@link #COMPLETED} / {@link #CANCELLED} 会让那一行从看板的活跃列里**消失**，
+	 * 落成 {@link #COMPLETED} / {@link #NOT_COMPLETED} / {@link #CANCELLED} 会让那一行从看板的活跃列里**消失**，
 	 * 而"卡片不见了"是这一页最难被发现的一种坏法。落在 NEW 至少看得见、还能重新推进。
 	 *
 	 * <h2>两个历史取值折回等价状态，而不是落 NEW</h2>

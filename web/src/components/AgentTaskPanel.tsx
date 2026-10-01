@@ -219,6 +219,14 @@ function TaskCard({ task, onOpen }: { task: AgentTaskCard; onOpen: () => void })
             <Clamped text={`取消原因：${task.cancelReason}`} className="task-card-cancel" maxHeight={62}
               open={open} onOverflow={(_region, more) => setOverflow(more)} />
           )}
+          {/* 未完成原因与取消原因同样只在自己那一段出现。⚠️ 这一列**选填**：
+              没写时状态本身就是那句"没做成"，所以这里写一句「（未填原因）」而不是留空 ——
+              留空会让"没填"与"这一段没渲染出来"看起来一样，而后者是这一页最难发现的一种坏法 */}
+          {task.status === 'NOT_COMPLETED' && (
+            <span className="task-card-incomplete">
+              {`未完成原因：${task.incompleteReason ?? '（未填原因）'}`}
+            </span>
+          )}
         </span>
         <span className="task-card-meta">
           {task.publisher} → {task.assignee || '（未指派任务人）'}
@@ -245,6 +253,9 @@ function TaskCard({ task, onOpen }: { task: AgentTaskCard; onOpen: () => void })
 function statusColor(status: string): string {
   if (status === 'COMPLETED') return 'green'
   if (status === 'CANCELLED') return 'default'
+  // 「任务未完成」与「已完成」同列而结局相反：那一列里排在一起的两张卡片，
+  // 只靠一个有色的标签区分太弱 —— 所以给它一个醒目的颜色（卡片上还有一条左侧警示边）
+  if (status === 'NOT_COMPLETED') return 'volcano'
   if (status === 'EXECUTING') return 'processing'
   // 「权限不足」与两个「待确认」同列（都在等人），但它等的不是答复而是一次处置 ——
   // 同色会让它在那一列里混成"又一条待确认"，而它要的动作完全不同
@@ -264,6 +275,7 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
   const detail = tasks.detail
   const [resultText, setResultText] = useState('')
   const [freeText, setFreeText] = useState('')
+  const [rejectReason, setRejectReason] = useState('')
   const [cancelOpen, setCancelOpen] = useState(false)
   /**
    * 「权限不足」那一格里被改过的任务描述；`null` = 用户还没动过，显示后端那一份。
@@ -282,11 +294,21 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
   const pending = data?.confirms.find(confirm => !confirm.answered)
   const actions = data?.actions ?? []
   const advanceAction = actions.find(action => action.key === 'advance')
+  const acceptAction = actions.find(action => action.key === 'accept')
+  const rejectAction = actions.find(action => action.key === 'reject')
   const reviseAction = actions.find(action => action.key === 'revise')
   const canAnswer = actions.some(action => action.key === 'answer')
   const canCancel = actions.some(action => action.key === 'cancel')
   // 「登记执行结果」那一步要多一个输入框：结果不是选项，得让人写
   const needsResult = task?.status === 'EXECUTING'
+  /**
+   * 验收那一格要两样东西：两个按钮（做成 / 没做成）与一个**选填**的原因输入框。
+   *
+   * <p>判据是"后端给了 accept 或 reject 这两个动作里的任何一个"，不是 `status === 'PENDING_ACCEPTANCE'`：
+   * 哪些动作现在可用是后端的定义（`DefaultAgentTaskService#actionsOf`），前端再抄一份状态清单，
+   * 就会在后端改那一格时与它漂移，而漂移的表现是"按钮不见了"。
+   */
+  const acceptance = acceptAction != null || rejectAction != null
   /** 这一格的结论是"权限不足"，不是执行结果 —— 两者共用 `result`，标签按状态换。 */
   const denied = task?.status === 'INSUFFICIENT_PERMISSION'
   /** 详情里那一份任务描述：权限不足那一格可改，改过就以编辑框里这一份为准。 */
@@ -296,14 +318,19 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
   /**
    * 这一步在等 agent，人现在点不动。
    *
-   * <p>判据是"有动作、但既不能答复也不能推进，也不能重发" —— **不列状态名**：
+   * <p>判据是"有动作、但既不能答复也不能推进、也不能验收、也不能重发" —— **不列状态名**：
    * 状态有哪些、哪几个由 agent 处理是后端的定义（`AgentTaskStatus.awaitingAgent()`），
    * 前端再抄一份清单，就会在后端新增一格时漏掉它，而漏掉的表现是这一格什么都不显示。
+   *
+   * <p>⚠️ 「验收」那两个动作（accept / reject）必须一起判：只判 advance 的话，
+   * 待验收那一格会被当成"等 agent"，于是弹出一句"这一步由 agent 任务执行做"——
+   * 而那一格恰恰是人在等他自己点。
    */
-  const awaitingAgent = actions.length > 0 && !advanceAction && !reviseAction && !canAnswer
+  const awaitingAgent = actions.length > 0 && !advanceAction && !acceptAction && !rejectAction
+    && !reviseAction && !canAnswer
 
   const close = () => {
-    setResultText(''); setFreeText(''); setCancelOpen(false); setRevisedDesc(null)
+    setResultText(''); setFreeText(''); setRejectReason(''); setCancelOpen(false); setRevisedDesc(null)
     tasks.closeTask()
   }
 
@@ -374,6 +401,23 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
             )
             : <Alert type="success" showIcon title="执行结果" description={task.result} />)}
           {task.cancelReason && <Alert type="warning" showIcon title="取消原因" description={task.cancelReason} />}
+          {/* 「任务未完成」在**详情**里也要说清两件事：这一格是终态（链上没有下一步），
+              以及它不会自动重跑 —— 后者要明说，否则"未完成"会被读成"它还会再试一次"。
+              原因没写时那句 `description` 走的是第二个分支（选填，没写就不是错误） */}
+          {task.status === 'NOT_COMPLETED' && (
+            <Alert
+              type="warning"
+              showIcon
+              title="任务未完成：验收时判定这次没做成"
+              description={<div className="diag-note">
+                <p>{task.incompleteReason ?? '（没有写未完成原因）'}</p>
+                <p>
+                  这一格是终态：它不会再流转，也<b>不会自动重跑</b>（重跑会把上一次已经发生的写操作再做一遍）。
+                  要重做请按改过的需求重新发布一条。
+                </p>
+              </div>}
+            />
+          )}
 
           <div className="task-confirms">
             <Text strong>确认项（每一步是谁怎么答的）</Text>
@@ -426,35 +470,78 @@ function TaskDetailModal({ tasks }: { tasks: UseTasksResult }) {
                 </Space.Compact>
               </Flex>
             )}
-            {(advanceAction || reviseAction || canCancel) && (
-              <Space size={8} wrap>
-                {advanceAction && needsResult && (
-                  <Input.TextArea
-                    rows={2}
-                    placeholder="执行结果（可留空 —— 跑完了但没有产出也是正常结果）"
-                    value={resultText}
-                    onChange={e => setResultText(e.target.value)}
+            {(advanceAction || acceptAction || rejectAction || reviseAction || canCancel) && (
+              <Flex vertical gap={8}>
+                {/* 验收那一格：先说清这两个按钮各自意味着什么，再画两个按钮。
+                    这一格是这条链上**唯一**要人判"做成没做成"的地方，而它的两个落点
+                    对记录的影响不同（一个触发经验补充、一个会记原因），不写出来用户只能猜 */}
+                {acceptance && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    title="这条任务做完了没有？两个选项各对应一种结局"
+                    description="「任务已完成」= 交付验收通过，而且这条任务问过、答过的内容会被汇成规则补进技能（下一次相似的任务就不必再问同样的问题）；「任务未完成」= 这次没做成，可以写一句差在哪 —— 它到此结束，不会自动重跑（要重做请重新发布一条）。"
                   />
                 )}
-                {advanceAction && (
-                  <Button type="primary" disabled={tasks.busy}
-                    onClick={() => void tasks.advance(task.id, needsResult ? resultText : undefined)}>
-                    {advanceAction.label}
-                  </Button>
-                )}
-                {/* 「已修改任务」：按钮上那句话由后端给（它同时是这一格的语义），这里只画出来。
-                    点了就回「新发布」重走一遍，所以文案必须让人看清这不是"再试一次原样执行"；
-                    上面那格里改过的描述随这次答复一起提交（空描述点不动 —— 后端也会回 400） */}
-                {reviseAction && (
-                  <Button type="primary" disabled={!description.trim() || tasks.busy}
-                    onClick={() => void tasks.revise(task.id, description.trim())}>
-                    {reviseAction.label}
-                  </Button>
-                )}
-                {canCancel && (
-                  <Button danger disabled={tasks.busy} onClick={() => setCancelOpen(true)}>取消任务</Button>
-                )}
-              </Space>
+                <Space size={8} wrap align="start">
+                  {advanceAction && needsResult && (
+                    <Input.TextArea
+                      rows={2}
+                      placeholder="执行结果（可留空 —— 跑完了但没有产出也是正常结果）"
+                      value={resultText}
+                      onChange={e => setResultText(e.target.value)}
+                    />
+                  )}
+                  {advanceAction && (
+                    <Button type="primary" disabled={tasks.busy}
+                      onClick={() => void tasks.advance(task.id, needsResult ? resultText : undefined)}>
+                      {advanceAction.label}
+                    </Button>
+                  )}
+                  {/* 「任务已完成」与「任务未完成」是那一次验收的两个选项，所以并排画、顺序固定：
+                      左"做成"右"没做成" —— 顺序反过来会让一次匆忙的点击点错结局，而那是不可逆的。
+                      原因输入框排在两者之后：先让人看清是两个选项，再决定要不要写那句话 */}
+                  {acceptAction && (
+                    <Button className="task-accept" type="primary" disabled={tasks.busy}
+                      onClick={() => void tasks.accept(task.id)}>
+                      {acceptAction.label}
+                    </Button>
+                  )}
+                  {rejectAction && (
+                    <Button className="task-reject" danger disabled={tasks.busy}
+                      onClick={() => void tasks.reject(task.id, rejectReason.trim() || undefined)}>
+                      {rejectAction.label}
+                    </Button>
+                  )}
+                  {acceptance && (
+                    <Flex vertical gap={4} style={{ minWidth: 280 }}>
+                      <Input
+                        className="task-reject-reason"
+                        placeholder="任务未完成的原因（选填）—— 写清差在哪，事后只能靠它"
+                        value={rejectReason}
+                        maxLength={512}
+                        onChange={e => setRejectReason(e.target.value)}
+                      />
+                      <Text type="secondary">
+                        选填：不写也提交得了 —— 这一格要记的是"没做成"这个判断本身。
+                      </Text>
+                    </Flex>
+                  )}
+                  {/* 「已修改任务」：按钮上那句话由后端给（它同时是这一格的语义），这里只画出来。
+                      点了就回「新发布」重走一遍，所以文案必须让人看清这不是"再试一次原样执行"；
+                      上面那格里改过的描述随这次答复一起提交（空描述点不动 —— 后端也会回 400） */}
+                  {reviseAction && (
+                    <Button type="primary" disabled={!description.trim() || tasks.busy}
+                      onClick={() => void tasks.revise(task.id, description.trim())}>
+                      {reviseAction.label}
+                    </Button>
+                  )}
+                  {canCancel && (
+                    <Button className="task-cancel" danger disabled={tasks.busy}
+                      onClick={() => setCancelOpen(true)}>取消任务</Button>
+                  )}
+                </Space>
+              </Flex>
             )}
             {actions.length === 0 && <Text type="secondary">这条任务已经结束，没有可做的动作。</Text>}
           </div>

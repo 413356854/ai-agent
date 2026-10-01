@@ -219,7 +219,7 @@ public class AgentTaskTransitions {
 	 *
 	 * <p>返回的是<b>用户 id</b>（写进 {@code agent_task.current_executor_id}），
 	 * 而 {@code null} 是有含义的两种：球在 agent 手上（agent 不是账号，那一列存不下它），
-	 * 或这件事已经结束。四种落点：
+	 * 或这件事已经结束。五种落点：
 	 * <ul>
 	 *   <li>{@link AgentTaskStatus#NEW}、「待确认计划」、「权限不足」与
 	 *       {@link AgentTaskStatus#EXECUTING} —— <b>任务人</b>：球在他手上，由他往下做。
@@ -230,8 +230,8 @@ public class AgentTaskTransitions {
 	 *       —— <b>发布人</b>：前者等他答复需求确认项、后者等他验收，这两件只有他能做；</li>
 	 *   <li>「已确认需求」与「已确认计划」—— agent（空；卡片上的 {@code agent#…}
 	 *       由 {@link AgentTask#executorLabel()} 按 {@code agent_id} 拼出来）；</li>
-	 *   <li>{@link AgentTaskStatus#COMPLETED} —— 没有执行人（没有事件在谁手上了），
-	 *       留着 id 会让那张卡片读起来像还卡着；</li>
+	 *   <li>{@link AgentTaskStatus#COMPLETED} 与 {@link AgentTaskStatus#NOT_COMPLETED}
+	 *       —— 没有执行人（没有事件在谁手上了），留着 id 会让那张卡片读起来像还卡着；</li>
 	 *   <li>{@link AgentTaskStatus#CANCELLED} —— 由取消那条路单独处理（保持不动，见 {@code cancel}）。</li>
 	 * </ul>
 	 *
@@ -246,7 +246,7 @@ public class AgentTaskTransitions {
 			case NEW -> task.assigneeId() == null ? task.publisherId() : task.assigneeId();
 			case PENDING_PLAN, INSUFFICIENT_PERMISSION, EXECUTING -> task.assigneeId();
 			case CONFIRMED_REQUIREMENT, CONFIRMED_PLAN -> null;
-			case COMPLETED -> null;
+			case COMPLETED, NOT_COMPLETED -> null;
 			case CANCELLED -> task.currentExecutorId();
 		};
 	}

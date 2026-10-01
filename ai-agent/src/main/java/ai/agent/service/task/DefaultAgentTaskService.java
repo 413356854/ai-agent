@@ -30,6 +30,11 @@ import java.util.List;
  * 界面上再写一遍判断的后果是两份判据迟早不一致，而它们不一致时的现象是
  * "点得下去、点完报错"（用户会以为是自己操作错了）。
  *
+ * <h2>验收为什么是两个动作（{@link #accept} / {@link #reject}）</h2>
+ * 那一格的两个落点后续要做的事不同：一个触发"把这次问过、答过的汇成规则"、
+ * 一个要记下未完成原因。合成一个带布尔的动作之后，"这次点的是哪一个"
+ * 只能靠请求体里有没有 reason 去猜，而猜错是静默的（一次"没做成"被记成"做成了"）。
+ *
  * <h2>每个写动作是一个事务</h2>
  * 状态推进与确认项生成必须同生共死：只改了状态没生成确认项，
  * 那条任务就卡在"待确认需求"而没有任何东西可答（界面上永远是待办、永远点不动）。
@@ -72,13 +77,23 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	 */
 	private final PermissionService permissions;
 
+	/**
+	 * 「验收通过之后把这次问过的、答过的汇成规则写进技能」那一件事（见 {@code TaskRuleDigest}）。
+	 *
+	 * <p>它由验收触发、但<b>不在验收的响应路径上</b>：那个类挂在事务提交之后、
+	 * 在别的线程上调模型，失败只记日志。所以这里不接它的任何异常，也不读它的任何返回值。
+	 */
+	private final TaskRuleDigest digests;
+
 	public DefaultAgentTaskService(AgentTaskMapper tasks, AgentTaskConfirmMapper confirms,
-			AgentTaskTransitions transitions, AgentTaskDispatch dispatch, PermissionService permissions) {
+			AgentTaskTransitions transitions, AgentTaskDispatch dispatch, PermissionService permissions,
+			TaskRuleDigest digests) {
 		this.tasks = tasks;
 		this.confirms = confirms;
 		this.transitions = transitions;
 		this.dispatch = dispatch;
 		this.permissions = permissions;
+		this.digests = digests;
 		verifyColumnsCoverAllStatuses();
 		verifyPartyCoverAllStatuses();
 	}
@@ -188,15 +203,74 @@ public class DefaultAgentTaskService implements AgentTaskService {
 		AgentTask task = transitions.require(id);
 		AgentTaskStatus reached = switch (task.status()) {
 			case EXECUTING -> finishExecution(task, result);
-			case PENDING_ACCEPTANCE -> accept(task);
 			default -> throw new TaskConflictException(("当前状态「%s」没有可推进的事件 —— 能推进的只有"
-					+ "「执行中」（登记执行结果）与「待验收」（验收通过）；两个「待确认」在等确认项的答复、"
-					+ "「权限不足」要答复的是 revise（「已修改任务」/「取消任务」），"
+					+ "「执行中」（登记执行结果）；「待验收」有两个落点，走的是 accept（「任务已完成」）"
+					+ "与 reject（「任务未完成」）那两个动作，不是这里；"
+					+ "两个「待确认」在等确认项的答复、「权限不足」要答复的是 revise（「已修改任务」/「取消任务」），"
 					+ "「新发布」与两个「已确认」由 agent 任务执行处理（页面上没有按钮就是还没轮到人），"
 					+ "终态不再流转。详情里的 actions 就是现在能做的事。")
 					.formatted(task.status().label()));
 		};
 		dispatchAfterCommit(reached);
+		return detail(id);
+	}
+
+	/**
+	 * 验收通过：待验收 → 已完成。完成之后另触发一次"把这次问过、答过的汇成规则"（见 {@code digests}）。
+	 *
+	 * <p>两件事的顺序是刻意的：**先把验收落定，再补充规则**。反过来做的话，
+	 * 模型调不通会让用户点不动「任务已完成」—— 而"这条活做完了"是他自己看到的事实，
+	 * 不该由一次辅助调用挡住（补充失败只表现为技能里没有新规则，日志里有原因）。
+	 */
+	@Override
+	@Transactional
+	public Detail accept(Long id) {
+		AgentTask task = transitions.require(id);
+		if (task.status() != AgentTaskStatus.PENDING_ACCEPTANCE) {
+			throw new TaskConflictException(("当前状态「%s」不能验收 —— 能验收的只有「待验收」那一格；"
+					+ "「执行中」要先「登记执行结果」把它推到待验收、终态不再流转、"
+					+ "两个「待确认」在等确认项的答复。详情里的 actions 就是现在能做的事。")
+					.formatted(task.status().label()));
+		}
+		AgentTaskStatus reached = transitions.move(task, AgentTaskStatus.COMPLETED, task.currentStep() + 1,
+				AgentTaskTransitions.executorFor(AgentTaskStatus.COMPLETED, task));
+		log.info("任务 #{} 验收通过：已完成（第 {} 步）", id, task.currentStep() + 1);
+		// 确认项要在这里读出来交给补充那一件事：它跑在事务提交之后、另一个线程上，
+		// 而那条线程手上没有这份详情（它只会按 id 再查一次任务，不再查确认项 —— 少一次读）
+		digests.digestAfterCommit(task, confirms.listByTask(id).stream()
+				.map(MapperRows.AgentTaskConfirmRow::toDomain)
+				.toList());
+		return detail(id);
+	}
+
+	/**
+	 * 任务未完成：待验收 → 未完成。原因<b>选填</b>。
+	 *
+	 * <p>先落原因再挪状态（与 {@code revise} 里"先落描述再挪状态"同一条）：原因超长时当场 400、
+	 * 状态一动不动；反过来先挪状态的话，一次参数错的答复会留下一条"已经是任务未完成、
+	 * 原因却没写上"的任务，而它在卡片上看起来完全正常。
+	 *
+	 * <p>它是终态，所以不触发经验补充（{@code accept} 才触发）：没做成的任务能总结出的是
+	 * "这次为什么没做成"，而那属于 {@link AgentTask#incompleteReason()} 那一格，
+	 * 把它写进技能会让下一次不再问 —— 而那次可能只是这一次没条件做。
+	 */
+	@Override
+	@Transactional
+	public Detail reject(Long id, String reason) {
+		AgentTask task = transitions.require(id);
+		if (task.status() != AgentTaskStatus.PENDING_ACCEPTANCE) {
+			throw new TaskConflictException(("当前状态「%s」不能记成未完成 —— 能选这一格的只有「待验收」；"
+					+ "要中止一条还没到验收的任务请用「取消任务」。详情里的 actions 就是现在能做的事。")
+					.formatted(task.status().label()));
+		}
+		String checked = incompleteReason(reason);
+		if (checked != null && tasks.updateIncompleteReason(id, checked) != 1) {
+			throw new TaskInvalidException("任务不存在：#" + id);
+		}
+		transitions.move(task, AgentTaskStatus.NOT_COMPLETED, task.currentStep() + 1,
+				AgentTaskTransitions.executorFor(AgentTaskStatus.NOT_COMPLETED, task));
+		log.info("任务 #{} 验收记为「任务未完成」（第 {} 步）{}", id, task.currentStep() + 1,
+				checked == null ? "（没写原因）" : "：" + checked);
 		return detail(id);
 	}
 
@@ -341,21 +415,38 @@ public class DefaultAgentTaskService implements AgentTaskService {
 		return moved;
 	}
 
-	/** 待验收 → 已完成：验收通过。完成后没有"当前执行人"—— 没有事件在谁手上了。 */
-	private AgentTaskStatus accept(AgentTask task) {
-		AgentTaskStatus moved = transitions.move(task, AgentTaskStatus.COMPLETED, task.currentStep() + 1,
-				AgentTaskTransitions.executorFor(AgentTaskStatus.COMPLETED, task));
-		log.info("任务 #{} 验收通过：已完成", task.id());
-		return moved;
+	/**
+	 * 未完成原因的判据 —— <b>选填</b>，写了的才过上限。
+	 *
+	 * <p>空值归成 {@code null} 而不是空串：与 {@code AgentTask} 的紧凑构造器同一套归一，
+	 * 库里"没写原因"因此只有一种形态（NULL），卡片上据此不画那一行。
+	 *
+	 * @return 过完判据的那一份；没写时返回 {@code null}
+	 */
+	private static String incompleteReason(String reason) {
+		if (reason == null || reason.isBlank()) {
+			return null;
+		}
+		String checked = reason.strip();
+		if (checked.length() > AgentTask.MAX_INCOMPLETE_REASON_CHARS) {
+			throw new TaskInvalidException("未完成原因过长（%d 字符 > 上限 %d）"
+					.formatted(checked.length(), AgentTask.MAX_INCOMPLETE_REASON_CHARS));
+		}
+		return checked;
 	}
 
 	/**
 	 * 现在能做的动作。它是"界面上该画哪些按钮"的唯一依据
-	 * （与 {@link #advance} / {@link #answer} / {@link #cancel} 允许的状态一一对应）。
+	 * （与 {@link #advance} / {@link #accept} / {@link #reject} / {@link #answer} / {@link #cancel}
+	 * 允许的状态一一对应）。
 	 *
 	 * <p><b>「新发布」与两个「已确认」没有推进按钮</b>：那三格的下一步由任务执行器做，
 	 * 人点不动。给它们画一个"看起来能推进"的按钮比不画更坏 —— 用户会反复点，
 	 * 而每次都回一句"当前状态不允许"。
+	 *
+	 * <p>「待验收」给两个动作、「执行中」给一个：验收那一格的<b>两个</b>落点（做成 / 没做成）
+	 * 是发布人当场要做的判断，所以两个按钮一起摆出来；而"登记执行结果"只是一件事，
+	 * 它没有第二种结局（跑失败停在执行中也是它）。
 	 *
 	 * <p>「权限不足」两个按钮：{@code revise}（「已修改任务」= 重新走一遍）与 {@code cancel}。
 	 * 没有 {@code advance}：这一格要的不是"推进当前事件"，而是"这条任务已经改过了"。
@@ -369,8 +460,9 @@ public class DefaultAgentTaskService implements AgentTaskService {
 					List.of(new Action("revise", "已修改任务"), new Action("cancel", "取消任务"));
 			case CONFIRMED_REQUIREMENT, CONFIRMED_PLAN -> List.of(new Action("cancel", "取消任务"));
 			case EXECUTING -> List.of(new Action("advance", "登记执行结果"), new Action("cancel", "取消任务"));
-			case PENDING_ACCEPTANCE -> List.of(new Action("advance", "验收通过"), new Action("cancel", "取消任务"));
-			case COMPLETED, CANCELLED -> List.of();
+			case PENDING_ACCEPTANCE -> List.of(new Action("accept", "任务已完成"),
+					new Action("reject", "任务未完成"), new Action("cancel", "取消任务"));
+			case COMPLETED, NOT_COMPLETED, CANCELLED -> List.of();
 		};
 	}
 

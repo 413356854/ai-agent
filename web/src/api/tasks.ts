@@ -45,7 +45,7 @@ export interface AgentTaskCard {
   /**
    * NEW / PENDING_REQUIREMENT / PENDING_PLAN / INSUFFICIENT_PERMISSION /
    * CONFIRMED_REQUIREMENT / CONFIRMED_PLAN / EXECUTING / PENDING_ACCEPTANCE /
-   * COMPLETED / CANCELLED。
+   * COMPLETED / NOT_COMPLETED / CANCELLED。
    */
   status: string
   statusLabel: string
@@ -81,6 +81,14 @@ export interface AgentTaskCard {
   result: string | null
   /** 取消原因；没取消时为 null。 */
   cancelReason: string | null
+  /**
+   * 未完成原因；状态不是 `NOT_COMPLETED` 时为 null。
+   *
+   * <p>⚠️ 它是**选填**的：`null` 有两种来源（这条不是「任务未完成」/ 是它但当时没写原因），
+   * 两者的区别由 `status` 回答 —— 所以界面按状态决定要不要说"（未填原因）"这句话，
+   * 而不是把 null 一律当成"没这一格"。
+   */
+  incompleteReason: string | null
   createdAt: string | null
   updatedAt: string | null
 }
@@ -104,10 +112,16 @@ export interface AgentTaskConfirm {
 }
 
 /**
- * 现在能做的动作。`key` 取值：`advance` / `answer` / `revise` / `cancel`（后端是唯一判据）。
+ * 现在能做的动作。`key` 取值：`advance` / `accept` / `reject` / `answer` / `revise` / `cancel`
+ * （后端是唯一判据）。
  *
- * <p>`revise` 只有一个状态会给（`INSUFFICIENT_PERMISSION`），按钮上是「已修改任务」：
- * 它把任务放回「新发布」整条链重走一遍。
+ * <p>`accept` 与 `reject` 只在 `PENDING_ACCEPTANCE` 那一格出现，是那一次验收的**两个选项**：
+ * 「任务已完成」把它推成已完成（顺带把这条任务的经验汇成规则补进技能）、
+ * 「任务未完成」把它推成未完成（可带一句选填的原因）。它们不是"一个动作的两种参数" ——
+ * 后端把它们做成了两个端点，见 `taskApi.accept` / `taskApi.reject`。
+ *
+ * <p>`advance` 只剩「执行中」那一格（「登记执行结果」）；`revise` 只有一个状态会给
+ * （`INSUFFICIENT_PERMISSION`），按钮上是「已修改任务」：它把任务放回「新发布」整条链重走一遍。
  */
 export interface AgentTaskAction {
   key: string
@@ -222,9 +236,33 @@ export const taskApi = {
   create: (payload: { publisher: string; assignee: string; description: string }) =>
     send<{ ok: boolean; task: AgentTaskCard }>('POST', '', payload),
 
-  /** 推进当前事件。`result` 只在「执行中 → 待验收」那一步有意义（可空）。 */
+  /**
+   * 登记执行结果（`result` 可空 —— 跑完了但没有产出也是正常结果）。
+   *
+   * <p>⚠️ 它**不是**验收：验收那一格的两个落点走下面那两个端点
+   * （`accept` = 任务已完成 / `reject` = 任务未完成）。
+   */
   advance: (id: number, result?: string) =>
     send<AgentTaskWriteResult>('POST', `/${id}/advance`, { result }),
+
+  /**
+   * 「任务已完成」：「待验收」 → 已完成。
+   *
+   * <p>它顺带触发一次"把这条任务问过、答过的汇成规则补进技能"（后端在事务提交之后的
+   * 另一个线程上跑）。那件事失败**不影响**这次验收 —— 所以这里等回来的仍然是"已完成"，
+   * 而技能里有没有新规则要去 skill 管理那一页看。
+   *
+   * <p>请求体是空对象：后端那一族写端点统一要求 JSON 请求体（见 AgentTaskController#accept）。
+   */
+  accept: (id: number) =>
+    send<AgentTaskWriteResult>('POST', `/${id}/accept`, {}),
+
+  /**
+   * 「任务未完成」：「待验收」 → 未完成。`reason` 是**选填**的未完成原因
+   * （没写就是没写，后端不编默认值；> 512 字符是 400）。
+   */
+  reject: (id: number, reason?: string) =>
+    send<AgentTaskWriteResult>('POST', `/${id}/reject`, { reason }),
 
   /** 答复一条确认项。`answer` 是用户选的选项或自由回复（必填，判据在后端）。 */
   answer: (id: number, confirmId: number, answer: string) =>

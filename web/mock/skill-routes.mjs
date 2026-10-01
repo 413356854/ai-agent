@@ -44,6 +44,21 @@
 
 import { findMockAccountById, mockPermissionsOfId } from './permission-routes.mjs'
 
+/**
+ * 自补充段的那两个标记与"哪一条块属于哪条任务"的标识 —— 与真后端 `AgentSkill` 里的常量逐字一致。
+ *
+ * <p>假后端照搬它们，是为了让自检断言的**是同一件事**：真后端把规则写在两个标记之间、
+ * 标记之外一个字节都不动（那条判据在 `AgentSkill#supplementSegment`），
+ * 假后端各写一套的话，自检里全绿而真后端上规则落到了别处 —— 这种"假绿"是这一节最贵的错。
+ */
+export const SUPPLEMENT_START = '### 大模型自补充规则 ###'
+export const SUPPLEMENT_END = '###end###'
+const SUPPLEMENT_PLACEHOLDER = '（暂无：每完成一条 agent 任务，系统会在这里追加一条经验规则）'
+const RULE_BLOCK_TASK_PREFIX = '<!-- 任务 #'
+
+/** 「自补充规则优先写进哪条技能」的默认名字 —— 与真后端 `ai.agent.skill.supplement-skill-name` 同一句话。 */
+const SUPPLEMENT_SKILL_NAME = '【自补充】任务经验规则'
+
 /** 初始状态。每次 __reset 都从这里重建（深拷贝，避免被就地改坏）。 */
 function initialState() {
   return {
@@ -76,16 +91,91 @@ function initialState() {
         ownerId: 2,
         lastModifiedBy: 2,
       },
+      {
+        // ★ 「大模型自补充规则」的落点 —— admin 名下**同名**的那一条。
+        //
+        // 给他两条（这一条 + 「周报整理」）是刻意的：真后端挑技能的判据是
+        // 「名字等于配置里那一条优先，否则任务人只有一条时用那一条」
+        // （见 SkillRuleSupplement#target），只放一条时两种判据都命中，
+        // "名字优先"这件事就断不出来；两条一起摆着，自检还能多断一条
+        // ——「周报整理」那一份必须一个字都没变（一个"抓到谁写谁"的实现会被它断出来）。
+        //
+        // ⚠️ 正文里**刻意有一段用户自己写的内容在标记之前**：真后端要断的是
+        // "系统只动自己那一段"，而自检取的读数正是"标记之前那一份"——
+        // 假数据把标记放在最前面时那个读数永远是空串，那条断言也就断不到任何东西。
+        id: 4,
+        folder: 'D:\\work\\demo',
+        name: SUPPLEMENT_SKILL_NAME,
+        description: '由系统在 agent 任务验收通过后自动追加的经验规则。',
+        content: '这条技能里除了下面那段自动追加的规则，还写着一些人工维护的说明：'
+          + '规则的适用范围是 demo 目录下的任务。\n\n'
+          + `${SUPPLEMENT_START}\n${SUPPLEMENT_PLACEHOLDER}\n${SUPPLEMENT_END}`,
+        ownerId: 1,
+        lastModifiedBy: 1,
+      },
+      {
+        // 对照组：同一个人名下的另一条技能 —— 规则不该动它（见上面那一条的注释）
+        id: 5,
+        folder: 'D:\\work\\demo',
+        name: '周报整理',
+        description: '把一周的进展与风险整理成一份周报。',
+        content: '按「已完成 / 在办 / 卡住」三栏写；卡住的那一栏必须写出卡在哪一步。',
+        ownerId: 1,
+        lastModifiedBy: 1,
+      },
     ],
-    nextId: 4,
+    nextId: 6,
   }
 }
 
 let state = initialState()
 
-/** 现在时间（ISO-8601 文本，与真后端 `Instant.toString()` 同形）。 */
+/**
+ * 现在时间（ISO-8601 文本，与真后端 `Instant.toString()` 同形）。 */
 function now() {
   return new Date().toISOString()
+}
+
+/**
+ * <b>验收通过之后把规则补进技能</b> —— 真后端那一步是"一次模型调用 + 一次技能写入"，
+ * 假后端不调模型，但照搬它的**产物形态**与三条判据：
+ *
+ *   ① <b>挑哪条技能</b>：任务人拥有的技能里名字等于 {@link SUPPLEMENT_SKILL_NAME} 的那一条，
+ *      否则他只有一条技能时用那一条，否则**一条都不写**（与真后端 `SkillRuleSupplement#target` 逐条一致）；
+ *   ② <b>只动标记之间</b>：标记之前与之后的正文原样保留 —— 用户的内容一个字节都不改；
+ *   ③ <b>幂等</b>：自补充段里已经有 `<!-- 任务 #id -->` 就跳过（同一条任务不补两次）。
+ *
+ * <p>它由 task-routes 在「任务已完成」那一步调用（那个模块导入本模块）。
+ *
+ * @returns 写进去了返回写的是哪一条技能；没写返回 null（与真后端"没有去处就不写"同一件事）
+ */
+export function appendSupplementToSkill(ownerId, taskId, description, rule) {
+  if (ownerId == null) return null
+  const mine = state.skills.filter(skill => skill.ownerId === ownerId)
+  const named = mine.find(skill => skill.name === SUPPLEMENT_SKILL_NAME)
+  const target = named ?? (mine.length === 1 ? mine[0] : null)
+  if (!target) return null
+  const block = `${RULE_BLOCK_TASK_PREFIX}${taskId} -->\n`
+    + `#### ${now().slice(0, 16).replace('T', ' ')} · 任务 #${taskId}（${description ?? ''}）\n- ${rule}`
+  const content = target.content ?? ''
+  const start = content.indexOf(SUPPLEMENT_START)
+  const end = start < 0 ? -1 : content.indexOf(SUPPLEMENT_END, start + SUPPLEMENT_START.length)
+  if (start >= 0 && end >= 0) {
+    const segment = content.slice(start, end + SUPPLEMENT_END.length)
+    if (segment.includes(`${RULE_BLOCK_TASK_PREFIX}${taskId} -->`)) return null
+    const inner = content.slice(start + SUPPLEMENT_START.length, end).trim()
+    const kept = inner === SUPPLEMENT_PLACEHOLDER ? '' : inner
+    const merged = `${SUPPLEMENT_START}\n${kept ? `${kept}\n\n` : ''}${block}\n${SUPPLEMENT_END}`
+    target.content = content.slice(0, start) + merged + content.slice(end + SUPPLEMENT_END.length)
+  }
+  else {
+    // 没有成对的标记：正文原样保留，在末尾重贴一段完整的标记段（与真后端 SkillRuleSupplement#merge 一致）
+    const segment = `${SUPPLEMENT_START}\n${block}\n${SUPPLEMENT_END}`
+    target.content = content.trim() ? `${content.trim()}\n\n${segment}` : segment
+  }
+  target.lastModifiedBy = ownerId
+  target.updatedAt = now()
+  return target
 }
 
 /**

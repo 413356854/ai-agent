@@ -125,6 +125,30 @@ public class SkillDirectory {
 	}
 
 	/**
+	 * <b>某个执行者能用哪些文件夹</b>（他全部角色的目录前缀，去重后按原文排序）——
+	 * 与 {@link #forExecutor(Long)} 是同一份判据，只是不要技能那一半。
+	 *
+	 * <p>调用点只有一处：{@code SkillRuleSupplement} 在"任务人一条技能都没有"时
+	 * 要给他建一条，而技能必须落在他有权限的目录下 —— 落在谁都取不到的目录里等于没写
+	 * （技能是按"文件夹落在角色目录前缀内"筛的），而它会在列表上安安静静地躺着。
+	 *
+	 * <p>刻意<b>不</b>与 {@code DefaultSkillService#foldersOf} 合并：那一处服务的是界面上
+	 * "当前登录人"的选项集，这一处问的是"任务人的角色目录" —— 主语不同，
+	 * 合并会把界面那一条链路的改动牵到这里。
+	 *
+	 * <p>解析不出来（账号不存在 / 已停用 / 一个角色都没有）时返回空列表，
+	 * 与 {@link #forExecutor(Long)} 的取向一致：那是正常状态，不是故障。
+	 */
+	public List<String> foldersForExecutor(Long executorId) {
+		if (executorId == null) {
+			return List.of();
+		}
+		return permissions.resolveById(executorId)
+				.map(resolved -> foldersOf(resolved.permissions()))
+				.orElseGet(List::of);
+	}
+
+	/**
 	 * 一个账号全部角色的目录前缀，<b>按原文去重</b>（大小写不敏感地合并）。
 	 *
 	 * <p>去重的键是小写形式而留下的是原文：Windows 路径不区分大小写，

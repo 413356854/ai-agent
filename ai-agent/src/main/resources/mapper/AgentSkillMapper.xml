@@ -90,6 +90,32 @@
 		 WHERE id = #{id}
 	</update>
 
+	<!--
+	  只改正文，而且要求库里那一份还是 expectedContent（条件更新的理由见 AgentSkillMapper#replaceContent）。
+	  description / folder / name 一概不碰：这一条只服务"大模型自补充规则"那一件事，
+	  它每碰一列就多一种顺手动坏用户内容的可能。
+
+	  【判据为什么是 COALESCE(content, ?) = ? 而不是某个"NULL 安全等于"运算符】
+	  实测这一对库**互不认对方的 NULL 安全等于**：
+	    · MySQL 的 `<=>`      → H2 2.3.232（MODE=MySQL）直接报 42001 Syntax error
+	    · `IS NOT DISTINCT FROM` → MySQL 8.0.17 报 42000 Syntax error（near 'DISTINCT FROM'）
+	  两次都表现为"验收成功、技能静默没变"（MyBatis 打出 Preparing: 之后就断在那里，
+	  看不到参数也看不到原因）。所以判据改成：**把库里的 NULL 用一个 Java 侧传来的哨兵替换掉再比**。
+	  ⚠️ 哨兵必须走参数（`COALESCE(content, #{sentinel}) = #{expectedContent}`），
+	  不能写成 `COALESCE(content, ?) = COALESCE(?, ?)` —— 实测 H2 在那种写法上报
+	  HY004「Unknown data type: "?"」（它推不出参数类型），MySQL 反而不报。
+	  ⚠️ 也**不要**改成 `COALESCE(content, CHAR(1))`：那会再引入一个 H2 的 `CHAR(n)` 是否可用的前置假设。
+
+	  取舍：调用方传 null 表示"库里那一份不是 NULL 就别匹配"（NULL 永远不等于任何东西）——
+	  调用方读到的 expectedContent 是 null 时本来就只有"库里也是 NULL"那一种情形该被放行，
+	  而那种情形由哨兵这一侧表达（见 SkillStore#NULL_CONTENT_SENTINEL）。
+	-->
+	<update id="replaceContent">
+		UPDATE agent_skill
+		   SET content = #{content}, last_modified_by = #{lastModifiedBy}
+		 WHERE id = #{id} AND COALESCE(content, #{sentinel}) = #{expectedContent}
+	</update>
+
 	<delete id="delete">
 		DELETE FROM agent_skill WHERE id = #{id}
 	</delete>

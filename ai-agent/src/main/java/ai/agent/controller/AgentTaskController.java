@@ -28,13 +28,16 @@ import java.util.Map;
  *
  * <h2>端点与它回答的问题</h2>
  * <table border="1">
- *   <caption>七个端点</caption>
+ *   <caption>九个端点</caption>
  *   <tr><th>端点</th><th>回答什么</th></tr>
  *   <tr><td>{@code GET /api/agent-tasks}</td><td>"现在有哪些任务、各自在哪一列"（看板一次取回；
  *       {@code ?userId=} 时只给"球在他手上"的那些）</td></tr>
  *   <tr><td>{@code GET /api/agent-tasks/{id}}</td><td>"这条任务走到哪了、每一步是谁怎么答的、现在能做什么"</td></tr>
  *   <tr><td>{@code POST /api/agent-tasks}</td><td>"发布一条任务"</td></tr>
- *   <tr><td>{@code POST …/{id}/advance}</td><td>"推进当前事件"（登记执行结果 / 验收通过）</td></tr>
+ *   <tr><td>{@code POST …/{id}/advance}</td><td>"登记执行结果"（执行中 → 待验收）</td></tr>
+ *   <tr><td>{@code POST …/{id}/accept}</td><td>"任务已完成"（待验收 → 已完成；顺带把这条任务的经验
+ *       汇成规则补进技能，见 {@code TaskRuleDigest}）</td></tr>
+ *   <tr><td>{@code POST …/{id}/reject}</td><td>"任务未完成"（待验收 → 未完成，可带一句选填的原因）</td></tr>
  *   <tr><td>{@code POST …/{id}/confirms/{confirmId}/answer}</td><td>"答复这条确认项"</td></tr>
  *   <tr><td>{@code POST …/{id}/revise}</td><td>"已修改任务"（权限不足 → 新发布，请求体里带着改过的任务描述）</td></tr>
  *   <tr><td>{@code POST …/{id}/cancel}</td><td>"取消任务"（必须给原因）</td></tr>
@@ -95,7 +98,8 @@ public class AgentTaskController {
 		// ⚠️ 键是 userId 而不是 currentExecutorId —— 后者在任务卡片上是**另一个东西**
 		// （那一格此刻球在谁手上）；两个同名的键放进同一个响应体里迟早被读错
 		body.put("userId", userId);
-		body.put("howToAdvance", "POST /api/agent-tasks/{id}/advance | /confirms/{confirmId}/answer | /cancel");
+		body.put("howToAdvance", "POST /api/agent-tasks/{id}/advance | /accept | /reject | "
+				+ "/confirms/{confirmId}/answer | /cancel");
 		return body;
 	}
 
@@ -128,9 +132,44 @@ public class AgentTaskController {
 		return ResponseEntity.ok(body);
 	}
 
+	/**
+	 * 推进当前事件：{@code 执行中 → 待验收}（登记执行结果）。
+	 *
+	 * <p>验收<b>不在这里</b>：那一格的两个落点是两个端点（{@link #accept} / {@link #reject}），
+	 * 理由与"它们是两个动作"同一条（见 {@code AgentTaskService#reject}）。
+	 */
 	@PostMapping(path = "/{id}/advance", consumes = MediaType.APPLICATION_JSON_VALUE)
 	public Map<String, Object> advance(@PathVariable Long id, @RequestBody(required = false) AdvanceRequest request) {
 		return write(tasks.advance(id, request == null ? null : request.result()));
+	}
+
+	/**
+	 * 「任务已完成」：待验收 → 已完成。
+	 *
+	 * <p>没有要填的东西，请求体是一个空对象（客户端照其余写端点一样发 {@code {}}）——
+	 * 保留 {@code consumes} 与那个请求体参数，是为了让这一族写端点在 HTTP 层长得完全一样：
+	 * 少一个 {@code consumes} 之后，一个打错 Content-Type 的调用方会走到另一条解析路径上，
+	 * 而那时报的是"缺请求体"，看起来像参数漏了而不是头写错了。
+	 *
+	 * <p>它顺带触发一次"把这条任务的经验汇成规则补进技能"（在事务提交之后的另一个线程上跑），
+	 * 而那件事失败不影响这次验收的结果 —— 界面上不必为它显示任何东西。
+	 */
+	@PostMapping(path = "/{id}/accept", consumes = MediaType.APPLICATION_JSON_VALUE)
+	public Map<String, Object> accept(@PathVariable Long id,
+			@RequestBody(required = false) AcceptRequest request) {
+		return write(tasks.accept(id));
+	}
+
+	/**
+	 * 「任务未完成」：待验收 → 未完成。
+	 *
+	 * <p>请求体里的 {@code reason} 是<b>选填</b>的未完成原因：这一格要记的是"没做成"这个判断本身，
+	 * 而原因可能一时说不清（逼着人写一句他写不出来的话，那一格就会被填成"没做完"）。
+	 * 长度判据在服务层（≤ 512 字符，超了 400），这里只把请求体原样传下去。
+	 */
+	@PostMapping(path = "/{id}/reject", consumes = MediaType.APPLICATION_JSON_VALUE)
+	public Map<String, Object> reject(@PathVariable Long id, @RequestBody(required = false) RejectRequest request) {
+		return write(tasks.reject(id, request == null ? null : request.reason()));
 	}
 
 	@PostMapping(path = "/{id}/confirms/{confirmId}/answer", consumes = MediaType.APPLICATION_JSON_VALUE)
@@ -232,6 +271,9 @@ public class AgentTaskController {
 		// 界面据此不画出那一行，而不是画一行空白（与 MapperRows 的两条转换纪律一致）
 		row.put("result", task.result());
 		row.put("cancelReason", task.cancelReason());
+		// 未完成原因同理，而且它本身还是选填的：null 有两种来源（不是未完成 / 未完成但没写原因），
+		// 两者的区别由 status 回答 —— 界面按状态决定要不要说"未填原因"这句话
+		row.put("incompleteReason", task.incompleteReason());
 		row.put("createdAt", task.createdAt() == null ? null : task.createdAt().toString());
 		row.put("updatedAt", task.updatedAt() == null ? null : task.updatedAt().toString());
 		return row;
@@ -288,6 +330,24 @@ public class AgentTaskController {
 	 * （必填 —— 没改也要把当前那一份传回来，判据见 {@link #revise}）。
 	 */
 	public record ReviseRequest(String description) {
+	}
+
+	/**
+	 * 「任务已完成」的请求体。
+	 *
+	 * <p>刻意<b>没有字段</b>：这一格要答的就是"做成了"这一件事，没有别的参数可填。
+	 * 留着这个 record 是为了让上面那个端点在方法签名上与其余写端点一致。
+	 */
+	public record AcceptRequest() {
+	}
+
+	/**
+	 * 「任务未完成」的请求体。
+	 *
+	 * @param reason 未完成原因，<b>选填</b>（没写就是没写，不编默认值 ——
+	 *        卡片上据此不画那一行，而不是画一行"（未填）"）
+	 */
+	public record RejectRequest(String reason) {
 	}
 
 	/** 取消请求体。{@code reason} 必填（判据在服务层）。 */

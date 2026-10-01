@@ -156,6 +156,19 @@ public interface AgentTaskMapper {
 	 */
 	int updateAgentId(@Param("id") Long id, @Param("agentId") String agentId);
 
+	/**
+	 * 未完成原因（验收那一格选「任务未完成」时补的那一句）。
+	 *
+	 * <p>它与 {@link #updateCancel} <b>不共用</b>：两者的状态不同
+	 * （{@code NOT_COMPLETED} / {@code CANCELLED}），共用一条的话，
+	 * "这次写的是哪一列"要靠调用方多传一个状态参数去分，而传错的表现是原因落进了另一列、
+	 * 卡片上那句标签换成另一个（两种读起来都通顺）。所以两条 SQL 各写一遍。
+	 *
+	 * <p>其余理由与 {@link #updateResult} 相同：状态推进那一条每次都跑，
+	 * 把原因并进去就意味着每次推进都要带上它 —— 而调用方手上那份任务记录可能是几步之前读的。
+	 */
+	int updateIncompleteReason(@Param("id") Long id, @Param("incompleteReason") String incompleteReason);
+
 	/** 取消：状态与取消原因同一次写入（写原因单独一条 SQL 会留下"取消了但没写原因"的窗口）。 */
 	int updateCancel(@Param("id") Long id, @Param("cancelReason") String cancelReason);
 
