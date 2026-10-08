@@ -204,8 +204,8 @@ const box = () => page.locator('textarea:not([name="hiddenTextarea"])')
  * 症状看起来像"那个面板坏了"。收在一个函数里，布局再变也只需要改这里。
  *
  * <h2>为什么先读一次收起态，而不是直接点</h2>
- * 收起态（或窄窗口）下目录里没有文字，`hasText` 会一个都匹配不到，
- * 而失败信息是"等不到那个按钮"——看起来像目录里没有这一项。
+ * 收起态下目录整条宽度是 0（不是"文字藏起来"），里面一项都点不到，
+ * `hasText` 会一个都匹配不到，而失败信息是"等不到那个按钮"——看起来像目录里没有这一项。
  *
  * <h2>为什么还要先把分组展平</h2>
  * 分组折叠（点一级目录名收起那一段）也是存在 localStorage 里的用户偏好，
@@ -215,7 +215,13 @@ const box = () => page.locator('textarea:not([name="hiddenTextarea"])')
 async function navMode(label) {
   const sidebar = page.locator('.app-sidebar')
   if ((await sidebar.getAttribute('data-collapsed')) === '1') {
-    await page.locator('.app-collapse').click()
+    await page.locator('.app-nav-toggle').click()
+    // 宽度是 0.2s 过渡出来的：不等它回到 232px 就点，
+    // 点的是"目录还是 0 宽"那一刻的位置（它落在内容区上）
+    await waitFor(async () => await page.evaluate(() => {
+      const sb = document.querySelector('.app-sidebar')
+      return sb ? Math.round(sb.getBoundingClientRect().width) > 150 : false
+    }), 3000)
   }
   // 上限 2 次（分组只有两段；写死上限是为了"点了没反应"时不会变成死循环，
   // 那种情况该以"点不到那一项"的形式报出来，而不是把自检挂在这里）
@@ -280,34 +286,48 @@ console.log('[1.5] 布局 —— 左侧目录与页头')
 
   const startCollapsed = await sidebar.getAttribute('data-collapsed')
   // ⚠️ 这里**不能**硬断言"默认是展开的"：收起态是存在 localStorage 里的用户偏好，
-  // 上一轮自检可能把它收起来过。所以下面按"当前是什么态"各自断言，并保证结尾恢复原态
+  // 前面某一节可能把它收起来过。所以先把目录归到展开态再验 ——
+  // 结尾也停在展开态，因为后面每一节切模式都要点目录里的项
   expect('目录的收起态有一个可读的开关值',
     startCollapsed === '0' || startCollapsed === '1', `data-collapsed=${startCollapsed}`)
-  const collapseBtn = page.locator('.app-collapse')
-  expect('收起开关可见（它是目录从窄条变回来的唯一入口）', await collapseBtn.isVisible())
 
-  await collapseBtn.click()
-  const nextState = startCollapsed === '0' ? '1' : '0'
-  // ⚠️ 点完**要等状态渲进 DOM 再读**：`click()` 返回时 React 的这次更新未必已提交，
-  // 而"读早了"的症状是"点了没反应"——看起来像功能坏了，其实是断言抢跑。
-  const toggled = await waitFor(
-    async () => (await sidebar.getAttribute('data-collapsed')) === nextState, 3000)
-  expect('★ 点一下收起开关，收起态真的翻转了', toggled,
-    `${startCollapsed} → ${await sidebar.getAttribute('data-collapsed')}`)
-  // 收起之后当前项仍然能被读出来：靠的是那条左侧色标 + aria-current，
-  // 而不是文字（文字这时是藏起来的）—— 所以这一条与上面那条不是重复的
-  expect('收起之后仍然看得出当前在哪一项',
-    (await sidebar.locator('[aria-current="page"]').count()) === 1)
-  await collapseBtn.click()
-  // 宽度是**过渡**出来的（CSS transition），所以这里等的不是状态而是几何：
-  // 状态已经回到 0 而宽度还停在 64px 的那一瞬间是存在的，读早了就会得到
-  // "目录没占宽度"这个与事实相反的结论
-  const expandedWidth = await waitFor(async () => await page.evaluate(() => {
+  // 目录宽度：收起是"整条不见"，所以判据是**几何**（0 宽），不是"文字藏没藏起来"
+  const sidebarWidth = () => page.evaluate(() => {
     const sb = document.querySelector('.app-sidebar')
-    return sb ? Math.round(sb.getBoundingClientRect().width) > 150 : false
-  }), 3000)
+    return sb ? Math.round(sb.getBoundingClientRect().width) : -1
+  })
+  const toggleBtn = page.locator('.app-nav-toggle')
+  if ((await sidebar.getAttribute('data-collapsed')) === '1') {
+    await toggleBtn.click()
+    await waitFor(async () => (await sidebarWidth()) > 150, 3000)
+  }
+  // 开关必须在**目录之外**：收起后目录里什么都不剩，它是唯一的展开入口
+  expect('开关在页头里（不在目录里）',
+    await toggleBtn.evaluate(el => el.closest('.app-topbar') !== null))
+  expect('开关上没有文字（页头那一行宽度吃紧）',
+    (await toggleBtn.innerText()).trim() === '' && (await toggleBtn.getAttribute('aria-label')) === '收起目录',
+    `文字="${(await toggleBtn.innerText()).trim()}"，aria-label=${await toggleBtn.getAttribute('aria-label')}`)
+
+  await toggleBtn.click()
+  // ⚠️ 点完**要等几何**：宽度是 CSS 过渡（0.2s）出来的，状态已经翻了而宽度还停在 232px
+  // 的那一瞬间是存在的，读早了就会得到"目录没占宽度"这个与事实相反的结论
+  const collapsedNow = await waitFor(async () => (await sidebarWidth()) === 0, 3000)
+  expect('★ 点一下收起开关，整条左边栏收起来了（宽度归 0，不是留一条窄轨）',
+    (await sidebar.getAttribute('data-collapsed')) === '1' && collapsedNow,
+    `data-collapsed=${await sidebar.getAttribute('data-collapsed')}，宽度 ${await sidebarWidth()}px`)
+  // 目录里那一项连同它左侧那条色标一起不在眼前了 —— "现在在哪一项"必须还有一处能读
+  expect('★ 收起之后「现在在哪一项」由页头的标签说得出',
+    (await page.locator('.app-topbar [data-current-mode]').getAttribute('data-current-mode')) === 'stream',
+    `data-current-mode=${await page.locator('.app-topbar [data-current-mode]').getAttribute('data-current-mode')}`)
+  // 收起时里面那些按钮不该还能被 Tab 到（画不出来与点不到是两件事）
+  expect('收起时目录对键盘与指针都不响应（inert）',
+    await sidebar.evaluate(el => el.inert === true))
+  await toggleBtn.click()
+  const expandedWidth = await waitFor(async () => (await sidebarWidth()) > 150, 3000)
   expect('再点一下回到展开态（宽度也回来了）',
-    (await sidebar.getAttribute('data-collapsed')) === startCollapsed && expandedWidth)
+    (await sidebar.getAttribute('data-collapsed')) === '0' && expandedWidth)
+  expect('展开之后页头那枚标签收起来（目录里那一项自己就是答案）',
+    (await page.locator('.app-topbar [data-current-mode]').count()) === 0)
 
   // ---- 分组折叠：点一级目录名，收起/展开它下面那一段 ----
   //

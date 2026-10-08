@@ -176,13 +176,14 @@ body {
    2. **每一层 flex 都要写 `min-height: 0`** —— 少了它，子项的最小高度等于内容高度，
       `overflow` 永远不会生效，整页会被卡片撑成一条长页面（`.diag-panel` 那条注释是同一个坑）；
    3. **页面本身不许横向溢出** —— 自检在 documentElement 上断言
-      `scrollWidth - clientWidth === 0`，所以窄屏只能由目录自己变窄（见 @media 那两段）。
+      `scrollWidth - clientWidth === 0`，所以窄屏时目录必须自己消失（见 `.is-collapsed`）。
    =========================================================================== */
 
 .app-shell {
   height: 100%;
   display: flex;
-  /* 窄屏兜底：低于这个宽度时目录已经收成 64px 的窄条，再窄下去内容区就没法用了 */
+  /* 窄屏兜底：低于这个宽度时目录整条收起（见 `.app-sidebar.is-collapsed`），
+     内容区至少还有 720px；再窄下去横向滚动条才是对的（而不是把内容挤成一列） */
   min-width: 720px;
 }
 
@@ -197,18 +198,28 @@ body {
   background: var(--bg-surface);
   border-right: 1px solid var(--border);
   padding: 14px 10px;
-  /* 宽度要跟着收起一起过渡，否则收起时内容区会"跳"一下 */
-  transition: width 0.2s;
+  /* 宽度要跟着收起一起过渡，否则收起时内容区会"跳"一下。
+     `visibility` 也在过渡里：收起时它是**走完 0.2s 才变** hidden（过渡规则里
+     只要有一端是 visible，中途就按 visible 算），所以目录是"滑出去"而不是"啪一下不见" */
+  transition: width 0.2s, padding 0.2s, visibility 0.2s;
 }
 
+/* 收起 = **整条不见**：宽度、内边距、右边框一起归零。
+   窄轨（留 64px 放色标）只省下 168px，而这一页的主体是数据表 —— 收起的目的
+   就是把那 232px 全还回去。代价是目录项连同它左侧那条色标一起不在眼前了，
+   补回来的是页头那枚"当前视图"标签（见 App.tsx 与 `.app-current-mode`）。
+   `overflow: hidden` 挡住过渡途中的字；`visibility: hidden` 让里面的按钮不进 Tab 序
+   （`inert` 也标了一份，见 AppSidebar —— 一条管画不出来，一条管点不到）。 */
 .app-sidebar.is-collapsed {
-  width: 64px;
-  padding-left: 8px;
-  padding-right: 8px;
+  width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  border-right-width: 0;
+  overflow: hidden;
+  visibility: hidden;
 }
 
-/* 品牌区。收起态只留那个缩写方块 —— 名字藏起来，但方块留着：
-   它是"这块窄条是导航"的唯一线索，全藏了会变成一条空白竖线 */
+/* 品牌区：那个缩写方块是"这一列是导航"的唯一线索 */
 .app-brand {
   display: flex;
   align-items: center;
@@ -237,8 +248,8 @@ body {
   overflow: hidden;
 }
 
-/* 目录本体自己能滚：窄屏（高度不够）时收起开关必须仍然可见 ——
-   开关滚出视口等于目录收起来之后再也展不开 */
+/* 目录本体自己能滚：窗口高度不够时这十几项会顶出去，而页头与目录都不跟着滚
+   （约束 1：只有内容区滚动）。开关在页头，所以它不受这一块滚不滚的影响 */
 .app-nav {
   flex: 1 1 auto;
   min-height: 0;
@@ -253,8 +264,7 @@ body {
 
 /* 一级目录名。它**是可点的**：点一下收起/展开这一段里的项。
    ⚠️ 收起确实会把"这一段里有哪几项"藏起来，那笔代价由下面的 `is-active` 补回来：
-   当前视图若正落在收起的那一段里，标题会带上着色与左侧色标。
-   （窄条态那一行整行是藏起来的，见 `.is-collapsed` 那一段。） */
+   当前视图若正落在收起的那一段里，标题会带上着色与左侧色标。 */
 .app-nav-group-title {
   display: flex;
   align-items: center;
@@ -319,12 +329,11 @@ body {
   align-items: center;
   width: 100%;
   text-align: left;
-  /* 收起态里项内没有文字，8px 的上下留白会让这一行塌成一条细缝、点不中 */
   min-height: 34px;
   padding: 0 10px;
   margin-bottom: 2px;
   border: none;
-  /* 左侧那条 3px 留给选中态：它收起后仍在，是"当前在哪一项"的唯一可见标记 */
+  /* 左侧那条 3px 留给选中态：它是"现在在哪一项"的标记之一（另一处是页头那枚标签） */
   border-left: 3px solid transparent;
   border-radius: 8px;
   background: transparent;
@@ -354,105 +363,8 @@ body {
   text-overflow: ellipsis;
 }
 
-/* 收起态：文字全部藏起来。留 min-height 是为了保留可点区域 */
-.is-collapsed .app-brand {
-  justify-content: center;
-  padding-left: 0;
-  padding-right: 0;
-}
-
-.is-collapsed .app-brand-name,
-.is-collapsed .app-nav-group-title,
-.is-collapsed .app-nav-item-text,
-.is-collapsed .app-collapse-text {
-  display: none;
-}
-
-/* 分组名藏掉之后，靠这条线表示"上面那几个和下面那几个是两段" */
-.is-collapsed .app-nav-group + .app-nav-group {
-  padding-top: 8px;
-}
-
-.app-sidebar-foot {
-  flex: none;
-  margin-top: auto;
-  padding-top: 8px;
-}
-
-.app-collapse {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 10px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text-tertiary);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.app-collapse:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--brand);
-}
-
-.app-collapse:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-/* 三条横线（没有图标依赖，见 AppSidebar 的文件头） */
-.app-collapse-bars {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  width: 16px;
-}
-
-.app-collapse-bars i {
-  height: 2px;
-  border-radius: 1px;
-  background: currentColor;
-}
-
-.is-collapsed .app-collapse {
-  justify-content: center;
-  padding-left: 0;
-  padding-right: 0;
-}
-
-/* 窄屏：目录只留那条窄轨。第二个断点（640px）再窄也没有意义 ——
-   外壳已经设了 min-width: 720px，那时横向滚动条才是对的（而不是把内容挤成一列） */
-@media (max-width: 900px) {
-  .app-sidebar {
-    width: 64px;
-    padding-left: 8px;
-    padding-right: 8px;
-  }
-
-  .app-sidebar .app-brand {
-    justify-content: center;
-    padding-left: 0;
-    padding-right: 0;
-  }
-
-  .app-sidebar .app-brand-name,
-  .app-sidebar .app-nav-group-title,
-  .app-sidebar .app-nav-item-text,
-  .app-sidebar .app-collapse-text {
-    display: none;
-  }
-
-  .app-sidebar .app-collapse {
-    justify-content: center;
-    padding-left: 0;
-    padding-right: 0;
-  }
-}
+/* 收起态：整条目录在 `.app-sidebar.is-collapsed` 那一条里就没了（宽度 0），
+   所以这里不再有"藏文字、留窄轨"那一族规则 */
 
 /* ---------- 右侧内容列 ---------- */
 
@@ -504,6 +416,22 @@ body {
   border-color: var(--violet-border);
 }
 
+/*
+  "当前视图"标签（页头，标题右边）。**只在目录收起来时出现** ——
+  那时目录里那一项连同它左侧那条色标整块不在眼前，这个标签是"现在在哪一项"的唯一落点。
+  形状与分区标签同一族但更淡：分区说的是"在这一区的哪一页"，它说的是"这一区里哪一项"。
+*/
+.app-current-mode {
+  padding: 1px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
 .conversation-id {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
@@ -514,11 +442,14 @@ body {
 }
 
 /*
-  主题开关（页头最右）。做成一个 32×32 的方钮而不是 antd 的 Switch：
-  Switch 是一个"开/关"的形状，而这里没有"关掉的深色模式"这回事 —— 两个状态地位相同。
-  图形本身是内联 SVG（见 ThemeToggle 的文件头），这里只管这块底色与边框。
+  页头两枚方钮：**最左那枚开合目录、最右那枚切主题**。同一种形状、同一种 hover，
+  所以共用这几条规则 —— 写成两份的话，深色或 focus 那一档迟早会只改到其中一枚。
+  两枚都是 32×32 的方钮而不是 antd 的 Switch：Switch 是一个"开/关某个设置"的形状，
+  而"深色 / 浅色"两个状态地位相同（没有"关掉的深色模式"这回事），
+  "目录在不在"说的也是同一件事的两面。状态各自由 `aria-expanded` / `aria-pressed` 说。
 */
-.theme-toggle {
+.theme-toggle,
+.app-nav-toggle {
   flex: none;
   width: 32px;
   height: 32px;
@@ -533,13 +464,15 @@ body {
   cursor: pointer;
 }
 
-.theme-toggle:hover {
+.theme-toggle:hover,
+.app-nav-toggle:hover {
   color: var(--brand);
   border-color: var(--brand-border);
   background: var(--bg-hover);
 }
 
-.theme-toggle:focus-visible {
+.theme-toggle:focus-visible,
+.app-nav-toggle:focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 1px;
 }
@@ -547,6 +480,21 @@ body {
 /* SVG 的宽高由标签上的属性给（16×16），这条只保证它不被 flex 压扁 */
 .theme-icon {
   flex: none;
+}
+
+/* 目录开关上那三条横线（没有图标依赖，见 AppSidebar 的文件头）。
+   16px 宽是量出来的：再宽一点，在 32px 的方钮里会顶到边框 */
+.app-nav-toggle-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 16px;
+}
+
+.app-nav-toggle-bars i {
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
 }
 
 /*

@@ -8,6 +8,7 @@ import { Composer } from './components/Composer'
 import { CostPanel } from './components/CostPanel'
 import { MessageBubble } from './components/MessageBubble'
 import { MockLoginBar } from './components/MockLoginBar'
+import { NavToggle } from './components/NavToggle'
 import { PermissionPanel } from './components/PermissionPanel'
 import { PromptPanel } from './components/PromptPanel'
 import { RagPanel } from './components/RagPanel'
@@ -24,16 +25,24 @@ import { mockLoginLabel, useMockLogin } from './hooks/useMockLogin'
 import { usePermissions } from './hooks/usePermissions'
 import { usePrompt } from './hooks/usePrompt'
 import { useRagDiag } from './hooks/useRagDiag'
+import { useSidebarCollapse } from './hooks/useSidebarCollapse'
 import { useSkills } from './hooks/useSkills'
 import { useStructuredChat } from './hooks/useStructuredChat'
 import { useTasks } from './hooks/useTasks'
 import { useThreadDiag } from './hooks/useThreadDiag'
 import type { ThemeMode } from './hooks/useThemeMode'
-import { sectionOf } from './nav'
+import { labelOf, sectionOf } from './nav'
 import type { Mode } from './nav'
 
 /**
  * 类后台的三段式外壳：**左侧目录 / 页头 / 内容**。
+ *
+ * <h2>目录开关为什么在页头左上角（而且没有文字）</h2>
+ * 收起 = 目录那一整块宽度归零，所以开关不能摆在目录里 —— 那会连它一起收掉，
+ * 而它正是唯一的展开入口。摆在页头这一行最左边、目录之外。
+ * 按钮上只有三条横线：页头这一行要装标题 / 分区标签 / 会话 id / 新会话 / 模拟登录 /
+ * 主题开关，而这是一个宽度本来就吃紧的页面。收起之后页头会多一枚"当前视图"标签
+ * （见下面那段注释），"现在在哪"不因为目录不见而丢掉。
  *
  * 加一个视图要改两处：`nav.ts` 里的 `NAV_SECTIONS`，以及下面那串渲染分支。
  * （旧版是三处：联合类型、Segmented 的 options、头部那排 Tag 文案 ——
@@ -87,6 +96,9 @@ export default function App(
   { themeMode, onToggleTheme }: { themeMode: ThemeMode; onToggleTheme: () => void },
 ) {
   const [mode, setMode] = useState<Mode>('stream')
+  // 目录的收起态挂在这一层：开关在页头（下面那行 NavToggle），目录本体在左边 ——
+  // 这一层是它们**共同的那一个父亲**（判断与理由见 useSidebarCollapse）
+  const nav = useSidebarCollapse()
 
   const stream = useChatStream()
   const structured = useStructuredChat()
@@ -158,14 +170,25 @@ export default function App(
 
   return (
     <div className="app-shell">
-      <AppSidebar mode={mode} onSelect={setMode} />
+      <AppSidebar mode={mode} onSelect={setMode} hidden={nav.hidden} />
 
       <div className="app-main">
         <header className="app-topbar">
           <Flex align="center" gap={12} wrap>
+            <NavToggle hidden={nav.hidden} onToggle={nav.toggle} />
             <Typography.Title level={4} className="app-title">
               {section.title}
             </Typography.Title>
+            {/*
+              目录收起来之后，"现在在哪一项"只剩这一枚标签能读：目录里那一项
+              （连同它左侧那条色标）整块不在眼前了。展开着的时候不画它 ——
+              那时目录里那一项自己就是答案，两处同时说一件事只会让页头更挤。
+            */}
+            {nav.hidden && (
+              <span className="app-current-mode" data-current-mode={mode}>
+                {labelOf(mode)}
+              </span>
+            )}
             <span className={`app-section-tag is-${section.tag.color}`}>{section.tag.text}</span>
           </Flex>
           {/*

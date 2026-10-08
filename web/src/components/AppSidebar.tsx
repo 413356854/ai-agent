@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { NAV_SECTIONS } from '../nav'
 import type { Mode, NavGroup } from '../nav'
 
@@ -6,15 +6,16 @@ import type { Mode, NavGroup } from '../nav'
  * 左侧目录（类后台的三段式布局：目录 / 页头 / 内容）。
  *
  * <h2>为什么用 `button` 手写目录，而不是 antd 的 Menu</h2>
- * 需要的就是"两段标题 + 若干按钮 + 一个整体收起开关 + 每段自己的折叠开关"。
- * Menu（或 SubMenu 的折叠）能画出来，但收起态要靠
- * `inlineCollapsed` + `Sider` 那套上下文，收起后只剩一列图标 —— 而本项目没有图标依赖
- * （`@ant-design/icons` 不在 package.json 里），收起后每一项都会变成一条空白的窄条。
- * 所以收起态由 `.is-collapsed` 这一个类控制：藏文字、留左边一条色标，每一项仍可点。
+ * 需要的是"两段可折叠的分组 + 每项一个按钮 + 选中项一条左侧色标"。
+ * Menu（或 SubMenu 的折叠）能画出层级，但每一段的标题要能收起那一段、
+ * 收起后标题上还要留一枚"当前视图在这一段里"的标记 —— 那套渲染仍得自己写；
+ * 而它的收起态（`inlineCollapsed` + `Sider`）依赖图标，本项目没有图标依赖
+ * （`@ant-design/icons` 不在 package.json 里），收起后每项都是一条空白窄条。
  *
- * <h2>为什么收起态是"必须有的"</h2>
- * 目录占 232px，而这一页的主体是数据表（成本看板、五层 trace、版本历史）。
- * 1100px 宽的窗口下，那 232px 是差一行、差一列能不能放下的差别。
+ * <h2>整条收起由外面驱动（`hidden` prop），按下的开关在页头</h2>
+ * 收起态的宽度是 0，也就是说收起时这一整块不在眼前 ——
+ * 把开关留在这里的话，展开就再也没有入口了。所以状态在 `useSidebarCollapse`、
+ * 按钮在页头的 `NavToggle`，这个组件只负责"收起时长什么样（不见）"。
  *
  * <h2>为什么分组名也可点（折叠一段）</h2>
  * 整条目录的收起是"横向省宽度"，分组折叠是"纵向省高度"：对话台那段有八项，
@@ -22,17 +23,12 @@ import type { Mode, NavGroup } from '../nav'
  * ⚠️ 折叠**只改渲染**，不改"当前在哪"的判断：收起的那一段里若正落着当前视图，
  * 标题会带上色标与着色（见 styles.css 的 `is-active`），
  * 因为"现在在哪"这一页最要紧的信息，不该因为收起而丢掉。
- * 窄条态（railed）下分组一律展开 —— 那时标题那一行整行是藏起来的，点都点不到。
+ * 整条收起时（`hidden`）分组一律按展开渲染 —— 那时目录整块是藏起来的，
+ * 下次展开时记为"收起"的那一段会一项都不显示，看起来像那一段坏了。
  */
-
-/** 收起态存 localStorage：那是"这台机器上我怎么看这个页面"的偏好，刷新一次就忘掉会很烦 */
-const COLLAPSE_KEY = 'ai-agent.nav.collapsed'
 
 /** 各分组的折叠态，同样存 localStorage（`{分组键: 是否收起}`；没记过的分组按展开算） */
 const GROUP_KEY = 'ai-agent.nav.group-collapsed'
-
-/** 窄屏（≤ 900px）不记忆收起状态：那是"窗口放不下"的临时妥协，窗口变宽后应当自己展开 */
-const NARROW_QUERY = '(max-width: 900px)'
 
 function readClosedGroups(): Record<string, boolean> {
   try {
@@ -45,30 +41,9 @@ function readClosedGroups(): Record<string, boolean> {
 }
 
 export function AppSidebar(
-  { mode, onSelect }: { mode: Mode; onSelect: (mode: Mode) => void },
+  { mode, onSelect, hidden }: { mode: Mode; onSelect: (mode: Mode) => void; hidden: boolean },
 ) {
-  const [collapsed, setCollapsed] = useState(
-    () => window.localStorage.getItem(COLLAPSE_KEY) === '1',
-  )
   const [closedGroups, setClosedGroups] = useState<Record<string, boolean>>(readClosedGroups)
-  const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW_QUERY).matches)
-
-  // 窄屏时自动收起。⚠️ 这里只**跟随窗口**，不写回 localStorage ——
-  // 否则一个窄窗口会把"收起"永久记成这台机器上的偏好，宽屏下也一直是收起的
-  useEffect(() => {
-    const query = window.matchMedia(NARROW_QUERY)
-    const onChange = (e: MediaQueryListEvent) => setNarrow(e.matches)
-    query.addEventListener('change', onChange)
-    return () => query.removeEventListener('change', onChange)
-  }, [])
-
-  const railed = collapsed || narrow
-
-  const toggle = () => {
-    const next = !railed
-    setCollapsed(next)
-    window.localStorage.setItem(COLLAPSE_KEY, next ? '1' : '0')
-  }
 
   const toggleGroup = (key: string) => {
     const next = { ...closedGroups, [key]: !closedGroups[key] }
@@ -78,10 +53,13 @@ export function AppSidebar(
 
   return (
     <nav
-      className={`app-sidebar${railed ? ' is-collapsed' : ''}`}
+      id="app-nav"
+      className={`app-sidebar${hidden ? ' is-collapsed' : ''}`}
       aria-label="功能目录"
       // 自检靠这个属性读收起态（而不是靠样式），所以它必须跟着状态走
-      data-collapsed={railed ? '1' : '0'}
+      data-collapsed={hidden ? '1' : '0'}
+      // 收起之后那一列按钮既画不出来也不该被 Tab 到 —— `inert` 一次管两件事
+      inert={hidden}
     >
       <div className="app-brand" title="Agent 控制台：对话台 + 应用管理">
         <span className="app-brand-mark">AI</span>
@@ -90,15 +68,11 @@ export function AppSidebar(
 
       <div className="app-nav">
         {NAV_SECTIONS.map((section: NavGroup) => {
-          // 窄条态下这一行整行是藏起来的（点都点不到），所以那时一律按展开渲染 ——
-          // 否则记着"收起"的那一段会一项都不显示，看起来像那一段坏了
-          const closed = !railed && closedGroups[section.key] === true
+          const closed = !hidden && closedGroups[section.key] === true
           // 收起来的那一段里正落着当前视图 —— 这时位置只剩标题上那枚标记，必须标出来
           const activeInside = closed && section.items.some(item => item.mode === mode)
           return (
             <div className="app-nav-group" key={section.key}>
-              {/* 收起态这一行只剩一条分隔线（样式里给它固定高度），
-                  否则两段目录会挤在一起，看不出是两段 */}
               <button
                 type="button"
                 className={`app-nav-group-title${activeInside ? ' is-active' : ''}`}
@@ -131,26 +105,6 @@ export function AppSidebar(
             </div>
           )
         })}
-      </div>
-
-      <div className="app-sidebar-foot">
-        {/*
-          窄屏时这个开关**禁用**。不禁用的话它点了没反应（`railed` 恒为 true），
-          而"点了没反应的按钮"会被读成界面坏了。
-        */}
-        <button
-          type="button"
-          className="app-collapse"
-          onClick={toggle}
-          disabled={narrow}
-          title={narrow ? '窗口宽度不足，目录已自动收起' : railed ? '展开目录' : '收起目录'}
-        >
-          {/* 三条横线用 CSS 画：项目里没有图标依赖（见文件头） */}
-          <span className="app-collapse-bars" aria-hidden="true">
-            <i /><i /><i />
-          </span>
-          <span className="app-collapse-text">{railed ? '展开目录' : '收起目录'}</span>
-        </button>
       </div>
     </nav>
   )

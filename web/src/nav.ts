@@ -66,6 +66,17 @@ export const NAV_SECTIONS: NavGroup[] = [
   },
 ]
 
+/**
+ * 当前视图在目录里那一项的名字（`SSE 流式` / `权限管理` …）。
+ *
+ * 目录收起来之后整条不在眼前，"现在在哪一项"就只剩页头这一处能读（见 App.tsx）——
+ * 名字从 `NAV_SECTIONS` 取，所以它与目录里那一项永远是同一个字符串。
+ */
+export function labelOf(mode: Mode): string {
+  const hit = NAV_SECTIONS.flatMap(section => section.items).find(item => item.mode === mode)
+  return hit ? hit.label : mode
+}
+
 /** 当前模式属于哪一区。顶栏的标题、标签、以及"要不要显示 conversationId"都由它决定 */
 export function sectionOf(mode: Mode): NavGroup {
   const hit = NAV_SECTIONS.find(section => section.items.some(item => item.mode === mode))
