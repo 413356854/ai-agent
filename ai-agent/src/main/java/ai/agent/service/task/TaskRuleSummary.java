@@ -4,6 +4,7 @@ import ai.agent.entity.agent.task.AgentTask;
 import ai.agent.entity.agent.task.AgentTaskConfirm;
 import ai.agent.entity.agent.task.RuleSummary;
 import ai.agent.entity.agent.task.RuleSummaryPrompt;
+import ai.agent.service.support.task.RuleSummaryJson;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -75,21 +76,49 @@ public class TaskRuleSummary {
 	}
 
 	/**
-	 * 解析成 record。
+	 * 解析成 record；<b>先原样解析，失败了把引号补成转义再试一次</b>。
 	 *
-	 * <p>失败抛出去、<b>不返回默认结论</b>（与 {@code TaskReviewRunner#parse} 同一条）：
-	 * 一个"没有结论"的默认值会被当成"模型说没什么可归纳"，于是这次补充静悄悄什么都没做，
-	 * 而日志里看不出是模型没给还是解析失败。异常消息里带上模型原文的截断 ——
-	 * 排查这类问题只能靠那一句原文。
+	 * <h2>为什么要有第二次机会（真实踩过）</h2>
+	 * 模型把规则正文里的引号原样写进 JSON 字符串时，整份输出就不是合法 JSON 了 ——
+	 * 实测那条报错是 `Unexpected character ('"' (code 34)): was expecting comma to separate
+	 * Object entries`（规则里写了「"0.8取整/按原月分摊"」这种带引号的原文）。
+	 * 那时<b>材料本身是好的</b>，只是包装坏了；不救的话这一次归纳白花，而现象是
+	 * "验收成功、技能里少了一条规则"。这与 {@code TaskReviewRunner} 那条"不抠围栏"的纪律不冲突：
+	 * 那条说的是**不要去猜哪一段才是答案**（猜错的形态是得到一个看起来正确的结论，
+	 * 而判定结果直接决定动什么文件）；这里不猜内容，只是把"引号没转义"这一个语法事实修掉，
+	 * 内容一字不改 —— 而且**只在原样解析失败之后才走**，并留一条 WARN 说它被用到了。
+	 *
+	 * <h2>仍然解析不出来时：把原文整段写进日志</h2>
+	 * 异常里那一句截断（前 500 字符）只够让人知道"它坏了"，不够看它坏在哪 ——
+	 * 而这一条链路的失败**不影响任何别的东西**，所以原文（它只有几百字符）留全更值。
 	 */
 	private static RuleSummary parse(BeanOutputConverter<RuleSummary> converter, String raw) {
 		try {
 			return converter.convert(raw);
 		}
-		catch (RuntimeException e) {
-			throw new IllegalStateException("经验归纳的输出解析不出目标结构（" + root(e) + "）。模型原始输出："
-					+ (raw == null ? "(空)" : raw.length() <= 500 ? raw : raw.substring(0, 500) + "…(已截断)"), e);
+		catch (RuntimeException first) {
+			String repaired = RuleSummaryJson.repair(raw);
+			if (repaired != null) {
+				try {
+					RuleSummary summary = converter.convert(repaired);
+					log.warn("经验归纳的输出不是合法 JSON（{}），已按「字符串里的引号补转义」修好并用它：{}",
+							root(first), oneLine(repaired));
+					return summary;
+				}
+				catch (RuntimeException still) {
+					first = still;
+				}
+			}
+			log.warn("经验归纳的原始输出（解析不出来，{}）：{}", root(first), raw);
+			throw new IllegalStateException("经验归纳的输出解析不出目标结构（" + root(first) + "）。模型原始输出："
+					+ (raw == null ? "(空)" : raw.length() <= 500 ? raw : raw.substring(0, 500) + "…(已截断)"), first);
 		}
+	}
+
+	/** 日志里的一行（换行会把它拆成多行，反而不好搜）。 */
+	private static String oneLine(String text) {
+		String flat = text == null ? "" : text.strip().replaceAll("\\s+", " ");
+		return flat.length() <= 300 ? flat : flat.substring(0, 300) + "…";
 	}
 
 	/** 剥到最内层的异常消息，避免把整条 SDK 包装链写进异常里。 */

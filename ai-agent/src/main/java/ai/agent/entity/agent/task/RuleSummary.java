@@ -16,6 +16,16 @@ import java.util.List;
  * 下一次的模型读到的是"一大坨" —— 而这一件事的目的正是让"下一次相似的任务不必再问"，
  * 所以每条都要是能单独照着做的一句判断。
  *
+ * <h2>规则里不写这次的具体取值</h2>
+ * 规则是给<b>下一个相似任务</b>复用的，所以环境变量名、端口、路径、阈值、金额这类只在这台机器 /
+ * 这一次成立的业务参数不进去；那种判断写成"按技能里用户写的那份配置来"，
+ * 具体取值由用户留在技能正文里（技能正文是用户的内容，见 {@code SkillRuleSupplement}）。
+ *
+ * <p>这两条（一句一条 / 不写具体取值）<b>由 {@link RuleSummaryPrompt} 的系统那一段要求模型</b> ——
+ * 这里的 javadoc 只是给读代码的人：{@code BeanOutputConverter} 生成的 schema 里一个
+ * {@code description} 都没有（实测渲染过，344 字符只出字段与类型），
+ * 所以下面两个 {@code @param} 到不了模型那里。
+ *
  * @param usable 这次归纳有没有可用结论（false 时 {@code rules} 应为空）
  * @param rules 规则正文，一条一句（不带序号、不带 markdown 标记 —— 渲染时统一加 {@code - }）
  */
