@@ -48,6 +48,11 @@ public class TaskFileAuthorization {
 	 * <p>取值是 {@code AgentTool.name()}：{@code write_file}（整份写入）与 {@code edit_file}（改一处），
 	 * 两把都在 {@code ai.agent.service.impl.tool.file} 下。它<b>只用于结论里的提示</b>，不参与判定
 	 * （理由见类注释）；新增会动工作区文件的工具时要把名字加进来，否则提示那一行会漏报。
+	 *
+	 * <p><b>{@code run_command} 刻意不在这个清单里</b>：它会不会动文件、动哪个文件，
+	 * 由命令内容决定（一条 {@code type} 什么都不改，一条 {@code del} 改一片），
+	 * 从参数里判不出来。<b>判不出来就不写进这份结论</b> ——
+	 * 写了会让"任务人角色授予的写文件工具：无"这句话变成一句错话。
 	 */
 	private static final List<String> FILE_WRITE_TOOLS = List.of("write_file", "edit_file");
 

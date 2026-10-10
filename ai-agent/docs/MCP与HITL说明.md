@@ -167,8 +167,9 @@ pwsh -File scripts/verify-mcp.ps1 -BaseUrl http://127.0.0.1:8080
 | `read_section` | 读出指定文档里某一节的完整正文 |
 | `query_sql` | 对**应用自己的库**执行一条读语句（表名自己查 `INFORMATION_SCHEMA`） |
 
-⚠️ **五把文件工具（`read_file` / `glob` / `grep` / `write_file` / `edit_file`）都不在对外列表里，
-连只读那三把也不在**。它们不是"写操作"才被挡，而是**需要工作区**：
+⚠️ **五把文件工具（`read_file` / `glob` / `grep` / `write_file` / `edit_file`）与命令执行工具
+（`run_command`）都不在对外列表里，连只读那三把文件工具也不在**。
+它们不是"写操作"才被挡，而是**需要工作区**：
 工作区是"一次运行"的属性，而外部 MCP 链路没有运行这个对象 ——
 `ToolCallContext.mcpClient()` 里没有任何目录，这些工具在那条链路上没有可解析路径的根，
 暴露出去只会"每次都回一句没有工作区"（对客户端就是"这个工具坏了"）。
@@ -195,8 +196,11 @@ pwsh -File scripts/verify-mcp.ps1 -BaseUrl http://127.0.0.1:8080
 
 ```
 MCP Server 自检通过：对外提供 4 把只读工具 [list_documents、query_sql、read_section、search_docs]；
-刻意不暴露的写工具 [execute_sql、propose_review]（写操作只能由本应用自己的模型链路发起，并经过人工确认）
+刻意不暴露的写工具 [propose_review、run_command、write_file、execute_sql、edit_file]（写操作只能由本应用自己的模型链路发起，并经过人工确认）
 ```
+
+（这一行里写工具的清单会随新增的写工具变长，而"对外提供的 4 把"是注册表里只读工具的全部 ——
+注册表当时是 13 把：4 把只读对外 + 3 把只读但需要工作区 + 1 把需要执行者 + 5 把写。）
 
 ### 3.3 刻意不暴露：写操作
 
@@ -335,3 +339,77 @@ spring.ai.mcp.server.instructions=...          # 给**对方的模型**读的：
 后者说"有没有真的从检查点接着跑起来"。两者都是 false 且 `runId` 非空时，
 说明决定已记录、但任务还没能继续 —— 界面必须**明确提示**这件事，
 否则"点了批准、显示成功、任务却停着"与"批准根本没生效"在使用者眼里完全一样。
+
+---
+
+## 七、命令执行工具（`run_command`）怎么用、边界在哪
+
+**它做什么**：在工作区目录下执行一条 shell 命令，把**合并后的输出**（stdout + stderr）与退出码带回来。
+`cd` / `dir` 类"读"也走它，但它的风险声明是写（原因见下）。调用举例：
+`{"command":"mvn -q test","timeoutSeconds":120,"purpose":"跑单元测试确认这次改动"}`。
+
+### 7.1 它为什么是写工具
+
+审批判据来自 `ToolHints`（2.2），而本工具声明 `writeRequiringApproval()`。
+理由与 `execute_sql` 完全同族：**一条命令的副作用在哪儿，从命令字符串里看不出来**
+（`type ..\..\x` 就是一个反例）。工作区只是它的**工作目录**，不是沙箱边界 ——
+进程用的是本应用自己的操作系统权限，能碰到的范围与它一致。
+
+于是它在人工确认闸门里的位置是"没有路径参数的写工具"：
+
+| 档位 | 行为 |
+|---|---|
+| 仅可查看 | 停在人工确认；即使批准放行，工具自己也会以 `not_permitted_by_permission_level` 拒绝（它一个字节都不执行） |
+| 工作区内修改 | **要人点头**（本工具不实现 `WorkspaceCallContext`，所以中间那一档不覆盖它） |
+| 完全权限 | 直接执行，不产生审核请求（这是这一档的定义） |
+
+> ⚠️ **两个已经存在的配置会让"无人监督地执行命令"成为可能**：
+> `ai.agent.task.enabled=true`（定时任务没有人在旁边点批准）与
+> `ai.agent.task.permission-level=FULL_ACCESS`（定时任务拿的是完全权限档）。
+> 它们不是这个工具引入的（`execute_sql` 在同样的配置下同样不等审批），
+> 但不希望自动任务执行命令时，改这两个值即可 —— **不需要改代码**。
+
+### 7.2 它跑在什么 shell 下、在哪个目录
+
+| 平台 | 命令行 | 工作目录 |
+|---|---|---|
+| Windows | `cmd.exe /d /s /c <命令>`（`ComSpec` 取不到时用 `C:\WINDOWS\system32\cmd.exe`） | **本工作区目录**（参数里没有 `cwd` 字段） |
+| Linux / macOS | `/bin/sh -c <命令>` | 同上 |
+
+`/d` 关掉注册表里的 AutoRun（那是"每次起 `cmd` 都会先跑的一段命令"）。
+命令**原样交给 shell**，不按空格分词 —— 否则 `echo a & echo b` 会被拆成四条互不相干的参数，
+而回填里给出的失败原因会变成"命令不存在"。
+
+### 7.3 超时与输出：两处必须自己兜住
+
+- **超时**：`ai.agent.workspace.command.timeout`（默认 30s）是模型不传 `timeoutSeconds` 时的值；
+  模型可以自己给，上限 `max-timeout`（默认 300s），超了直接拒绝并把这个数回填给它。
+  到点会**强杀整棵进程树**（本机实测 `ping -n 30` 在 2s 时限下：后代 2 个被强杀、总耗时 2052ms）。
+  回填里会写清"输出是被杀之前的、不完整"。
+- **输出**：上限复用回填层那一个（`ai.tool.feedback.max-chars`，默认 2000 字符），
+  本工具**不新增第二个上限** —— 两层各截一次时，第二次截断不会带标记。
+  被截断时回填里给出"一共产生了多少字符"。
+- **编码**：`ai.agent.workspace.command.charset`，默认取 JVM 的 `native.encoding`
+  （本机实测是 **GBK**，而 `cmd` 的输出就是 GBK 字节；Linux 上取到的是 UTF-8）。
+  解码出错时用 `U+FFFD` 替换并回填一句提示，**不用第二套编码兜底**
+  （互相兜底会让"这个配置写错了"变成一件看不出来的事）。
+  ⚠️ 这个属性必须写成占位符 `${native.encoding:UTF-8}`：写成 SpEL（`#{...}`）在绑定期就失败。
+
+### 7.4 已知边界（不粉饰）
+
+| 边界 | 说明 |
+|---|---|
+| **工作区不是沙箱** | 命令能读写工作区之外的路径，用的是本应用自己的 OS 权限。真正的保护是人工确认 |
+| **一次只跑一条命令** | 要按顺序做几件事就串在一条里（`&&` / `;`）。本工具没有"后台作业"：一条命令最长占住并发闸门的一个名额 `max-timeout` |
+| **平台只验过 Windows** | `/bin/sh -c` 那条分支只有代码可读，没有实测 |
+| **编码配错不一定被发现** | 只有解出 `U+FFFD` 时才有提示；某段字节恰好全是合法字符时，得到的是**乱码而不是报错** |
+| **它不进 MCP 暴露面** | 外部客户端那条链路没有工作区、也没有人点批准（与文件工具同一条判据：`WorkspaceBoundTool`） |
+| **退出码的含义不做解释** | 原样回填（实测 `cmd` 的 `exit /b 3` 回 3、命令不存在回 1）。"1 代表什么"由命令自己决定，工具不猜 |
+
+### 7.5 配置速查
+
+```properties
+ai.agent.workspace.command.timeout=30s              # 模型不传 timeoutSeconds 时的默认时限（>0）
+ai.agent.workspace.command.max-timeout=300s         # 模型能申请到的上限（≥ timeout）
+ai.agent.workspace.command.charset=${native.encoding:UTF-8}   # 读子进程输出的编码
+```

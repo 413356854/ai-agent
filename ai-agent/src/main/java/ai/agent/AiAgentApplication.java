@@ -5,6 +5,7 @@ import ai.agent.config.AgentTaskProperties;
 import ai.agent.config.ChatCallProperties;
 import ai.agent.config.ReviewProperties;
 import ai.agent.config.SkillPromptProperties;
+import ai.agent.config.WorkspaceCommandProperties;
 import ai.agent.config.WorkspaceFileProperties;
 import ai.agent.config.WorkspaceProperties;
 import ai.agent.config.rag.RagProperties;
@@ -43,6 +44,12 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * {@code ai.agent.workspace.file}）：它管的是"读进来多少、写出去多大"，
  * 与 {@link WorkspaceProperties}（工作区在哪、必填校验）的读者不是同一批人。
  *
+ * <p>命令执行工具的边界是又一个 {@link WorkspaceCommandProperties}（前缀
+ * {@code ai.agent.workspace.command}）：它管的是"一条命令最多跑多久"与
+ * "它的输出按哪个编码读"。后者的取值取决于<b>部署环境</b>（本机实测
+ * {@code native.encoding=GBK}，而 {@code cmd} 的输出就是 GBK 字节），
+ * 与代码无关，所以必须能改配置 —— 与上面两个类的读者也不是同一批人。
+ *
  * <p>{@code @MapperScan} 指向 {@code ai.agent.mapper} —— <b>SQL 与 Java 的边界包</b>：
  * 每个接口对应一张表（或一组相关查询），语句在同名 XML 里。
  * 放在这里而不是各 mapper 上逐个标 {@code @Mapper}，是为了让"这一层有哪些 mapper"
@@ -69,7 +76,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableScheduling
 @EnableConfigurationProperties({ ChatCallProperties.class, RagProperties.class, AgentApprovalProperties.class,
 		ReviewProperties.class, WorkspaceProperties.class, WorkspaceFileProperties.class,
-		AgentTaskProperties.class, SkillPromptProperties.class })
+		WorkspaceCommandProperties.class, AgentTaskProperties.class, SkillPromptProperties.class })
 public class AiAgentApplication {
 
 	public static void main(String[] args) {

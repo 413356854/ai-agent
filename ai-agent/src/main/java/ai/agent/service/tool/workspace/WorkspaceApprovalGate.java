@@ -36,12 +36,12 @@ import org.springframework.stereotype.Component;
  * 而那与需求原话相反。
  *
  * <h2>被覆盖的判据：写操作要问"改的东西在不在工作区内"</h2>
- * 没有路径参数的写工具（建工单、执行 SQL）走 {@link AgentPermissionPolicy#coversWrite}
- * 里"不在工作区内"的那一支；文件工具则由工具自己给（{@link WorkspaceCallContext#access()}，
- * 它读的是本次的参数）。于是三档的差别是：
+ * 判据由工具自己给（{@link WorkspaceCallContext#access()}，它读的是本次的参数）——
+ * 没有实现那个接口的工具一律算"没有证据说明它只在工作区内"。
+ * 于是三档的差别是：
  * <pre>
  *   仅可查看        写操作走到工具里被拒绝（见 AgentPermissionPolicy；本类不停它）
- *   工作区内修改    工作区内的写：直接执行；工作区外的写：要人点头
+ *   工作区内修改    工作区内改的东西：直接执行；其余（区外、或判不出位置）：要人点头
  *   完全权限        两种写都直接执行
  * </pre>
  *
@@ -125,15 +125,16 @@ public class WorkspaceApprovalGate implements ToolApprovalGate {
 	}
 
 	/**
-	 * 这一次要动的路径算不算在工作区内。
+	 * 这一次要动的东西算不算在工作区内。
 	 *
 	 * <p>判据是"重新解析一次路径"，而不是读工具里那个布尔 ——
 	 * 为的是在闸门与工具之间留一条<b>独立</b>的复核：两边用同一份
 	 * {@link FileAccess} 与同一份参数，结论必须一致；不一致时这里取严的那一侧
 	 * （判成"区外"= 要人点头），于是"工具那边算错了"不会变成一次静默的越界写。
 	 *
-	 * <p>没有路径参数的工具一律返回 {@code false}（不覆盖）：它们的写入位置不由参数决定
-	 * （建工单落在配置的目录里、SQL 落在整个库上），也就是"没有证据说明它只在工作区内"。
+	 * <p>没有实现 {@link WorkspaceCallContext} 的工具一律返回 {@code false}（不覆盖）：
+	 * 那次要改的东西在哪儿<b>不由参数里的路径决定</b>，也就是"没有证据说明它只在工作区内"。
+	 * 命令执行与执行 SQL 属于这一类 —— 它们的副作用写在哪儿，从参数里看不出来。
 	 */
 	private static boolean boundOf(AgentTool<?> tool) {
 		return tool instanceof WorkspaceCallContext bound && isBound(bound);
