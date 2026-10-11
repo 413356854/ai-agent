@@ -1,5 +1,7 @@
 package ai.agent.config;
 
+import ai.agent.service.agent.memory.SummarizingChatMemory;
+import ai.agent.service.chat.compact.ChatCompactionService;
 import ai.agent.service.prompt.PromptContextResource;
 import ai.agent.service.prompt.PromptKind;
 import ai.agent.service.prompt.PromptService;
@@ -132,30 +134,40 @@ public class ChatClientConfig {
 	}
 
 	/**
-	 * 对话记忆。
+	 * 对话记忆：<b>存储层是全量，交给模型的那一份是压过的</b>。
 	 *
-	 * <p>窗口默认 20 条，超出后淘汰旧消息，但 system 消息会被保留。
-	 * <b>注意这个 20 是"每个会话最多几条"，它管的是窗口大小，不是"消息存在哪里"</b> ——
-	 * 存储层是上面那个内存仓储（{@code chatMemoryRepository()}），换存储不改这里。
+	 * <h2>两层各管什么</h2>
+	 * <ul>
+	 *   <li>{@code MessageWindowChatMemory} 管<b>存储</b>：它是那份全量历史，
+	 *       也是"用户当时到底说了什么"的唯一可查处；</li>
+	 *   <li>{@code SummarizingChatMemory} 管<b>交给模型的那一份</b>：
+	 *       advisor 在 {@code before()} 里读的是它，它把已被摘要覆盖的那几轮换成一条摘要。
+	 *       压缩只影响这一份，<b>不回写存储</b>。</li>
+	 * </ul>
 	 *
-	 * <p><b>为什么把窗口大小做成可配的</b>（实测发现的必要性）：
-	 * 这个窗口是<b>按条数</b>限制的，而 Token 预算是<b>按长度</b>限制的 ——
-	 * 两者量纲不同，所以谁先触发完全取决于消息有多长。
-	 * 默认 20 条恰好让"消息条数"先到顶：实测第 11 轮时历史 20 条、需要 2058 tokens，
-	 * 而预算是 2150，<b>被条数窗口挡住了，预算校验的裁剪逻辑一次都没执行过</b>。
+	 * <h2>窗口为什么从 20 放大到 200</h2>
+	 * 20 条的窗口是一个<b>静默的删除点</b>：它按条数淘汰最旧的消息，而淘汰是永久的
+	 * （{@code InMemoryChatMemoryRepository.saveAll} 是整段替换），
+	 * 于是"聊到第 11 轮之后它就忘了前 3 轮"既没有日志也没有痕迹。
 	 *
-	 * <p>这说明一件容易误判的事：<b>看到一个"保护"在生效，不代表你新加的那个保护在生效</b>。
-	 * 想把 Token 预算这条链路真正验证到，必须把条数窗口放大到不再抢先 ——
-	 * 于是它成了配置项（{@code ai.chat.memory.max-messages}），
-	 * 压测/验证时调大即可，生产环境仍按需设置。
+	 * <p>原来把窗口压到 20 有一条实测依据：第 11 轮时历史 20 条、需要 2058 tokens，
+	 * 而预算是 2150 —— <b>条数窗口先到顶，Token 预算那条路一次都没跑到</b>。
+	 * 那条依据现在不成立了：预算那条路已经改成"压缩 + 不删"，
+	 * 它自己就会控制进 prompt 的量，不再需要靠条数窗口替它挡。
+	 * 窗口放大之后，两件事同时成立：进 prompt 的量由预算压，
+	 * 而存储里留着全量原文。
+	 *
+	 * <p>⚠️ 内存代价随窗口线性增长：{@code maxMessages} 条 × 会话数。
+	 * 它默认 200（而不是无上限）就是为了给"会话数 × 条数"一个看得见的上界。
 	 */
 	@Bean
-	ChatMemory chatMemory(ChatMemoryRepository repository,
-			@Value("${ai.chat.memory.max-messages:20}") int maxMessages) {
-		return MessageWindowChatMemory.builder()
+	ChatMemory chatMemory(ChatMemoryRepository repository, ChatCompactionService compaction,
+			@Value("${ai.chat.memory.max-messages:200}") int maxMessages) {
+		ChatMemory archive = MessageWindowChatMemory.builder()
 				.chatMemoryRepository(repository)
 				.maxMessages(maxMessages)
 				.build();
+		return new SummarizingChatMemory(archive, compaction);
 	}
 
 	/**

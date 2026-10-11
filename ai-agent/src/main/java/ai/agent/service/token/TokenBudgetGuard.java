@@ -1,6 +1,9 @@
 package ai.agent.service.token;
 
 import ai.agent.config.ChatCallProperties;
+import ai.agent.entity.chat.ConversationSummary;
+import ai.agent.service.chat.compact.ChatCompactionService;
+import ai.agent.service.chat.compact.CompactionRequest;
 import ai.agent.service.prompt.PromptKind;
 import ai.agent.service.prompt.PromptService;
 import org.slf4j.Logger;
@@ -33,29 +36,31 @@ import java.util.List;
  * <h2>为什么这件事**不能**只靠框架的 advisor 做</h2>
  * Spring AI 自带了 {@code LastMaxTokenSizeContentPurger}，但它处理的是
  * {@code List<MediaContent>}（多模态内容块），粒度在"内容块"这一层；
- * 而对话历史的裁剪单元是<b>消息</b>（一问一答成对），语义完全不同 ——
- * 按内容块裁会把某一轮问答切成两半，留下"有回答没有提问"的畸形上下文。
- * 本项目在框架之外补一个守卫，裁的就是消息。
+ * 而对话历史的<b>压缩</b>单元是"轮"（一问一答成对），语义完全不同 ——
+ * 按内容块切会把某一轮问答切成两半，留下"有回答没有提问"的畸形上下文。
+ * 本项目在框架之外补一个守卫，压的就是轮。
  *
  * <h2>三条不同的处理路径（这是本类的全部业务逻辑）</h2>
  * <ol>
  *   <li><b>放行</b> —— 估算值在预算内，什么都不做（绝大多数请求走这里，零成本）；</li>
- *   <li><b>裁剪历史后放行</b> —— 历史太长但本次提问本身不大。
- *       丢最旧的几轮对话，保住"这次能答"；这是对话变长时的<b>常态</b>，不该报错；</li>
+ *   <li><b>压缩历史后放行</b> —— 历史太长但本次提问本身不大。把最旧的若干<b>整轮</b>
+ *       交给 {@link ChatCompactionService} 压成摘要（摘要进 prompt，原文留在存储里），
+ *       保住"这次能答"；这是对话变长时的<b>常态</b>，不该报错；</li>
  *   <li><b>拒绝</b> —— 连"本次提问 + 系统提示词"都放不下（比如用户直接粘了一本书进来）。
- *       这时候裁剪救不了（该裁的是提问本身，但提问是用户的意图，不能替他删），
+ *       这时候压缩救不了（该压的是提问本身，但提问是用户的意图，不能替他删），
  *       必须明确报错并告诉他差多少、该怎么办。</li>
  * </ol>
  *
- * <h2>为什么裁剪走仓储层（{@code saveAll}）而不是 {@code ChatMemory.add}</h2>
- * 同一个坑在重试清理孤儿消息时已经踩过一次：{@code ChatMemory.add()} 是<b>追加合并</b>语义
- * （读旧 → 合并 → 存回），拿裁剪后的列表去调它等于把裁掉的历史又加回来。
- * 真正"整段替换"的入口只有 {@link ChatMemoryRepository#saveAll}。
+ * <h2>为什么压缩不回写存储</h2>
+ * 这是本类与它上一版最重要的一处不同。原来路径 2 是"裁掉最旧的 N 条 + {@code saveAll}
+ * 写回"，也就是<b>真删</b> —— 而删掉的消息在下游没有任何留底，
+ * 于是"用户当时到底说了什么"变成一个不可回答的问题。
+ * 现在存储一个字都不动：被压掉的那一段以摘要的形式进 prompt
+ * （拼接在 {@code SummarizingChatMemory.get()} 那一侧），原文随时还查得到。
  *
- * <p>⚠️ 由此带出一个容易误解的点：<b>这里的"裁掉"只发生在存储层，不产生任何独立的"裁剪记录"</b>。
- * 而存储层默认是内存实现（{@code ChatClientConfig#chatMemoryRepository()}），
- * 所以进程重启之后，"裁过的历史"与"没裁过的历史"一起消失 —— 想看裁剪是否真的发生过，
- * 只能看日志（{@code 上下文超预算 → 裁掉最旧的 N 条历史消息}）。
+ * <p>⚠️ 由此带出一个读日志时容易误解的点：{@code droppedMessages} 现在恒为 0，
+ * 它记的"删了多少条"这件事已经不存在了。这次压缩了多少看
+ * {@link BudgetCheck#compactedMessages()}。
  */
 @Component
 public class TokenBudgetGuard {
@@ -84,6 +89,19 @@ public class TokenBudgetGuard {
 	 * 属性只能保证<b>位置</b>相同，而这个还能保证<b>版本</b>相同。
 	 */
 	private final PromptService prompts;
+
+	/**
+	 * 超预算时<b>压缩</b>历史（而不是删）。
+	 *
+	 * <p>这一处是整条链上唯一"发请求之前"的时机，而摘要要花一次模型调用 ——
+	 * 放在 {@code ChatMemory.get()} 里不行（那里在 advisor 的 {@code before()} 阶段被同步调用，
+	 * 见 {@code SummarizingChatMemory} 的类注释）。
+	 *
+	 * <p>压完<b>不回写存储</b>：原文留在 {@code chatMemoryRepository} 里，
+	 * 压缩只决定"这次发给模型的那一份"长什么样。所以这里的 {@code droppedMessages}
+	 * 是"这次没进 prompt 的条数"，不是"被删掉的条数"。
+	 */
+	private final ChatCompactionService compaction;
 
 	/**
 	 * 系统提示词的 token 数（<b>每次现算，不是启动时算一次</b>）。
@@ -134,15 +152,29 @@ public class TokenBudgetGuard {
 	 * 而一个不知道这段历史的人很容易把 {@code @Value} 资源再走一遍弯路。
 	 */
 	public TokenBudgetGuard(ChatCallProperties properties, TokenEstimator estimator,
-			ChatMemoryRepository chatMemoryRepository, PromptService prompts) {
+			ChatMemoryRepository chatMemoryRepository, PromptService prompts,
+			ChatCompactionService compaction) {
 		this.properties = properties;
 		this.estimator = estimator;
 		this.chatMemoryRepository = chatMemoryRepository;
 		this.prompts = prompts;
+		this.compaction = compaction;
 	}
 
 	/**
-	 * 流式对话入口用：检查预算，必要时<b>裁剪历史</b>，返回一份账目快照。
+	 * 流式对话入口用：检查预算，超了<b>压缩历史</b>，返回一份账目快照。
+	 *
+	 * <h2>为什么是"压缩"而不是"裁剪"</h2>
+	 * 裁剪是<b>丢</b>：丢掉的对话在下游没有任何留底，于是"用户当时到底说了什么"
+	 * 变成一个不可回答的问题 —— 而且它不报错，只表现为"聊着聊着它不记得了"。
+	 * 压缩是<b>换一种说法留着</b>：被挤出去的那一段由模型压成摘要进 prompt，
+	 * 原文仍然完整留在对话记忆里（看得到、导出得到），只是不再进这次 prompt。
+	 *
+	 * <h2>为什么压缩失败也不能回退成"删"</h2>
+	 * 那是这个类改这件事时最容易写错的一笔：{@code compact()} 返回"没压成"时，
+	 * 顺手把最旧的几条删掉看起来很自然 —— 但它把"压不动"降级成了"丢掉"，
+	 * 而压不动恰恰发生在<b>旧摘要已经很满</b>（内容最多）的时候。
+	 * 所以压不动时只做两件事：给系统消息加一句兜底提示，以及如实报出"仍超预算"。
 	 *
 	 * @param conversationId 会话 ID
 	 * @param userMessage    本次提问
@@ -186,46 +218,60 @@ public class TokenBudgetGuard {
 
 		// 路径 1：放行。绝大多数请求在这里结束，不做任何多余动作
 		if (needed <= allowance) {
-			return new BudgetCheck(true, needed, allowance, history.size(), 0, systemPromptTokens);
+			// 即使没超预算，也要把"当前生效的摘要覆盖了几轮"报出去 ——
+			// 否则"压缩到底发生过没有"只在压缩的那一次日志里能看到，
+			// 而这个判断恰恰是排查"它为什么不记得早期对话"时要问的第一个问题
+			ConversationSummary active = compaction.view(conversationId, history).summary().orElse(null);
+			return new BudgetCheck(true, needed, allowance, history.size(), 0, systemPromptTokens, 0,
+					active == null ? 0 : active.coveredTurns(), history.size(), null);
 		}
 
-		// 路径 2 的分岔：配置不允许裁剪 → 只能拒绝
+		// 路径 2 的分岔：配置不允许压缩 → 只能拒绝
 		if (!cfg.isTruncateHistory()) {
 			String reason = """
-					上下文预算超限且未启用历史裁剪：本次需要约 %d tokens（历史 %d + 提问 %d + 系统提示词 %d），可用预算 %d。
+					上下文预算超限且未启用历史压缩：本次需要约 %d tokens（历史 %d + 提问 %d + 系统提示词 %d），可用预算 %d。
 					建议：开启 ai.chat.budget.truncate-history，或新开一个会话。"""
 					.formatted(needed, historyTokens, questionTokens, systemPromptTokens, allowance);
-			log.warn("预算拒绝（未启用裁剪）conversationId={} 需要={} 可用={} 历史条数={}",
+			log.warn("预算拒绝（未启用历史压缩）conversationId={} 需要={} 可用={} 历史条数={}",
 					conversationId, needed, allowance, history.size());
 			throw new TokenBudgetExceededException(reason, needed, allowance);
 		}
 
-		// 路径 2：裁剪历史后放行
-		int keepFrom = trimIndex(history, allowance, base);
-		int dropped = keepFrom;
-		if (dropped > 0) {
-			List<Message> kept = new ArrayList<>(history.subList(keepFrom, history.size()));
-			// 整段替换语义（不是 add 的追加合并），见类注释
-			chatMemoryRepository.saveAll(conversationId, kept);
-			log.warn("上下文超预算 → 裁掉最旧的 {} 条历史消息 conversationId={} needed={} allowance={} kept={}",
-					dropped, conversationId, needed, allowance, kept.size());
-			history = kept;
-			historyTokens = estimateHistory(kept);
-			needed = base + historyTokens;
+		// 路径 2：压缩历史后放行。
+		//
+		// 【这一段是本类从"删"改成"压"的全部所在】原来这里是 trimIndex + saveAll：
+		// 把最旧的若干条从存储里抹掉。现在只压不删 —— 存储一个字都不动，
+		// 被压掉的那一段以摘要的形式进 prompt（拼接在 ChatMemory.get() 那一侧）。
+		ChatCompactionService.Outcome outcome = compaction.compact(new CompactionRequest(conversationId, history, base,
+				allowance, cfg.getMinHistoryMessages(), null));
+		int compacted = outcome.compactedMessages();
+		if (compacted > 0) {
+			// 这一份估算交给压缩服务算过一次（它要用它判"压缩之后还超不超"），
+			// 这里不重算：两处各算一遍迟早会算出两个数，而"哪个是 prompt 真正的长度"
+			// 就会变成一个要读两段代码才能回答的问题
+			needed = base + estimateHistory(outcome.view().messages());
+			log.warn("上下文超预算 → 压缩掉最旧的 {} 条历史消息（累计 {} 轮已进摘要）conversationId={} needed={} "
+					+ "allowance={} 保留={} 摘要={} 字符",
+					compacted, outcome.summary().map(summary -> summary.coveredTurns()).orElse(0), conversationId,
+					needed, allowance, outcome.view().messages().size(), 
+					outcome.summary().map(summary -> summary.summary().length()).orElse(0));
 		}
 
-		// 裁到最少条数仍然超限：说明"留下来的那几条"本身就很大，这时不能假装成功
+		// 压完仍然超限：这时**不能**回退成"删几条" —— 那是把"压不动"降级成"丢掉"，
+		// 而压不动恰恰发生在摘要内容最多的时候。如实报出来，由调用方决定。
 		if (needed > allowance) {
 			String reason = """
-					上下文预算超限：已裁到最少 %d 条历史仍然放不下（需要约 %d tokens，可用 %d）。
-					建议：新开一个会话，避免把长文本粘进对话。"""
-					.formatted(cfg.getMinHistoryMessages(), needed, allowance);
-			log.warn("预算拒绝（裁到下限仍超）conversationId={} 需要={} 可用={} 保留条数={}",
-					conversationId, needed, allowance, history.size());
+					上下文预算超限：历史已经压缩过，仍然放不下（需要约 %d tokens，可用 %d，历史 %d 条）。
+					建议：新开一个会话，或把这一轮的问题缩短 —— 避免把长文本粘进对话。"""
+					.formatted(needed, allowance, history.size());
+			log.warn("预算拒绝（压缩后仍超）conversationId={} 需要={} 可用={} 历史条数={} 压缩条数={}",
+					conversationId, needed, allowance, history.size(), compacted);
 			throw new TokenBudgetExceededException(reason, needed, allowance);
 		}
 
-		return new BudgetCheck(true, needed, allowance, history.size(), dropped, systemPromptTokens);
+		return new BudgetCheck(true, needed, allowance, history.size(), 0, systemPromptTokens, compacted,
+				outcome.summary().map(summary -> summary.coveredTurns()).orElse(0),
+				outcome.view().messages().size(), outcome.needsModelNudge());
 	}
 
 	/**
@@ -260,41 +306,13 @@ public class TokenBudgetGuard {
 					.formatted(label, needed, systemPromptTokens, allowance);
 			throw new TokenBudgetExceededException(reason, needed, allowance);
 		}
-		return new BudgetCheck(true, needed, allowance, historyMessages, 0, systemPromptTokens);
+		return new BudgetCheck(true, needed, allowance, historyMessages, 0, systemPromptTokens, 0, 0,
+				historyMessages, null);
 	}
 
 	/** 当前配置下留给输入的 token 上限（便于诊断端点与前端展示）。 */
 	public int inputAllowance() {
 		return properties.getBudget().inputAllowance();
-	}
-
-	/**
-	 * 从历史里裁到"不超预算"所需的起始下标。
-	 *
-	 * <p>裁剪方向<b>只能是从最旧的开始</b>：越近的对话越相关，而且最近的这一轮
-	 * 往往就是用户正在追问的上下文。这跟"滑动窗口"是同一个直觉，
-	 * 所以这里也是 {@code MessageWindowChatMemory} 早就做的事（那个窗口默认 20 条）。
-	 *
-	 * <p>有两条硬约束：
-	 * <ol>
-	 *   <li>至少要保留 {@code minHistoryMessages} 条 —— 全丢掉等于让模型失忆，
-	 *       用户会觉得"聊着聊着它就不认识我了"，比报错更难排查；</li>
-	 *   <li>裁剪必须<b>整条整条地丢</b>，不能从某条消息中间截断 ——
-	 *       半条消息会让模型看到残缺的上下文。</li>
-	 * </ol>
-	 */
-	private int trimIndex(List<Message> history, int allowance, int base) {
-		int minKeep = Math.max(0, properties.getBudget().getMinHistoryMessages());
-		int maxDroppable = Math.max(0, history.size() - minKeep);
-
-		// 逐条从最旧的开始扣减，不每次重算总和（否则退化成 O(n²)，虽然 n 不大但没必要）
-		int historyTokens = estimateHistory(history);
-		int index = 0;
-		while (index < maxDroppable && base + historyTokens > allowance) {
-			historyTokens -= estimator.estimateMessage(textOf(history.get(index)));
-			index++;
-		}
-		return index;
 	}
 
 	private int estimateHistory(List<Message> history) {
@@ -331,12 +349,24 @@ public class TokenBudgetGuard {
 	 * "预算够不够"这个结论没法排查 —— 出问题时你需要知道的是
 	 * <b>差多少、钱花在哪（历史占了多少、系统提示词占了多少）</b>。
 	 * 把这些数字交给日志与诊断端点，"上下文为什么变贵了"就是一个可以直接看的问题。
+	 *
+	 * <h2>{@code droppedMessages} 的语义</h2>
+	 * <b>它恒为 0，且不会被删掉。</b>它原来记的是"这次从存储里删掉了多少条历史"，
+	 * 而历史现在只压不删 —— 留着这个字段是为了让调用方（{@code ChatController} 的
+	 * {@code truncated()} 分支）还能编译与显示，同时把"已经不再有删除这件事"
+	 * 表达在类型上。要看这次到底压缩了多少，看 {@code compactedMessages}。
+	 *
+	 * @param compactedMessages 这次被压进摘要、因而不进 prompt 的条数
+	 * @param summaryTurns      当前摘要覆盖了几轮用户发言（0 = 还没压过）
+	 * @param promptMessages    这次真正发出去的消息条数（含摘要那一条）
+	 * @param needsModelNudge   压不动时的兜底提示；{@code null} = 压成了（或本来不用压）
 	 */
 	public record BudgetCheck(boolean enabled, int neededTokens, int allowedTokens, int historyMessages,
-			int droppedMessages, int systemPromptTokens) {
+			int droppedMessages, int systemPromptTokens, int compactedMessages, int summaryTurns,
+			int promptMessages, String needsModelNudge) {
 
 		static BudgetCheck disabled() {
-			return new BudgetCheck(false, 0, 0, 0, 0, 0);
+			return new BudgetCheck(false, 0, 0, 0, 0, 0, 0, 0, 0, null);
 		}
 
 		/** 剩余可用额度，负数表示已超限（正常情况下不会出现，因为超限会被拦下）。 */
@@ -344,8 +374,24 @@ public class TokenBudgetGuard {
 			return allowedTokens - neededTokens;
 		}
 
+		/** 这次有没有从存储里删掉历史。<b>恒为 false</b> —— 见 record 头注。 */
 		public boolean truncated() {
 			return droppedMessages > 0;
+		}
+
+		/** 这次有没有把历史压进摘要。 */
+		public boolean compacted() {
+			return compactedMessages > 0;
+		}
+
+		/** 摘要当前覆盖的轮数。 */
+		public int coveredTurns() {
+			return summaryTurns;
+		}
+
+		/** 这次摘要是不是没压成（压不动）。 */
+		public boolean fallbackNudge() {
+			return needsModelNudge != null;
 		}
 	}
 

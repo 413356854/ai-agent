@@ -14,6 +14,7 @@ import ai.agent.entity.agent.task.AgentTaskStatus;
 import ai.agent.entity.agent.task.ConfirmOptions;
 import ai.agent.entity.agent.task.ConfirmType;
 import ai.agent.entity.alert.AlertEvent;
+import ai.agent.entity.chat.ConversationSummary;
 import ai.agent.entity.prompt.PromptVersion;
 import ai.agent.entity.tool.RetrievalTrace;
 import ai.agent.service.agent.AgentFailureCause;
@@ -384,6 +385,25 @@ public final class MapperRows {
 		public AgentSkill toDomain() {
 			return new AgentSkill(id, folder, name, description, content, ownerId, ownerName, lastModifiedBy,
 					lastModifiedName, createdAt, updatedAt);
+		}
+	}
+
+	// ==================================================================
+	//  对话历史压缩（chat_conversation_summary）
+	// ==================================================================
+
+	/**
+	 * {@code chat_conversation_summary} 的一行。
+	 *
+	 * <p>{@code provider} 为 null 是**正常状态**（当时取不到模型名），不编默认值 ——
+	 * 与成本归因同一条规矩：编一个模型名会让"不知道是哪个模型写的"变成
+	 * "就是那个模型写的"，而两者在事后排查时方向完全相反。
+	 */
+	public record ChatSummaryRow(String conversationId, Integer coveredTurns, String summary, Integer turnsCompacted,
+			String provider) {
+
+		public ConversationSummary toDomain() {
+			return new ConversationSummary(conversationId, nz(coveredTurns), summary, nz(turnsCompacted), provider);
 		}
 	}
 

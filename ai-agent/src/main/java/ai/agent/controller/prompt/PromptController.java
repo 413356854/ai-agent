@@ -266,6 +266,7 @@ public class PromptController {
 			case AGENT_LOOP -> "Agent 工具调用面板（每次运行开始时读一次）";
 			case CHAT_SYSTEM -> "SSE 流式对话与结构化输出（每轮请求读一次）";
 			case TASK_REVIEW -> "agent 任务判定（需求歧义判定与任务点拆分；每次判定开始时读一次）";
+			case CHAT_COMPACTION -> "对话历史压缩（每次需要压缩时读一次；正文是给压缩器看的，不是给用户看的）";
 		};
 	}
 

@@ -166,14 +166,23 @@ public class ChatController {
 		// 所以它是"发请求之前"的本地计算，不花任何模型调用成本。
 		TokenBudgetGuard.BudgetCheck budget = budgetGuard.prepare(conversationId, message);
 		if (budget.enabled()) {
-			if (budget.truncated()) {
-				log.warn("上下文超预算，已裁掉最旧的 {} 条历史 conversationId={} 需要={} 可用={}",
-						budget.droppedMessages(), conversationId, budget.neededTokens(), budget.allowedTokens());
+			if (budget.compacted()) {
+				log.warn("上下文超预算 → 压缩掉最旧的 {} 条历史（累计 {} 轮已进摘要，这次发出 {} 条）"
+						+ "conversationId={} 需要={} 可用={}",
+						budget.compactedMessages(), budget.coveredTurns(), budget.promptMessages(), conversationId,
+						budget.neededTokens(), budget.allowedTokens());
 			}
 			else {
 				log.info("预算账目 conversationId={} 需要={} 可用={} 历史条数={} 系统提示词={}",
 						conversationId, budget.neededTokens(), budget.allowedTokens(),
 						budget.historyMessages(), budget.systemPromptTokens());
+			}
+			if (budget.fallbackNudge()) {
+				// 【必须留这一行】它是"这次压缩没成功"的唯一痕迹。
+				// 不留的话，表现只是"模型对很早的事答得含糊" —— 而那看起来像模型能力问题
+				log.warn("这次历史没能压进摘要（{}）conversationId={} 历史条数={} 需要={} 可用={}",
+						budget.needsModelNudge(), conversationId, budget.historyMessages(),
+						budget.neededTokens(), budget.allowedTokens());
 			}
 		}
 

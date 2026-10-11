@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  chat_conversation_summary 表的 SQL。
+
+  ⚠️ 写入用 MySQL 的 `ON DUPLICATE KEY UPDATE`（理由见 ChatSummaryMapper#upsert 的注释）。
+  换库之前先确认新库认不认这个语法 —— 它不认的表现是**启动正常、第一次压缩时抛 SQL 异常**。
+
+  ⚠️ `provider` 允许写 null：取不到模型名时**不编一个**（与 ModelTurn.UNKNOWN_MODEL 同一条规矩）。
+-->
+<mapper namespace="ai.agent.mapper.ChatSummaryMapper">
+
+	<!--
+	  构造器映射：参数顺序必须与 MapperRows.ChatSummaryRow 的分量顺序逐字对齐。
+	  错位不报错，只表现为某几列静默串到别人身上（covered_turns 与 turns_compacted 都是 Integer，
+	  串了尤其看不出来）—— 见 MapperRows 的类注释。
+	-->
+	<resultMap id="chatSummaryRow" type="ai.agent.mapper.MapperRows$ChatSummaryRow">
+		<constructor>
+			<idArg column="conversation_id" javaType="java.lang.String"/>
+			<arg column="covered_turns" javaType="java.lang.Integer"/>
+			<arg column="summary" javaType="java.lang.String"/>
+			<arg column="turns_compacted" javaType="java.lang.Integer"/>
+			<arg column="provider" javaType="java.lang.String"/>
+		</constructor>
+	</resultMap>
+
+	<select id="find" resultMap="chatSummaryRow">
+		SELECT conversation_id, covered_turns, summary, turns_compacted, provider
+		  FROM chat_conversation_summary
+		 WHERE conversation_id = #{conversationId}
+	</select>
+
+	<insert id="upsert">
+		INSERT INTO chat_conversation_summary
+			(conversation_id, covered_turns, summary, turns_compacted, provider)
+		VALUES (#{conversationId}, #{coveredTurns}, #{summary}, #{turnsCompacted}, #{provider})
+		ON DUPLICATE KEY UPDATE
+			covered_turns   = VALUES(covered_turns),
+			summary         = VALUES(summary),
+			turns_compacted = VALUES(turns_compacted),
+			provider        = VALUES(provider)
+	</insert>
+
+	<delete id="delete">
+		DELETE FROM chat_conversation_summary WHERE conversation_id = #{conversationId}
+	</delete>
+
+</mapper>

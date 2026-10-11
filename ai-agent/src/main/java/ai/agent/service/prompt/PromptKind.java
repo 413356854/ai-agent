@@ -62,7 +62,21 @@ public enum PromptKind {
 	 * 而且明确要求"不输出 JSON、不暴露字段名" —— 与判定"只输出一个 JSON 对象"的契约正好相反。
 	 */
 	TASK_REVIEW("task-review", "prompts/task-review.st",
-			"agent 任务判定的系统提示词：需求歧义判定与任务点拆分的工作方式、工具与技能的使用边界、JSON 输出口径");
+			"agent 任务判定的系统提示词：需求歧义判定与任务点拆分的工作方式、工具与技能的使用边界、JSON 输出口径"),
+
+	/**
+	 * 对话历史压缩（滚动摘要）的系统提示词。
+	 *
+	 * <p>它回答的是"把被挤出去的那一段对话压成什么"：哪些内容必须逐字保留、哪些可以概括、
+	 * 以及<b>压缩后的摘要自己要怎么写才不会被下一轮误解</b>。
+	 *
+	 * <p>读法与 {@link #AGENT_LOOP} 一样（每次压缩前读一次），所以换一版对<b>下一次压缩</b>生效。
+	 * 它与另外三份都不能互换：{@link #CHAT_SYSTEM} 是"回答用户"的人格，
+	 * {@link #TASK_REVIEW} 输出 JSON，{@link #AGENT_LOOP} 是带工具的技术助手 ——
+	 * 而这一份的产物是一段给人看、也给模型当背景的资料。
+	 */
+	CHAT_COMPACTION("chat-compaction", "prompts/chat-compaction.st",
+			"对话历史压缩的系统提示词：把被挤出的旧对话压成一份保留事实的摘要");
 
 	private final String defaultValue;
 

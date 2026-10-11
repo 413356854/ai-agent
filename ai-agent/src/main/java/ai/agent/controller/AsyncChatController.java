@@ -106,10 +106,11 @@ public class AsyncChatController {
 		if (!check.enabled()) {
 			return;
 		}
-		if (check.truncated()) {
-			log.warn("预算账目 conversationId={} 需要={} 可用={} 历史条数={} 已裁掉={} 系统提示词={}",
-					conversationId, check.neededTokens(), check.allowedTokens(), check.historyMessages(),
-					check.droppedMessages(), check.systemPromptTokens());
+		if (check.compacted()) {
+			log.warn("预算账目 conversationId={} 需要={} 可用={} 历史条数={} 已压缩={}（累计 {} 轮已进摘要）"
+					+ " 系统提示词={}", conversationId, check.neededTokens(), check.allowedTokens(),
+					check.historyMessages(), check.compactedMessages(), check.coveredTurns(),
+					check.systemPromptTokens());
 		}
 		else {
 			log.info("预算账目 conversationId={} 需要={} 可用={} 历史条数={} 系统提示词={}",
