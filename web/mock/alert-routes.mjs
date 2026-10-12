@@ -10,11 +10,8 @@
  *   它们是快照，每次返回同一份形状。
  *
  *   【另一半是状态机】`POST /api/alerts/{fp}/ack` 与 `/api/canary/start|stop`
- *   界面自检要验的正是"点一下之后状态真的变了"，所以状态必须**进程内可变**。
- *   而可变状态必须配一条复位入口（`POST /api/alerts/__reset`），
- *   否则自检脚本跑第二遍时会继承第一遍改出来的状态 ——
- *   这与 prompt-routes 的 `__reset`、HITL 的 `__set-approval` 是同一条经验，
- *   而且第十二轮已经实测踩过：**"两条路径都全过"是有前提的**。
+ *   点一下之后状态真的变（确认一条告警 → 它从"未处理"变成"已确认"；
+ *   开一次灰度 → 状态页上多出一条进行中的实验），所以状态必须**进程内可变**。
  *
  * ---------------------------------------------------------------------------
  * 假数据刻意**不是一份"万事如意"的数据**
@@ -399,12 +396,6 @@ const state = {
   canary: initialCanary(),
 }
 
-/** 复位（`POST /api/alerts/__reset`）—— 自检跑第二遍的前提，见文件头注释。 */
-function reset() {
-  state.events = initialEvents()
-  state.canary = initialCanary()
-}
-
 // ---------------------------------------------------------------------------
 //  响应组装
 // ---------------------------------------------------------------------------
@@ -466,13 +457,6 @@ function canaryResponse() {
  */
 export function handleAlertsRoutes(req, res, url, json) {
   const pathname = url.pathname
-
-  // ---- 复位（自检跑第二遍的前提） ----
-  if (req.method === 'POST' && pathname === '/api/alerts/__reset') {
-    reset()
-    json(res, { ok: true, message: '假后端的告警与灰度状态已复位' })
-    return true
-  }
 
   // ---- 判据目录 ----
   if (req.method === 'GET' && pathname === '/api/alerts/rules') {

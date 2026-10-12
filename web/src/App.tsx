@@ -245,10 +245,10 @@ export default function App(
             loginName={mockLogin.user ? mockLoginLabel(mockLogin.user) : null}
           />
         ) : mode === 'schedules' ? (
-          // 与 agent任务 那一页同一条：名字从 mockLogin 取（配新规则的发布人就是他）
+          // 与 agent任务 那一页同一条：配新规则的发布人就是当前登录的人（交上去的是他的 id）
           <SchedulePanel
             schedules={schedules}
-            loginName={mockLogin.user ? mockLoginLabel(mockLogin.user) : null}
+            loginUser={mockLogin.user}
           />
         ) : mode === 'threads' ? (
           // 面板自己带滚动容器：诊断内容比对话长得多，而且没有"新消息贴底"这个语义

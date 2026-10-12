@@ -968,7 +968,7 @@ export function handleAgentRoutes(req, res, url, json) {
       // 租户（阶段四第 6 件）与归因键同一条规矩：假后端**不拿它做任何事**，
       // 因为真实链路里它也只是被写进 agent_run.tenant_id 的一个字符串。
       // 这里解析它只有一个目的：让"请求体里字段名写错了"这件事在假路径上也现形
-      // （跨路径一致性断言会读它 —— 见 verify-ui 里那条）
+      // （它同时是"注入的技能与执行者对不对得上"唯一的读数）
       let tenantId = ''
       /*
         【运行权限（本次新增）：这两个字段与上面三个不同，假后端要**用**它们】
@@ -1214,68 +1214,6 @@ export function handleAgentRoutes(req, res, url, json) {
 
   if (req.method === 'GET' && pathname === '/api/agent/limits') {
     json(res, LIMITS)
-    return true
-  }
-
-  /**
-   * <b>把审批状态复位</b> —— 只给假后端用，真后端**没有**这个端点。
-   *
-   * <h2>为什么必须有它</h2>
-   * HITL 的假状态是**一次性的**：`approvalState.decision` 一旦被写成 `APPROVED`，
-   * 那条待批就永远消失了（这正是真后端的行为）。而界面自检要验证的是
-   * **两条相反的分支**：「批准之后写操作真的执行」与「拒绝之后它没有执行」。
-   *
-   * <p>三条路可走，只有第三条是对的：
-   * <ol>
-   *   <li>只测一条分支 —— 那等于"拒绝之后那个副作用真的没发生"这条最重要的结论没人验证；</li>
-   *   <li>自检里重启一次假后端 —— 脚本要管进程，脆弱且慢；</li>
-   *   <li><b>加一个复位端点</b>（本实现）—— 一次自检里把两条分支都走完，
-   *       而真后端**不受任何影响**（它没有这个路径，请求会 404，
-   *       所以自检在真路径上必须跳过这一段 —— 那也正是它该有的行为）。</li>
-   * </ol>
-   */
-  if (req.method === 'POST' && pathname === '/api/agent/__reset-approval') {
-    approvalState.decision = null
-    approvalState.decidedBy = null
-    approvalState.decisionNote = null
-    json(res, { ok: true, reset: true, pending: 1 })
-    return true
-  }
-
-  /**
-   * <b>直接落一个决定</b>（绕过界面）—— 同样只给假后端用，真后端没有这个端点。
-   *
-   * <h2>为什么"复位"之外还需要"直接落一个决定"</h2>
-   * 界面自检里，"批准"与"拒绝"两条分支都要走一遍，而它们**必须由界面动作触发**才有意义
-   * （那正是在测界面）。所以那两个动作各点了一遍按钮，而不是靠这个端点。
-   *
-   * <p>但自检的最后还有一段要验证**批准之后那条四步轨迹**（`[6.6]`）——
-   * 它需要假后端处在 `APPROVED` 状态，而那时界面已经停在"已拒绝"的结论上了。
-   * 再点一次按钮就变成了"重复决定"，真后端会明确拒绝（"不能重复决定"）。
-   * 所以这里给一个"只改状态、不经过界面"的入口：**它让最后那段断言的前提变得确定**，
-   * 而不是"取决于前面几节留下了什么状态"。
-   *
-   * <p>⚠️ 这也是一条通用的教训：**假后端的可控性要足够支撑断言的顺序无关性**。
-   * 只给一个复位端点的话，`[6.6]` 的前提就依赖于 HITL 那一节最后停在哪个分支上 ——
-   * 而那种耦合不会报错，只会让某一天调整顺序之后突然红一片。
-   */
-  if (req.method === 'POST' && pathname === '/api/agent/__set-approval') {
-    let body = ''
-    req.on('data', chunk => {
-      body += chunk
-    })
-    req.on('end', () => {
-      let decision = 'APPROVED'
-      try {
-        decision = JSON.parse(body || '{}').decision ?? decision
-      } catch {
-        // 同别处：假后端不严格校验输入
-      }
-      approvalState.decision = decision
-      approvalState.decidedBy = '自检机器人'
-      approvalState.decisionNote = decision === 'DENIED' ? '这条已经有对应的工单了，别重复建' : ''
-      json(res, { ok: true, decision })
-    })
     return true
   }
 

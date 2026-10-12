@@ -2,23 +2,19 @@
  * skill 管理端点的**假数据**（应用管理 · skill管理）。
  *
  * ---------------------------------------------------------------------------
- * 与 permission-routes / task-routes 同一条纪律：**有写端点，就必须有 __reset**
+ * 这一组有三个写端点，所以状态是**进程内可变**的
  * ---------------------------------------------------------------------------
- * 这一组有三个写端点（新建 / 修改 / 删除），界面自检要验的正是"点一下之后表格真的多了一行、
- * 那一行的归属真的写的是当前登录的人"。所以状态是**进程内可变**的，
- * 并且必须提供 `POST /api/skills/__reset` —— 否则自检跑第二遍时会继承第一遍建出来的技能
- * （与 prompt-routes 的 `__reset`、permission-routes 的 `__reset` 是同一条经验）。
+ * 新建 / 修改 / 删除 —— 点一下之后表格真的多了一行、那一行的归属真的写的是当前登录的人。
  *
  * ---------------------------------------------------------------------------
  * ★ 假数据的判据照搬真后端，而不是"随便返回个成功"
  * ---------------------------------------------------------------------------
- * 这一页最需要被验证的三个分支都是**失败**或**边界**分支：
+ * 这一页最需要被看清的三个分支都是**失败**或**边界**分支：
  *   1. **未登录**（不传 `?userId=`）→ 200 给全部记录、`folders` 为空，
- *      而三个写端点回 **400** 并说清"先去登录"。假后端不实现的话，
- *      "未登录时按钮禁用 + 那句话显示出来"这件事在自检里永远走不到；
+ *      而三个写端点回 **400** 并说清"先去登录"；
  *   2. **文件夹越界** → 400 且**报错里带可选项**（与真后端 `inFolderSet` 同一句话）——
  *      没有它，下一个文件夹还会填错；而"下拉框拦住了"这件事只在下拉里成立，
- *      curl 打一次就绕过去了，所以自检要按接口打一次；
+ *      curl 打一次就绕过去了；
  *   3. **不是他的记录** → 400（改 / 删都判）—— 归属判据是那一行的 `owner_id`，
  *      不是"请求里说的谁"。假后端放行的话，"只有拥有者能改"这条在自检里是假绿。
  * 另外同名唯一键（同一个人的同一个文件夹下）回 **409**：与真后端
@@ -59,7 +55,7 @@ const RULE_BLOCK_TASK_PREFIX = '<!-- 任务 #'
 /** 「自补充规则优先写进哪条技能」的默认名字 —— 与真后端 `ai.agent.skill.supplement-skill-name` 同一句话。 */
 const SUPPLEMENT_SKILL_NAME = '【自补充】任务经验规则'
 
-/** 初始状态。每次 __reset 都从这里重建（深拷贝，避免被就地改坏）。 */
+/** 初始状态。进程启动时建一次（深拷贝，避免被就地改坏）。 */
 function initialState() {
   return {
     skills: [
@@ -128,7 +124,7 @@ function initialState() {
   }
 }
 
-let state = initialState()
+const state = initialState()
 
 /**
  * 现在时间（ISO-8601 文本，与真后端 `Instant.toString()` 同形）。 */
@@ -357,13 +353,6 @@ function bodyOf(req) {
 export function handleSkillRoutes(req, res, url, json) {
   const { pathname } = url
   if (!pathname.startsWith('/api/skills')) return false
-
-  // 自检脚本靠它做到确定性（见文件头）
-  if (req.method === 'POST' && pathname === '/api/skills/__reset') {
-    state = initialState()
-    json(res, { ok: true, note: 'skill 假后端已复位' })
-    return true
-  }
 
   if (req.method === 'GET' && pathname === '/api/skills') {
     const scope = scopeOf(url.searchParams.get('userId'), json, res)

@@ -5,21 +5,16 @@
  * 与 cost-routes / agent-routes 的规矩相同：**数字是假的，形状是真的** ——
  * 但这一组有一处**本质不同，必须先说清**
  * ---------------------------------------------------------------------------
- * 前面几组端点都是**只读**的：假数据写死，自检跑多少遍结果都一样。
- * 而这一组有四个写端点（存 / 生效 / 回滚 / 清空），界面自检要验的恰恰是
- * **"点一下之后状态真的变了"**。所以这里是**有状态的**，而且：
+ * 前面几组端点都是**只读**的：假数据写死，跑多少遍结果都一样。
+ * 而这一组有四个写端点（存 / 生效 / 回滚 / 清空）—— 点一下之后状态真的变。
+ * 所以这里是**有状态的**，而且：
  *
  *   1. 状态放在模块级变量里（进程内），不落盘 —— 假后端的职责是让界面能跑，
  *      不是模拟持久化。**重启 node mock/sse-server.mjs 就回到初始状态**；
- *   2. 既然是状态机，就必须有 **`POST /api/prompts/__reset`**：
- *      自检脚本跑第二遍时不能继承第一遍改出来的版本号，否则
- *      "存一版之后数量 +1" 这种断言第二遍必红 —— 而红的原因与功能无关。
- *      这与 `/api/agent/__reset-approval` 是同一条经验（HITL 那两条相反分支
- *      就是靠它做到确定性的）；
- *   3. 校验逻辑**照抄真后端的判据**（围栏配平 / 结构锚点 / 说明必填 / 篇幅骤变）。
+ *   2. 校验逻辑**照抄真后端的判据**（围栏配平 / 结构锚点 / 说明必填 / 篇幅骤变）。
  *      ⚠️ 这一条最容易偷懒，但代价很具体：**假后端不校验的话，
- *      "提交一份坏提示词 → 界面逐条列出判据"这个分支在自检里永远走不到**，
- *      等于没验证。这与"假数据里必须留一个没价格的模型"是同一条纪律。
+ *      "提交一份坏提示词 → 界面逐条列出判据"这个分支在假后端上永远走不到**。
+ *      这与"假数据里必须留一个没价格的模型"是同一条纪律。
  *
  * ---------------------------------------------------------------------------
  * 初始数据刻意不是"万事如意"的那一份
@@ -147,8 +142,8 @@ function initialState() {
   }
 }
 
-let versions = initialState()
-let active = { 'system-agent-tools': 2, 'system-agent': 1, 'task-review': 1 }
+const versions = initialState()
+const active = { 'system-agent-tools': 2, 'system-agent': 1, 'task-review': 1 }
 /** 自增计数：新版本号取"当前最大 + 1"，与真后端一致。 */
 let authorCounter = 0
 
@@ -433,19 +428,6 @@ function readBody(req) {
 
 export function handlePromptRoutes(req, res, url, json) {
   const pathname = url.pathname
-
-  // ---- 自检用的复位端点 ----
-  // 状态机必须有它：不然自检脚本跑第二遍时会继承第一遍改出来的版本号，
-  // 于是"存一版之后数量 +1"这类断言第二遍必红，而红的原因与功能无关
-  if (req.method === 'POST' && pathname === '/api/prompts/__reset') {
-    versions = initialState()
-    // ⚠️ 这一行必须与 initialState() 的键逐一对应：漏掉一个 kind 时那一份的 activeVersion
-    // 会变成 null，而"版本表里没有任何一行标着生效中"看起来像提示词没被激活
-    active = { 'system-agent-tools': 2, 'system-agent': 1, 'task-review': 1 }
-    authorCounter = 0
-    json(res, { ok: true, reset: true, prompts: Object.keys(versions) })
-    return true
-  }
 
   // ---- 只读 ----
   if (req.method === 'GET' && pathname === '/api/prompts') {

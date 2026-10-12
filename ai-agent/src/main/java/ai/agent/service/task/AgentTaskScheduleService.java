@@ -64,16 +64,6 @@ public interface AgentTaskScheduleService {
 	AgentTaskSchedule require(Long id);
 
 	/**
-	 * 一个账号的<b>登录名</b>（按用户 id）。
-	 *
-	 * <p>它是给界面回传用的：读侧给的那两个"人"的格子是<b>姓名</b>（显示名优先），
-	 * 而写请求（{@link #update}）收的是**登录名** —— 两处不是同一个字符串，
-	 * 拿姓名去提交的后果是"改规则永远失败"，且报的是"账号表里没有「李工」这个人"。
-	 * <p>账号那一行不在（手工清过库）时返回空串：那一格空着，界面会挡住提交。
-	 */
-	String loginName(Long userId);
-
-	/**
 	 * 校验一句定时正则并算出它未来几次触发时刻 —— <b>只读，不写库、不装线程</b>。
 	 *
 	 * <p>界面上"页面配置化定时规则"那一块靠的就是它：用户每改一次配置，
@@ -90,13 +80,14 @@ public interface AgentTaskScheduleService {
 	/**
 	 * 建一条规则，并把它装进调度线程池。
 	 *
-	 * <p>发布人 / 任务人都是<b>登录名</b>（与 {@link AgentTaskService#create} 同一套：
-	 * 两人都必须是账号表里真实存在的用户，落库的是查出来的两个 id）。
+	 * <p>发布人 / 任务人都是<b>用户 id</b>（{@code agent_user.id}）：两人都必须能在账号表里
+	 * 查到那一行，否则当场 400。落库的是这两个 id，到点派活时也直接用它们
+	 * （见 {@link AgentTaskService.Draft#scheduled}）—— 没有任何一步要把 id 换回名字。
 	 *
 	 * <p>{@code enabled} 为真时<b>当场把线程装上</b>，不等下一次启动 ——
 	 * 否则"配好了却没反应"要等到有人重启进程才发现。
 	 */
-	RuleView create(String publisher, String assignee, String description, String cron, boolean enabled);
+	RuleView create(Long publisherId, Long assigneeId, String description, String cron, boolean enabled);
 
 	/**
 	 * 重新配一条规则：正则 / 任务人 / 描述 / 启停四列一起写，<b>并把线程删掉重加</b>。
@@ -105,7 +96,7 @@ public interface AgentTaskScheduleService {
 	 * 改它等于换一个人来背这条规则 —— 而那件事该由"停用旧的、建一条新的"表达
 	 * （两条规则的由来、历史任务、执行次数因此各自独立，不会混在一起）。
 	 */
-	RuleView update(Long id, String assignee, String description, String cron, boolean enabled);
+	RuleView update(Long id, Long assigneeId, String description, String cron, boolean enabled);
 
 	/** 停用 / 启用：停用会把线程从池子里摘掉，启用会装回去。 */
 	RuleView setEnabled(Long id, boolean enabled);

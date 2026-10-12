@@ -35,6 +35,9 @@
 --  【发布人与任务人：两个都是真实账号的用户 id】
 --  与 agent_task 同一条规矩（见 task-schema.sql）：存 id 不存姓名，姓名在读侧 LEFT JOIN
 --  agent_user 取**当前**的写法（账号改名之后，历史记录指向的人不变、显示的名字跟着改）。
+--  写入路径收的也是 id（`POST /api/agent-task-schedules` 的 publisherId / assigneeId）：
+--  界面那两格是搜索选择器（GET /api/permissions/users/search），选完给出来的就是候选里的 id；
+--  服务层再核一遍账号表，id 不在时当场 400。
 --  ⚠️ 读侧一律 LEFT JOIN 而不是 INNER JOIN：账号那一行万一不在（手工清过库），
 --  规则照样读得出来、姓名那一格落空（界面显示「用户#id」），比"整页打不开"好得多。
 --  ⚠️ 也不加外键：agent_user 只停用不删除，id 不会悬空（与 agent_task 同一条理由）。

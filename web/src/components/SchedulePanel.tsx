@@ -1,9 +1,12 @@
 import { Alert, Button, Card, Empty, Flex, Input, InputNumber, Modal, Radio, Select, Space, Spin, Switch, Tag, Typography } from 'antd'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { PermissionUserOption } from '../api/permissions'
 import type { AgentTaskSchedule } from '../api/schedules'
 import { CRON_FIELDS, DEFAULT_DRAFT, WEEKDAYS, buildCron, describeDraft, draftOf } from '../cron'
 import type { ScheduleDraft } from '../cron'
 import type { ScheduleForm, UseSchedulesResult } from '../hooks/useSchedules'
+import { mockLoginLabel } from '../hooks/useMockLogin'
+import type { MockLoginUser } from '../hooks/useMockLogin'
 import { Clamped } from './Clamped'
 import { UserPicker } from './UserPicker'
 
@@ -54,10 +57,10 @@ const { Text, Paragraph } = Typography
  * `nextRuns` / `runs`）。业务状态一律用后端给的那一份 —— 前端再推一遍
  * 就是第二份判据，而两份不一致时表现为"按钮看着能点、点完报错"。
  */
-export function SchedulePanel({ schedules, loginName }: {
+export function SchedulePanel({ schedules, loginUser }: {
   schedules: UseSchedulesResult
-  /** 当前登录那个人的显示名（`mockLoginLabel` 算出来的那一份）；没登录是 `null`。 */
-  loginName: string | null
+  /** 当前登录那个人（`id` 就是配新规则时要交上去的发布人；没登录是 `null`）。 */
+  loginUser: MockLoginUser | null
 }) {
   const { snapshot } = schedules
   const data = snapshot.status === 'ok' ? snapshot.data : null
@@ -99,7 +102,7 @@ export function SchedulePanel({ schedules, loginName }: {
         </Flex>}
         extra={<Space>
           <Button onClick={schedules.reload} disabled={schedules.busy}>刷新</Button>
-          <Button type="primary" disabled={!loginName} onClick={() => setCreating(true)}>配一条规则</Button>
+          <Button type="primary" disabled={!loginUser} onClick={() => setCreating(true)}>配一条规则</Button>
         </Space>}
       >
         {/* 池子那一栏是**必须显示的**：这一页的失败形态是"规则配好了、它就是不动"，
@@ -116,9 +119,9 @@ export function SchedulePanel({ schedules, loginName }: {
           </Text>
         </div>
         <div className="task-board-scope">
-          {loginName == null
+          {loginUser == null
             ? '未登录：列表是全部规则，但配新规则需要一个"发布人"—— 先在页头「模拟登录」里选一个人。'
-            : `配新规则的发布人会是「${loginName}」（每次触发派出的任务以他的名义发布）—— 这一页按人不筛：`
+            : `配新规则的发布人会是「${mockLoginLabel(loginUser)}」（每次触发派出的任务以他的名义发布）—— 这一页按人不筛：`
               + '一条别人配的规则照样会在半夜派活，所以列表永远是全量。'}
         </div>
 
@@ -146,7 +149,7 @@ export function SchedulePanel({ schedules, loginName }: {
         open={creating || editing != null}
         rule={editing}
         schedules={schedules}
-        publisherName={loginName}
+        loginUser={loginUser}
         onClose={() => { setCreating(false); setEditing(null); schedules.clearPreview() }}
       />
     </div>
@@ -230,8 +233,8 @@ function RuleCard({ rule, busy, onEdit, onToggle, onTrigger, onRemove }: {
       </div>
 
       <div className="schedule-card-meta">
-        {/* 显示的是**姓名**那一份（后端 JOIN 出来的），而改规则时回传的是 `assigneeName`（登录名）——
-            两者的区别写在 api/schedules.ts 上 */}
+        {/* 显示的是**姓名**那一份（后端 JOIN 出来的）；改规则时回传给后端的是 `assigneeId`
+            （用户 id），两者不是同一个东西 —— 见 api/schedules.ts */}
         <span>{rule.publisher} → {rule.assignee || '（未指派任务人）'}</span>
         {/* 下一次触发时刻来自后端（同一份判断喂给线程池），前端不自己算 —— 算两遍就会
             "预览说 09:00、实际 10:00 跑" */}
@@ -288,17 +291,17 @@ function RuleCard({ rule, busy, onEdit, onToggle, onTrigger, onRemove }: {
  * <h2>发布人为什么不是输入框</h2>
  * 它就是**当前登录的人**（页头那个身份）：一条定时规则以谁的名义派活，
  * 在业务上就是"谁配的它"。让它可填会多出一种"以别人的名义自动派活"，
- * 而那种记录在库里与正常记录一模一样。
+ * 而那种记录在库里与正常记录一模一样。交上去的是他的**用户 id**（不是名字）。
  */
-function RuleModal({ open, rule, schedules, publisherName, onClose }: {
+function RuleModal({ open, rule, schedules, loginUser, onClose }: {
   open: boolean
   rule: AgentTaskSchedule | null
   schedules: UseSchedulesResult
-  publisherName: string | null
+  loginUser: MockLoginUser | null
   onClose: () => void
 }) {
   const [draft, setDraft] = useState<ScheduleDraft>(DEFAULT_DRAFT)
-  const [assignee, setAssignee] = useState('')
+  const [assigneeId, setAssigneeId] = useState<number | null>(null)
   const [description, setDescription] = useState('')
   const [enabled, setEnabled] = useState(true)
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -308,20 +311,39 @@ function RuleModal({ open, rule, schedules, publisherName, onClose }: {
     if (!open) return
     if (rule) {
       setDraft(draftOf(rule.cron))
-      // ⚠️ 填的是 `assigneeName`（**登录名**）而不是 `assignee`（姓名）：
-      // 这一格提交时要回传登录名，而姓名是"给人看的"那一份（显示名优先、可以重名）。
-      // 两者填错的表现是"改规则永远失败"，报的还是"账号表里没有「李工」这个人"
-      setAssignee(rule.assigneeName)
+      // ⚠️ 填的是 `assigneeId`（用户 id）而不是 `assignee`（姓名）：
+      // 这一格提交时要回传 id，而姓名是"给人看的"那一份（显示名优先、可以重名）
+      setAssigneeId(rule.assigneeId)
       setDescription(rule.description)
       setEnabled(rule.enabled)
     }
     else {
       setDraft(DEFAULT_DRAFT)
-      setAssignee('')
+      setAssigneeId(null)
       setDescription('')
       setEnabled(true)
     }
   }, [open, rule])
+
+  /**
+   * 已经指派的那个人（改规则时把它交给选人框，那一格才不会显示成一个裸的 id）。
+   *
+   * <p>它由**规则那一行**拼出来：这一层只有那个人的 id 与姓名，而 `UserPicker` 的候选
+   * 要的是账号表的形状。两格里 `name` 与 `displayName` 都填姓名是有意的 ——
+   * 候选那一行显示的是「显示名（登录名）」，而这一份手上没有登录名，
+   * 填一个空串会让那一格显示成「姓名（）」。
+   * `status` / `usable` 那些格子在这一格上没有用处：它们只决定候选行尾巴上那句「已停用」。
+   */
+  const currentAssignee: PermissionUserOption | null = rule && rule.assigneeId != null
+    ? {
+      id: rule.assigneeId,
+      name: rule.assignee,
+      displayName: rule.assignee,
+      status: 'ENABLED',
+      statusLabel: '启用',
+      usable: true,
+    }
+    : null
 
   const cron = useMemo(() => buildCron(draft), [draft])
   const { runPreview, preview, previewError, previewing, clearPreview } = schedules
@@ -340,11 +362,12 @@ function RuleModal({ open, rule, schedules, publisherName, onClose }: {
   const close = () => { clearPreview(); onClose() }
 
   const submit = async () => {
-    if (!rule && !publisherName) return
-    const form: ScheduleForm = { assignee, description: description.trim(), cron, enabled }
+    if (!rule && !loginUser) return
+    if (assigneeId == null) return
+    const form: ScheduleForm = { assigneeId, description: description.trim(), cron, enabled }
     const ok = rule
       ? await schedules.update(rule.id, form)
-      : await schedules.create({ ...form, publisher: publisherName ?? '' })
+      : await schedules.create({ ...form, publisherId: loginUser!.id })
     // 成功才关：失败时关掉会把用户填的内容丢掉，而他正需要照着报错改一改
     if (ok) close()
   }
@@ -352,9 +375,9 @@ function RuleModal({ open, rule, schedules, publisherName, onClose }: {
   // 「保存」的可用性：三格必填 + **预览必须已经通过**。
   // 最后一条是刻意的 —— 用户在输入框里改到一半时正则可能是坏的，
   // 而那时点保存会得到一句 400；不如让按钮先点不动（后端照样会再校验一遍）
-  const canSubmit = assignee.trim().length > 0 && description.trim().length > 0
+  const canSubmit = assigneeId != null && description.trim().length > 0
     && preview.status === 'ok' && preview.data.cron === cron && !schedules.busy
-    && (rule != null || publisherName != null)
+    && (rule != null || loginUser != null)
 
   return (
     <Modal
@@ -374,12 +397,15 @@ function RuleModal({ open, rule, schedules, publisherName, onClose }: {
           <Text strong>发布人</Text>
           <Text type="secondary">
             {rule
-              ? `${rule.publisher}（发布人不可改 —— 改它等于换一个人来背这条规则；那件事请用「停用旧的、建一条新的」）`
-              : `${publisherName ?? '（未登录）'} —— 以当前登录的人的名义派活，界面上不提供"以别人名义"这一档`}
+              ? `${rule.publisher}（用户 id ${rule.publisherId}；发布人不可改 —— 改它等于换一个人来背这条规则；那件事请用「停用旧的、建一条新的」）`
+              : loginUser
+                ? `${mockLoginLabel(loginUser)}（用户 id ${loginUser.id}）—— 以当前登录的人的名义派活，界面上不提供"以别人名义"这一档`
+                : '（未登录）'}
           </Text>
         </Flex>
 
-        <UserPicker value={assignee} onChange={name => setAssignee(name)}
+        <UserPicker value={assigneeId} initial={currentAssignee}
+          onChange={option => setAssigneeId(option?.id ?? null)}
           placeholder="任务人（必填）—— 搜索登录名，从候选里选一个真实用户：每次触发的任务派给他" />
 
         <Input.TextArea rows={3} value={description} onChange={e => setDescription(e.target.value)}

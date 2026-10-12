@@ -41,6 +41,8 @@ public interface AgentTaskScheduleMapper {
 	 *
 	 * <p>发布人 / 任务人传的是<b>用户 id</b>（{@code agent_user.id}），姓名不落库 ——
 	 * 读侧关联查询出来（见 {@code AgentTaskScheduleMapper.xml}）。
+	 * 这两个 id 由服务层先核一遍账号表（见 {@code DefaultAgentTaskScheduleService#realUser}）：
+	 * 这张表的 insert 不会因为一个人不存在而拒绝。
 	 */
 	int insert(@Param("cron") String cron, @Param("publisherId") Long publisherId,
 			@Param("assigneeId") Long assigneeId, @Param("description") String description,
@@ -85,20 +87,6 @@ public interface AgentTaskScheduleMapper {
 
 	/** 只改启停那一格（界面上那个开关）。 */
 	int updateEnabled(@Param("id") Long id, @Param("enabled") boolean enabled);
-
-	/**
-	 * 一个账号的<b>登录名</b>（按 id 取）。
-	 *
-	 * <h2>为什么读侧要用它，而不是把登录名也 JOIN 出来</h2>
-	 * 显示要的是<姓名>（显示名优先），而<b>写请求要的是登录名</b>
-	 * （{@code AgentTaskService#create} 按登录名核账号表）—— 两个写法必须都给到界面，
-	 * 否则"改规则"会拿姓名当登录名回传，而它多半查不到人。
-	 * JOIN 出来也行，但那要往 {@link MapperRows.AgentTaskScheduleRow} 再加一格
-	 * （构造器映射里连续几个 {@code String} 正是最容易错位的地方）；
-	 * 而这一页的规则是**按人手工配的规模**，改规则时多查一次可忽略。
-	 * <p>没这个人时返回 {@code null}（与姓名那一格同一条规矩：账号行不在不影响读整页）。
-	 */
-	String findLoginName(@Param("id") Long id);
 
 	/**
 	 * 删掉一条规则。**不碰它派出去的那些任务**（见类注释）。

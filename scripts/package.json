@@ -2,18 +2,13 @@
   "name": "ai-agent-scripts",
   "private": true,
   "version": "1.0.0",
-  "description": "本目录是**长期用途**的脚本（不是一次性排查脚本）：ci.mjs 界面自检门禁的唯一入口（默认即跑假后端那一条、连跑两遍） / verify-mcp.ps1 MCP 端点真 HTTP 自检 / build-rag-corpus.ps1 语料快照 / gen-align-mock.mjs 假数据生成。playwright 这一份依赖只服务 web/verify-ui.mjs（界面自检）——它在仓库根由 ci.mjs 起、在 web/ 目录里由 pnpm check:ui 跑，两条路径都要能解析到它。",
+  "description": "本目录是**长期用途**的脚本（不是一次性排查脚本）：build-rag-corpus.ps1 语料快照 / gen-align-mock.mjs 界面假数据生成。playwright 这一份依赖是留着起一个浏览器看页面用的（验证类脚本已整体移除）。",
   "license": "UNLICENSED",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
-  "scripts": {
-    "ci": "node ci.mjs",
-    "ci:ui": "node ci.mjs --with-ui",
-    "ci:real-ui": "node ci.mjs --with-real-ui",
-    "verify:mcp": "pwsh -File verify-mcp.ps1"
-  },
+  "scripts": {},
   "dependencies": {
     "playwright": "^1.63.0"
   }

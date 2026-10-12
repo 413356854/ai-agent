@@ -43,12 +43,14 @@ import java.util.Objects;
  * 静默丢弃用户的输入会让"我明明保存过"变成一句无法核实的话。
  * 而它的线程没装上，由 {@link #snapshot()} 的 {@code scheduled} 计数看得出来。
  *
- * <h2>发布人 / 任务人必须是真实账号</h2>
- * 判据与 {@code DefaultAgentTaskService#realUser} 逐字相同，而且<b>故意不抽公共方法</b>：
+ * <h2>发布人 / 任务人必须是真实账号（判据按用户 id）</h2>
+ * 写请求收的是两个<b>用户 id</b>，所以"这个名字打错了一个字"这类输入根本不存在 ——
+ * 界面上的候选来自 {@code GET /api/permissions/users/search}，选完传上来的就是候选里的 id。
+ * 仍然要核一遍账号表：一个不在账号表里的 id 放过去的话，那条规则在界面上与正常的完全一样，
+ * 只是它每次触发的<b>那一刻</b>才会失败，而那时用户在别的一页上。
+ * 判据与 {@code DefaultAgentTaskService#realUser} 同源，但<b>故意不抽公共方法</b>：
  * 这一层的报错要把用户引到"定时任务那一页的选人框"，而那一层要引到"发布任务那个弹窗"——
  * 两处指向的下一步操作不同，合成一个方法就只能写一句含糊的公共说明。
- * 定时规则这边多一层要求：<b>两个人都必须在</b>，因为这条规则要长期存在，
- * 而它每次派活都要求这两个 id 能换回登录名（见 {@code AgentTaskScheduleRunner#loginOf}）。
  */
 @Service
 public class DefaultAgentTaskScheduleService implements AgentTaskScheduleService {
@@ -141,15 +143,6 @@ public class DefaultAgentTaskScheduleService implements AgentTaskScheduleService
 			throw new TaskInvalidException("定时规则不存在：#" + id);
 		}
 		return row.toDomain();
-	}
-
-	@Override
-	public String loginName(Long userId) {
-		if (userId == null) {
-			return "";
-		}
-		String name = schedules.findLoginName(userId);
-		return name == null ? "" : name;
 	}
 
 	/**
@@ -277,11 +270,11 @@ public class DefaultAgentTaskScheduleService implements AgentTaskScheduleService
 
 	@Override
 	@Transactional
-	public RuleView create(String publisher, String assignee, String description, String cron, boolean enabled) {
+	public RuleView create(Long publisherId, Long assigneeId, String description, String cron, boolean enabled) {
 		String normalized = normalize(cron);
 		// 正则先过一遍：它是这条规则里唯一"写错了会安静地不触发"的一格，所以要在落库之前拦住
 		checked(normalized);
-		AgentTaskSchedule rule = draft(realUser(publisher, "发布人"), realUser(assignee, "任务人"), description,
+		AgentTaskSchedule rule = draft(realUser(publisherId, "发布人"), realUser(assigneeId, "任务人"), description,
 				normalized, enabled);
 		schedules.insert(rule.cron(), rule.publisherId(), rule.assigneeId(), rule.description(), rule.enabled());
 		Long id = AgentTaskTransitions.requiredKey(schedules.lastInsertId(), "定时规则");
@@ -299,11 +292,11 @@ public class DefaultAgentTaskScheduleService implements AgentTaskScheduleService
 
 	@Override
 	@Transactional
-	public RuleView update(Long id, String assignee, String description, String cron, boolean enabled) {
+	public RuleView update(Long id, Long assigneeId, String description, String cron, boolean enabled) {
 		AgentTaskSchedule existing = require(id);
 		String normalized = normalize(cron);
 		checked(normalized);
-		Account person = realUser(assignee, "任务人");
+		Account person = realUser(assigneeId, "任务人");
 		AgentTaskSchedule updated = existing.reconfigured(normalized, person.id(), person.name(), description,
 				enabled);
 		if (schedules.update(id, updated.cron(), updated.assigneeId(), updated.description(), updated.enabled()) != 1) {
@@ -366,15 +359,15 @@ public class DefaultAgentTaskScheduleService implements AgentTaskScheduleService
 	 * {@code ErrorResponseAdvice} 带回那句原因）—— 手工触发是**人在等结果**的动作，
 	 * 所以"这一次没派活"必须当场说出来；而到点触发那一条路是自己接住、留到下一个周期重试。
 	 *
-	 * <p>另外两个参数（发布人 / 任务人）在这一层是登录名 —— {@code AgentTaskService#create}
-	 * 收的就是登录名，而规则里存的是用户 id。换名字这一步与到点那条路一样会失败
-	 * （账号被清掉了），失败时给 400，而不是派一条挂在不存在的人名下的任务。
+	 * <p>另外两个参数（发布人 / 任务人）在这一层就是规则里存的那两个<b>用户 id</b>：
+	 * {@code AgentTaskService#create(Draft)} 收的就是它们，由它核一遍账号表
+	 * （不在时给 400）—— 没有任何一步要把 id 换回姓名再换回 id。
 	 */
 	private AgentTaskService.Detail dispatch(AgentTaskSchedule rule) {
 		AgentTaskScheduleDescriber.Resolved resolved = describer.resolve(rule.id(), rule.description(),
 				Instant.now(), properties.zone());
-		return taskService.create(AgentTaskService.Draft.scheduled(rule.id(), loginOf(rule.publisherId(), "发布人"),
-				loginOf(rule.assigneeId(), "任务人"), resolved.description()));
+		return taskService.create(AgentTaskService.Draft.scheduled(rule.id(), rule.publisherId(), rule.assigneeId(),
+				resolved.description()));
 	}
 
 	@Override
@@ -456,38 +449,28 @@ public class DefaultAgentTaskScheduleService implements AgentTaskScheduleService
 	}
 
 	/**
-	 * 发布人 / 任务人必须是从账号表里选出来的真实用户 —— 判据与
-	 * {@code DefaultAgentTaskService#realUser} 相同，只有报错文案指向的下一步不同
+	 * 发布人 / 任务人必须是账号表里真实存在的用户（判据按<b>用户 id</b>）——
+	 * 判据与 {@code DefaultAgentTaskService#realUser} 同源，只有报错文案指向的下一步不同
 	 * （这里要用户去"定时任务那一页的选人框"，那边是"发布任务那个弹窗"）。
 	 *
-	 * <p>它拦的是"随手打一个名字"：规则里存的是用户 id，而打错的字在账号表里一个都查不到 ——
-	 * 那样一条规则在界面上与正常的完全一样，只是它每次触发的<b>那一刻</b>才会失败
-	 * （见 {@code AgentTaskScheduleRunner#loginOf}），而那时用户在别的一页上。
+	 * <p>写入路径收的是用户 id 而不是姓名，所以这里拦的是"这个 id 在账号表里没有那一行"
+	 * （界面上的候选来自 {@code GET /api/permissions/users/search}，正常路径上不会发生）：
+	 * 放过去的话，那条规则在界面上与正常的完全一样，只是它每次触发的<b>那一刻</b>才会失败
+	 * （见 {@code AgentTaskScheduleRunner}），而那时用户在别的一页上。
+	 *
+	 * <p>返回值取账号表里那一行本身：落库与接下来派活用的都是它的 id，
+	 * 姓名只为构造那条还没落库的实体而取。
 	 */
-	private Account realUser(String name, String what) {
-		if (name == null || name.isBlank()) {
-			throw new TaskInvalidException(what + "必填 —— 发布人与任务人都要从用户列表里选一个真实用户"
-					+ "（搜索：GET /api/permissions/users/search?keyword=…）");
-		}
-		String wanted = name.strip();
-		return permissions.findAccount(wanted)
-				.orElseThrow(() -> new TaskInvalidException(("账号表里没有「%s」这个人，不能当%s —— 定时任务的"
-						+ "发布人与任务人都必须是真实用户，因为每次触发都要用这两个 id 换回登录名去建任务；"
-						+ "打错一个字不会有任何东西拦下这条规则，它只会在**触发的那一刻**失败，"
-						+ "而那时你不在这一页上。").formatted(wanted, what)));
-	}
-
-	/** 用户 id → 登录名（手工派活那一条路要的那一份）。 */
-	private String loginOf(Long userId, String what) {
+	private Account realUser(Long userId, String what) {
 		if (userId == null) {
-			throw new TaskInvalidException("这条规则没有" + what + "（用户 id 为空），不能派活");
+			throw new TaskInvalidException(what + "必填 —— 发布人与任务人都要填账号表里的用户 id"
+					+ "（搜索：GET /api/permissions/users/search?keyword=…，候选项里的 id 就是要填的那个）");
 		}
 		return permissions.findAccountById(userId)
-				.map(Account::name)
-				.orElseThrow(() -> new TaskInvalidException(
-						("这条规则的%s（用户 id %d）在账号表里已经不在了 —— 不能按一个不存在的人派活。"
-								+ "请把任务人改成现有账号；发布人改不了，需要停用这条规则后重建一条。")
-								.formatted(what, userId)));
+				.orElseThrow(() -> new TaskInvalidException(("账号表里没有 id=%d 这个用户，不能当%s —— 定时任务的"
+						+ "发布人与任务人都必须是真实用户，因为每次触发都要按这两个 id 建任务；"
+						+ "界面上那两格只能从用户列表的候选里选（GET /api/permissions/users/search?keyword=…），"
+						+ "选完传上来的是候选里的 id。").formatted(userId, what)));
 	}
 
 }

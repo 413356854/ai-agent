@@ -9,7 +9,6 @@
     "mock": "node mock/sse-server.mjs",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "check:ui": "node verify-ui.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -2,22 +2,19 @@
  * 权限管理端点的**假数据**（应用管理 · 权限管理）。
  *
  * ---------------------------------------------------------------------------
- * 与 prompt-routes / alert-routes 同一条纪律：**有写端点，就必须有 __reset**
+ * 这一组有十个写端点，所以状态是**进程内可变**的
  * ---------------------------------------------------------------------------
- * 这一组有十个写端点（建账号 / 改账号 / 改口令 / 账号侧挂角色 / 建角色 / 改角色 / 删角色 /
- * 配工具 / 配目录 / 角色侧设成员），界面自检要验的正是"点一下之后状态真的变了"。
- * 所以状态是**进程内可变**的，并且必须提供 `POST /api/permissions/__reset` ——
- * 否则自检跑第二遍时会继承第一遍改出来的账号与角色
- * （与 prompt-routes 的 `__reset`、HITL 的 `__reset-approval` 是同一条经验）。
+ * 建账号 / 改账号 / 改口令 / 账号侧挂角色 / 建角色 / 改角色 / 删角色 /
+ * 配工具 / 配目录 / 角色侧设成员 —— 点一下之后状态真的变，点第二下看到的是第一下的结果。
  *
  * ---------------------------------------------------------------------------
  * ★ 假数据刻意**照搬真后端的判据**，而不是"随便返回个成功"
  * ---------------------------------------------------------------------------
- * 这一页最需要被验证的三个分支，恰好都是**失败**分支：
+ * 这一页最需要被看清的三个分支，恰好都是**失败**分支：
  *   1. 工具名写错一个字母 → 400，且**报错里带可用清单**（没有它，下一个名字还会写错）；
  *   2. 同名账号 / 同名角色 → 409（不是 500：两个人同时点新建不是服务器故障）；
  *   3. 核对端点要能对**同一份数据**给出"允许"与"不允许"两种结论。
- * 假后端不实现这三条的话，"界面能不能把后端的拒绝显示清楚"这件事在自检里永远走不到 ——
+ * 假后端不实现这三条的话，"界面能不能把后端的拒绝显示清楚"这件事在假后端上永远走不到 ——
  * 而那正是这一页存在的意义。
  *
  * ---------------------------------------------------------------------------
@@ -27,10 +24,10 @@
  *      而不是一行空白；
  *   2. **有一个角色清单为空**（`只读检索` 之外那个 `待配置`）→ 必须出现「一把工具都调不到」；
  *   3. **有一条目录前缀是 `demo-other` 形式的前缀陷阱**：`D:\work\demo` 不该命中它 ——
- *      自检要靠这份数据把"按路径分段比"与"字符串前缀比"区分开。
+ *      这份数据把"按路径分段比"与"字符串前缀比"区分开。
  *
  * ✅ 响应体里**没有口令字段，也没有散列字段**：真后端就是这样装配的（见 PermissionController），
- * 假后端如果多给一个 `passwordHash`，前端就可能画出它 —— 而自检不会发现。
+ * 假后端如果多给一个 `passwordHash`，前端就可能画出它。
  */
 
 const AVAILABLE_TOOLS = ['query_sql', 'execute_sql', 'list_documents', 'read_section', 'propose_review', 'search_docs']
@@ -39,7 +36,7 @@ const AVAILABLE_TOOLS = ['query_sql', 'execute_sql', 'list_documents', 'read_sec
 const SEARCH_DEFAULT_LIMIT = 5
 const SEARCH_MAX_LIMIT = 20
 
-/** 初始状态。每次 __reset 都从这里重建（深拷贝，避免被就地改坏）。 */
+/** 初始状态。进程启动时建一次（深拷贝，避免被就地改坏）。 */
 function initialState() {
   return {
     users: [
@@ -78,7 +75,7 @@ function initialState() {
   }
 }
 
-let state = initialState()
+const state = initialState()
 
 function userView(u) {
   return {
@@ -295,13 +292,6 @@ function conflict(res, json, message) {
 export function handlePermissionRoutes(req, res, url, json) {
   const { pathname } = url
   if (!pathname.startsWith('/api/permissions')) return false
-
-  // 自检脚本靠它做到确定性（见文件头）
-  if (req.method === 'POST' && pathname === '/api/permissions/__reset') {
-    state = initialState()
-    json(res, { ok: true, note: '权限假后端已复位' })
-    return true
-  }
 
   if (req.method === 'GET' && pathname === '/api/permissions') {
     json(res, {

@@ -1,5 +1,6 @@
 import { Alert, Button, Card, Empty, Flex, Input, Modal, Space, Spin, Tag, Typography } from 'antd'
 import { useState } from 'react'
+import type { PermissionUserOption } from '../api/permissions'
 import type { AgentTaskCard, AgentTaskConfirm } from '../api/tasks'
 import type { UseTasksResult } from '../hooks/useTasks'
 import { Clamped } from './Clamped'
@@ -582,17 +583,27 @@ function NewTaskModal({ open, onClose, tasks }: {
   onClose: () => void
   tasks: UseTasksResult
 }) {
-  const [publisher, setPublisher] = useState('')
-  const [assignee, setAssignee] = useState('')
+  /**
+   * 选中的两个人 —— **存的是候选里那一条本身**（不是它的名字）。
+   *
+   * <p>两件事都靠它：提交时给后端的是他们的**登录名**（这一族端点收登录名，
+   * 落库的是查出来的用户 id），而选择器那一格显示的是候选里那一条的 label ——
+   * 只存名字的话，格子上会退化成显示一个裸的名字（看起来像没选中）。
+   */
+  const [publisher, setPublisher] = useState<PermissionUserOption | null>(null)
+  const [assignee, setAssignee] = useState<PermissionUserOption | null>(null)
   const [description, setDescription] = useState('')
 
   const reset = () => {
-    setPublisher(''); setAssignee(''); setDescription('')
+    setPublisher(null); setAssignee(null); setDescription('')
   }
   const close = () => { reset(); onClose() }
 
   const submit = async () => {
-    const ok = await tasks.create({ publisher, assignee, description })
+    if (!publisher || !assignee) return
+    const ok = await tasks.create({
+      publisher: publisher.name, assignee: assignee.name, description,
+    })
     // 成功才关：失败时关掉会把用户填的内容丢掉，而他正需要照着报错改一改
     if (ok) close()
   }
@@ -610,12 +621,12 @@ function NewTaskModal({ open, onClose, tasks }: {
     >
       <Flex vertical gap={10}>
         {/* 发布人 / 任务人两格都是**搜索选择器**，不是能打字的输入框：
-            发出去的时候要把名字核到账号表上（落库的是查出来的用户 id），
+            交出去的是候选里那一条的登录名（落库的是查出来的用户 id），
             而账号表里查不到的名字不会有任何约束拦下那条任务。
             这个组件与页头的「模拟登录」共用（见 UserPicker 的文件头） */}
-        <UserPicker value={publisher} onChange={name => setPublisher(name)}
+        <UserPicker value={publisher?.id ?? null} onChange={setPublisher}
           placeholder="发布人（必填）—— 搜索登录名，从候选里选一个真实用户" />
-        <UserPicker value={assignee} onChange={name => setAssignee(name)}
+        <UserPicker value={assignee?.id ?? null} onChange={setAssignee}
           placeholder="任务人（必填）—— 搜索登录名，从候选里选一个真实用户" />
         <Input.TextArea rows={3} placeholder="任务描述（必填）—— 要做什么；判定需求有没有歧义、拆任务点都以它为准"
           value={description} onChange={e => setDescription(e.target.value)} />

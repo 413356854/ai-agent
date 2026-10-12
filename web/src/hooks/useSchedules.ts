@@ -5,8 +5,8 @@ import type { Remote } from '../types'
 
 /** 一份写规则的表单（新建与编辑共用同一份形状）。 */
 export interface ScheduleForm {
-  /** 任务人**登录名**（只能从 `UserPicker` 的候选里来，见 `useSchedules.submit`）。 */
-  assignee: string
+  /** 任务人的**用户 id**（只能从 `UserPicker` 的候选里来，见 `useSchedules.create`）。 */
+  assigneeId: number
   description: string
   /** 界面构造器拼出来的 6 段正则（也可以手写）。 */
   cron: string
@@ -38,7 +38,7 @@ export interface UseSchedulesResult {
   busy: boolean
   reload: () => void
 
-  create: (form: ScheduleForm & { publisher: string }) => Promise<boolean>
+  create: (form: ScheduleForm & { publisherId: number }) => Promise<boolean>
   update: (id: number, form: ScheduleForm) => Promise<boolean>
   setEnabled: (id: number, enabled: boolean) => Promise<boolean>
   trigger: (id: number) => Promise<boolean>
@@ -158,11 +158,11 @@ export function useSchedules(active: boolean, userId: number | null): UseSchedul
     }
   }, [load])
 
-  const create = useCallback(async (form: ScheduleForm & { publisher: string }) =>
+  const create = useCallback(async (form: ScheduleForm & { publisherId: number }) =>
     mutate('配规则', async () => {
       const r = await scheduleApi.create({
-        publisher: form.publisher,
-        assignee: form.assignee,
+        publisherId: form.publisherId,
+        assigneeId: form.assigneeId,
         description: form.description,
         cron: form.cron,
         enabled: form.enabled,
@@ -173,7 +173,7 @@ export function useSchedules(active: boolean, userId: number | null): UseSchedul
   const update = useCallback(async (id: number, form: ScheduleForm) =>
     mutate('改规则', async () => {
       const r = await scheduleApi.update(id, {
-        assignee: form.assignee,
+        assigneeId: form.assigneeId,
         description: form.description,
         cron: form.cron,
         enabled: form.enabled,

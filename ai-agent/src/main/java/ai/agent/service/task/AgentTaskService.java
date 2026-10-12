@@ -66,10 +66,10 @@ public interface AgentTaskService {
 	/**
 	 * 发布一条任务。落库时状态是 {@link AgentTaskStatus#NEW}、步骤 1、当前执行人是任务人。
 	 *
-	 * <p>发布人与任务人<b>都是必填的真实用户</b>：两个名字都要在账号表里存在
-	 * （界面上的做法是搜索后从下拉里选，见 {@code PermissionController#searchUsers}）——
-	 * 落库的是查出来的两个用户 id（见 {@code agent_task.publisher_id}），
-	 * 而账号表里查不到的名字不会有任何约束拦下这条任务。
+	 * <p>发布人与任务人在这里收的是<b>登录名</b>（界面上的做法是搜索后从下拉里选，
+	 * 见 {@code PermissionController#searchUsers}）—— 落库的是查出来的两个用户 id
+	 * （见 {@code agent_task.publisher_id}），而账号表里查不到的名字不会有任何约束拦下这条任务。
+	 * 手上已经有用户 id 的调用方走 {@link #create(Draft)} 那一支（{@link Draft#scheduled}）。
 	 *
 	 * <p><b>没有 agentId 这个入参</b>：它由平台在第一次接手这条任务时写入
 	 * （见 {@code AgentTaskProperties#agentId}）。
@@ -89,46 +89,46 @@ public interface AgentTaskService {
 	 * 显式两个入口之后，"定时派活必须说出自己是哪条规则"由类型保证：
 	 * {@link Draft} 只有 {@link Draft#scheduled} 能给出带 scheduleId 的那一份。
 	 *
-	 * <h2>草稿里的姓名是"登录名"，不是用户 id</h2>
-	 * 与 {@link #create(String, String, String)} 一样，这里存的仍是名字，
-	 * 因为账号表的核对发生在这一层（{@code DefaultAgentTaskService#realUser}）——
-	 * 定时规则那边手上也只有它当初存下来的两个用户 id，由它自己换回名字传进来
-	 * （见 {@code DefaultAgentTaskScheduleService}）。
+	 * <h2>草稿里的两个"人"是用户 id</h2>
+	 * 库里存的就是 {@code agent_user.id}，而定时规则手上也只有它当初存下来的那两个 id ——
+	 * 让这一层再按姓名查一次账号，等于把"这两个 id 指的是谁"多问一遍，
+	 * 而多出来的那一次查不到只能失败在触发的那一刻。核对仍然做
+	 * （{@code DefaultAgentTaskService} 里那两个按名字 / 按 id 取人的方法）：
+	 * 不在账号表里的写法当场 400。
+	 * 收登录名的那一支（{@link #create(String, String, String)}）由服务实现先换成 id，
+	 * 再交给同一个写入口。
 	 */
 	Detail create(Draft draft);
 
 	/**
-	 * 一份"建任务草稿"：发布人 / 任务人（登录名）+ 描述 + （可选）由来。
+	 * 一份"建任务草稿"：发布人 / 任务人（用户 id）+ 描述 + （可选）由来。
 	 *
-	 * <p>两个静态工厂就是全部构造点，于是"这次是谁派来的"在编译期就只有两种可能：
-	 * {@link #published}（人发的，{@code scheduleId} 恒为 null）与
-	 * {@link #scheduled}（定时规则派的，必须说出是哪一条）。
+	 * <p>两个"人"在这一格上是<b>用户 id</b>（{@code agent_user.id}），因为库里存的就是它们。
+	 * 收登录名的那个入口（{@link AgentTaskService#create(String, String, String)}）
+	 * 由服务实现换成 id 之后再进这里 —— 于是"换名字"这件事只发生在真正需要它的那一条路上。
 	 *
-	 * @param publisher 发布人的登录名
-	 * @param assignee 任务人的登录名
+	 * @param publisherId 发布人的用户 id
+	 * @param assigneeId 任务人的用户 id
 	 * @param description 任务描述
-	 * @param scheduleId 派活的定时规则 id；人发布的为 {@code null}
+	 * @param scheduleId 派活的定时规则 id；人在界面上发布的为 {@code null}
 	 */
-	record Draft(String publisher, String assignee, String description, Long scheduleId) {
-
-		/** 人在界面上点「发布任务」发的那一种。 */
-		public static Draft published(String publisher, String assignee, String description) {
-			return new Draft(publisher, assignee, description, null);
-		}
+	record Draft(Long publisherId, Long assigneeId, String description, Long scheduleId) {
 
 		/**
-		 * 定时规则到点派出来的那一种。
+		 * 一条由<b>定时规则</b>派出来的草稿 —— 两个"人"是规则里存下来的用户 id，
+		 * 原样往下传（核账号表那一步仍然做，不在时 400）。
 		 *
-		 * <p>规则 id <b>必填</b>：它是任务卡片上"它为什么又出现了"唯一的答案，
-		 * 也是"这条规则派过几条"唯一的数法（见 {@code AgentTaskMapper#scheduleRunCounts}）。
-		 * 允许它为空就等于允许"匿名地派活"，而那种任务与人发的在库里完全一样。
+		 * <p>它是带 {@code scheduleId} 的<b>唯一</b>构造点。规则 id <b>必填</b>：
+		 * 它是任务卡片上"它为什么又出现了"唯一的答案，也是"这条规则派过几条"唯一的数法
+		 * （见 {@code AgentTaskMapper#scheduleRunCounts}）。允许它为空就等于允许"匿名地派活"，
+		 * 而那种任务与人发的在库里完全一样。
 		 */
-		public static Draft scheduled(Long scheduleId, String publisher, String assignee, String description) {
+		public static Draft scheduled(Long scheduleId, Long publisherId, Long assigneeId, String description) {
 			if (scheduleId == null) {
 				throw new IllegalArgumentException("定时规则派活必须说出自己是哪一条规则（scheduleId）—— "
 						+ "它是那条任务的由来，也是「这条规则派过几条」唯一的数法");
 			}
-			return new Draft(publisher, assignee, description, scheduleId);
+			return new Draft(publisherId, assigneeId, description, scheduleId);
 		}
 
 		/** 这次是不是定时规则派的。 */

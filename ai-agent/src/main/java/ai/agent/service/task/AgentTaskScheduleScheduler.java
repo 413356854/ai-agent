@@ -3,7 +3,6 @@ package ai.agent.service.task;
 import ai.agent.config.AgentTaskScheduleProperties;
 import ai.agent.entity.agent.task.AgentTaskSchedule;
 import ai.agent.mapper.AgentTaskScheduleMapper;
-import ai.agent.service.permission.PermissionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
@@ -99,8 +98,6 @@ public class AgentTaskScheduleScheduler {
 
 	private final AgentTaskService tasks;
 
-	private final PermissionService permissions;
-
 	/** 把描述模板解析成"当下这条任务的描述"（见 {@link AgentTaskScheduleDescriber}）。 */
 	private final AgentTaskScheduleDescriber describer;
 
@@ -117,10 +114,9 @@ public class AgentTaskScheduleScheduler {
 	private final AtomicBoolean touched = new AtomicBoolean(false);
 
 	public AgentTaskScheduleScheduler(AgentTaskScheduleProperties properties, AgentTaskScheduleMapper schedules,
-			AgentTaskService tasks, PermissionService permissions, AgentTaskScheduleDescriber describer) {
+			AgentTaskService tasks, AgentTaskScheduleDescriber describer) {
 		this.schedules = schedules;
 		this.tasks = tasks;
-		this.permissions = permissions;
 		this.describer = describer;
 		this.zone = properties.zone();
 		this.configuredPoolSize = properties.poolSize();
@@ -158,7 +154,7 @@ public class AgentTaskScheduleScheduler {
 		// 而调用方（安装器）会把它记成一条 WARN，别的规则照装
 		CronTrigger trigger = new CronTrigger(rule.cron());
 		ScheduledFuture<?> future = pool.schedule(
-				new AgentTaskScheduleRunner(rule, fired, schedules, tasks, permissions, describer, zone), trigger);
+				new AgentTaskScheduleRunner(rule, fired, schedules, tasks, describer, zone), trigger);
 		if (future == null) {
 			// schedule 的返回值为 null 只有一种情形：池子已经关掉了。
 			// 静默接受会变成"这条规则不在池子里，而没有任何痕迹"

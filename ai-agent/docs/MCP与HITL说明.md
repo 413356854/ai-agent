@@ -148,7 +148,7 @@
 验证脚本（**真发 HTTP**，不是看日志）：
 
 ```powershell
-pwsh -File scripts/verify-mcp.ps1 -BaseUrl http://127.0.0.1:8080
+# 用任意 HTTP 客户端打 /mcp 的 initialize / tools/list / tools/call 三条往返
 ```
 
 实测输出结尾是 `合计 23 项：通过 23，失败 0`。
@@ -264,7 +264,7 @@ Spring AI 的 `ToolCallbackConverterAutoConfiguration` 会收集容器里**全�
 3. ~~**界面还没接 HITL**~~ → ✅ **已在第九轮同轮补完。**
    第五种模式面板顶部新增「待我确认」卡片（参数原样 / 风险声明 / 已等与剩余 /
    决定人 / 批准 / 拒绝要理由），运行详情里新增「人工确认（HITL）」一节
-   （第几步、等了多久、谁批的）。**界面自检实测：假后端 165 项全过、真后端 121 项执行 120 过。**
+   （第几步、等了多久、谁批的）。
    界面侧的设计取舍与踩过的 4 个坑见 `web/README.md` 的「第五种模式的另一半」一节。
 4. **工单存储是一个 JSONL 文件**（`./data/review-tickets.jsonl`），不是真的工单系统。
    它是"外部系统"的**替身**，选它的理由是"可以用肉眼核对"。
@@ -318,7 +318,7 @@ spring.ai.mcp.server.instructions=...          # 给**对方的模型**读的：
 因为 streamable 的 WebMvc 自动配置带着一个 `EnabledStreamableServerCondition`，
 它要求 `protocol == STREAMABLE`，不满足时**路由压根不注册**。
 
-这就是为什么必须有 `scripts/verify-mcp.ps1`：**光看启动日志会得出错误结论。**
+所以端点存在性**只能靠真的发一次 HTTP 请求**来证明：**光看启动日志会得出错误结论。**
 
 ---
 

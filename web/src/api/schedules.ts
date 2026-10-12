@@ -26,7 +26,12 @@
  * **四、改规则是 `PUT` 且四个可改列都要给全。** 发布人**不在可改项里**
  * （改它等于换一个人来背这条规则，那件事该由"停用旧的、建一条新的"表达）。
  *
- * **五、`runs` / `lastRunAt` 数的是"这条规则派过几条任务"。**
+ * **五、发布人 / 任务人在请求体里是用户 id，不是姓名。** `publisherId` / `assigneeId`
+ * 就是 `permissionApi.searchUsers` 候选项里的 `id`（后端按 id 核一遍账号表，不在 → 400）。
+ * 响应里的 `publisher` / `assignee` 是**姓名**（显示名优先），只用来显示 ——
+ * 拿它回传会查不到人。
+ *
+ * **六、`runs` / `lastRunAt` 数的是"这条规则派过几条任务"。**
  * `runs=0` 与 `lastRunAt=null` 同时出现，界面据此说"一次都没派过"，
  * 而不是显示一个"0 次 / 时间空白"的组合让人猜。
  */
@@ -38,26 +43,22 @@ export interface AgentTaskSchedule {
   cron: string
   /** 后端给的中文说法（"每天 09:00 触发"）—— 界面直接显示它，不自己拼一份。 */
   cronDescription: string
-  /** 发布人的用户 id（`agent_user.id`）。**由后端按"配规则的人"填，请求体里没有这个字段。** */
+  /**
+   * 发布人的用户 id（`agent_user.id`）。
+   *
+   * <p>**它就是写请求里要回传的那一格**（配规则给 `publisherId`、改规则不用给 ——
+   * 发布人不可改）。姓名那一份只用来显示。
+   */
   publisherId: number
-  /** 发布人姓名（后端关联账号表得到）。 */
+  /** 发布人姓名（后端关联账号表得到，显示名优先）。**只用于显示。** */
   publisher: string
-  /** 任务人的用户 id —— 每次触发生成的那条任务派给他。 */
+  /** 任务人的用户 id —— 每次触发生成的那条任务派给他，也是改规则时要回传的那一格。 */
   assigneeId: number | null
   /**
    * 任务人的**姓名**（后端关联账号表得到，显示名优先）；任务人为空的行显示「未指定任务人」。
    * **界面显示的是它。**
    */
   assignee: string
-  /**
-   * 任务人的**登录名** —— **改规则时要把它回传上去**（`PUT` 的 `assignee` 收的是登录名）。
-   *
-   * <p>⚠️ 它与上面那个 `assignee` 不是同一个字符串：姓名是给人看的（显示名优先、可以改、可以重名），
-   * 登录名才是后端用来查账号的那一份。拿姓名去提交的后果很具体 ——
-   * `PUT` 会回 400「账号表里没有「李工」这个人」，于是"改规则"永远失败，
-   * 而界面上看起来像是"保存按钮坏了"。
-   */
-  assigneeName: string
   /**
    * 任务描述 —— <b>它是"模板"，不是最终那句话</b>。
    *
@@ -227,12 +228,12 @@ export const scheduleApi = {
   /**
    * 配一条规则（落库 + 当场把线程装进调度线程池）。
    *
-   * `publisher` / `assignee` 是**真实账号的登录名**（后端会核一遍账号表，不存在 → 400）——
-   * 它们只能来自 `permissionApi.searchUsers` 的候选，不是随便打的名字。
-   * 落库的发布人是**当前登录的人**：界面上不出现"发布人"这个输入框。
+   * `publisherId` / `assigneeId` 是**用户 id**（账号表里的 `agent_user.id`）——
+   * 它们只能来自 `permissionApi.searchUsers` 的候选（后端会核一遍账号表，不存在 → 400）。
+   * 发布人不可填：它就是当前登录的人。
    */
   create: (payload: {
-    publisher: string; assignee: string; description: string; cron: string; enabled: boolean
+    publisherId: number; assigneeId: number; description: string; cron: string; enabled: boolean
   }) => send<ScheduleWriteResult>('POST', '', payload),
 
   /**
@@ -240,7 +241,7 @@ export const scheduleApi = {
    * 后端固定做"删旧线程、按新正则重加"—— 所以改完之后 `nextRuns` 一定是按新表达式算的。
    */
   update: (id: number, payload: {
-    assignee: string; description: string; cron: string; enabled: boolean
+    assigneeId: number; description: string; cron: string; enabled: boolean
   }) => send<ScheduleWriteResult>('PUT', `/${id}`, payload),
 
   /** 停用 / 启用。停用会把线程从池子里摘掉（不是"留着线程但不做事"）。 */

@@ -86,8 +86,8 @@ export function MockLoginBar({ login }: { login: UseMockLoginResult }) {
       >
         <Flex vertical gap={10}>
           <UserPicker
-            value={picked?.name ?? ''}
-            onChange={(_name, option) => setPicked(option)}
+            value={picked?.id ?? null}
+            onChange={option => setPicked(option)}
             placeholder="搜索登录名，从候选里选一个真实用户"
           />
           {picked ? (

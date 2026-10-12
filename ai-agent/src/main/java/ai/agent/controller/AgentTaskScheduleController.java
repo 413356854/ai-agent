@@ -154,11 +154,12 @@ public class AgentTaskScheduleController {
 
 	@PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
 	public ResponseEntity<Map<String, Object>> create(@RequestBody CreateRequest request) {
-		if (request == null || request.publisher() == null || request.publisher().isBlank()) {
-			return badRequest("缺少 publisher（发布人）—— 发布人与任务人都要从用户列表里选一个真实用户");
+		if (request == null || request.publisherId() == null) {
+			return badRequest("缺少 publisherId（发布人的用户 id）—— 发布人与任务人都要填"
+					+ "账号表里的用户 id（GET /api/permissions/users/search 给的就是它）");
 		}
-		if (request.assignee() == null || request.assignee().isBlank()) {
-			return badRequest("缺少 assignee（任务人）—— 每次触发生成的那条任务派给他");
+		if (request.assigneeId() == null) {
+			return badRequest("缺少 assigneeId（任务人的用户 id）—— 每次触发生成的那条任务派给他");
 		}
 		if (request.description() == null || request.description().isBlank()) {
 			return badRequest("缺少 description（任务描述）—— 它同时是每次触发生成的那条任务的描述");
@@ -170,7 +171,7 @@ public class AgentTaskScheduleController {
 		// 没给 enabled 时按**启用**算：界面上配一次规则就是为了让它跑起来，
 		// 默认停用会让"保存了却没反应"成为第一次使用的固定体验（理由见 db/schedule-schema.sql）
 		boolean enabled = request.enabled() == null || request.enabled();
-		AgentTaskScheduleService.RuleView view = schedules.create(request.publisher(), request.assignee(),
+		AgentTaskScheduleService.RuleView view = schedules.create(request.publisherId(), request.assigneeId(),
 				request.description(), request.cron(), enabled);
 		Map<String, Object> body = new LinkedHashMap<>();
 		body.put("ok", true);
@@ -184,14 +185,14 @@ public class AgentTaskScheduleController {
 		if (request == null || request.cron() == null || request.cron().isBlank()) {
 			return badRequest("缺少 cron（定时正则）—— 改规则时它也要给全（没改就原样传回来）");
 		}
-		if (request.assignee() == null || request.assignee().isBlank()) {
-			return badRequest("缺少 assignee（任务人）—— 改规则时它也要给全（没改就原样传回来）");
+		if (request.assigneeId() == null) {
+			return badRequest("缺少 assigneeId（任务人的用户 id）—— 改规则时它也要给全（没改就原样传回来）");
 		}
 		if (request.description() == null || request.description().isBlank()) {
 			return badRequest("缺少 description（任务描述）—— 改规则时它也要给全（没改就原样传回来）");
 		}
 		boolean enabled = request.enabled() == null || request.enabled();
-		AgentTaskScheduleService.RuleView view = schedules.update(id, request.assignee(), request.description(),
+		AgentTaskScheduleService.RuleView view = schedules.update(id, request.assigneeId(), request.description(),
 				request.cron(), enabled);
 		Map<String, Object> body = new LinkedHashMap<>();
 		body.put("ok", true);
@@ -272,8 +273,9 @@ public class AgentTaskScheduleController {
 	 * 前端拿到就能排；而 {@code nextRuns} 走 {@code ScheduleCron#formatRun}
 	 * —— 那一列给人的是"什么时候跑"，本地时刻的写法比 UTC 的 {@code Z} 好读得多。
 	 *
-	 * <p>⚠️ 它是<b>实例</b>方法（不是 static）：`assigneeName` 那一格要按 id 查一次登录名
-	 * （见 {@code AgentTaskScheduleMapper#findLoginName} 里为什么读侧不把它 JOIN 出来）。
+	 * <p>⚠️ 写请求收的是上面那两格 {@code publisherId} / {@code assigneeId}（用户 id），
+	 * 而不是 {@code publisher} / {@code assignee}（姓名）—— 姓名是显示名优先的那一份，
+	 * 与账号表里那一行的登录名不是同一个字符串，拿它回传会查不到人。
 	 */
 	private Map<String, Object> rule(AgentTaskScheduleService.RuleView view) {
 		AgentTaskSchedule rule = view.rule();
@@ -285,12 +287,6 @@ public class AgentTaskScheduleController {
 		row.put("publisher", rule.publisherLabel());
 		row.put("assigneeId", rule.assigneeId());
 		row.put("assignee", rule.assigneeLabel());
-		// ★ **改规则时要回传的那一份**（写请求收的是登录名，而上面那两格都不是登录名）：
-		// `assignee` 是**姓名**（显示名优先），拿它回传的话后端按登录名查账号查不到 ——
-		// 表现是"改规则永远失败"，报的还是"账号表里没有「李工」这个人"。
-		// 它与 `publisher` 是两件事：发布人不可改（改它等于换一个人来背这条规则），
-		// 任务人可改，所以只有这一格需要第二个写法
-		row.put("assigneeName", rule.assigneeId() == null ? "" : schedules.loginName(rule.assigneeId()));
 		row.put("description", rule.description());
 		row.put("enabled", rule.enabled());
 		// 派过几条 + 最后一次：界面靠这两格回答"这条规则到底动过没有"。
@@ -335,10 +331,15 @@ public class AgentTaskScheduleController {
 	/**
 	 * 配一条规则的请求体。
 	 *
-	 * <p>{@code publisher} / {@code assignee} 是人的<b>登录名</b>（不是用户 id）：
-	 * 它们必须是账号表里真实存在的用户，落库的是查出来的那两个 id ——
+	 * <p>{@code publisherId} / {@code assigneeId} 是人的<b>用户 id</b>（{@code agent_user.id}，
+	 * 也就是 {@code GET /api/permissions/users/search} 候选项里的 {@code id}）。
+	 * 落库的正是这两个值，所以这里给一个不存在的 id 是当场 400 ——
 	 * 判据在服务层（{@code DefaultAgentTaskScheduleService#realUser}），它读得到账号表；
 	 * 这里只拦"根本没传"。
+	 *
+	 * <p>它<b>不收姓名</b>（既不是登录名也不是显示名）：显示名可以重名、可以改，
+	 * 而登录名与显示名在界面上是两个不同的字符串 —— 界面手上本来就有用户 id，
+	 * 让它回传姓名等于把"这个名字指的是谁"又猜一次。
 	 *
 	 * <p>{@code cron} 是界面上那个构造器拼出来的 6 段表达式（也可以直接手写）——
 	 * 界面在保存之前会先打 {@code /preview} 拿一次确认，但**判据不依赖那次预览**：
@@ -346,7 +347,7 @@ public class AgentTaskScheduleController {
 	 *
 	 * @param enabled 可空：<b>不传按启用算</b>（理由见 {@code db/schedule-schema.sql} 的头注）
 	 */
-	public record CreateRequest(String publisher, String assignee, String description, String cron, Boolean enabled) {
+	public record CreateRequest(Long publisherId, Long assigneeId, String description, String cron, Boolean enabled) {
 	}
 
 	/**
@@ -359,7 +360,7 @@ public class AgentTaskScheduleController {
 	 * <p><b>发布人不在可改项里</b>：改它等于换一个人来背这条规则，
 	 * 而那件事该由"停用旧的、建一条新的"表达（两条规则的由来与历史任务因此各自独立）。
 	 */
-	public record UpdateRequest(String assignee, String description, String cron, Boolean enabled) {
+	public record UpdateRequest(Long assigneeId, String description, String cron, Boolean enabled) {
 	}
 
 	/** 启停请求体。{@code enabled} 必填 —— 不给就分不清「要停」与「没提这件事」。 */

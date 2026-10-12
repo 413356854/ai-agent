@@ -1,10 +1,8 @@
 package ai.agent.service.task;
 
-import ai.agent.entity.agent.permission.Account;
 import ai.agent.entity.agent.task.AgentTaskSchedule;
 import ai.agent.mapper.AgentTaskScheduleMapper;
 import ai.agent.mapper.MapperRows;
-import ai.agent.service.permission.PermissionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,11 +41,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * 读回来那一行的 cron 是什么<b>不影响</b>这一次触发：调度时刻是线程池按旧表达式算好的，
  * 而"下一次"由池子里那条新线程负责（旧线程在这次跑完之后就会被取消）。
  *
- * <h2>发布人 / 任务人：库里存的是用户 id，这个入口要的是登录名</h2>
- * {@link AgentTaskService#create} 收的是<b>登录名</b>（它拿账号表核一遍再落 id）。
- * 所以这里把两个 id 换回登录名 —— 换不回来的那一种（账号被清掉了）直接失败并记日志：
- * 派一条发布人不存在、或者任务人不存在
- * 的任务，在库里看起来完全正常，而它永远没有对应的人（见 {@code DefaultAgentTaskService#realUser}）。
+ * <h2>发布人 / 任务人：库里存的就是用户 id，这里原样往下传</h2>
+ * 规则里那两列是 {@code agent_user.id}，而 {@link AgentTaskService#create(AgentTaskService.Draft)}
+ * 收的也是它们 —— 这一层不做任何"id 换名字"的转换（换两次名字的那种写法里，
+ * 任何一次查不到都只能在这一刻失败，而那一刻没人在看这一页）。
+ * 账号表里没有那一行时这次触发失败并记日志：派一条发布人 / 任务人不存在
+ * 的任务，在库里看起来完全正常，而它永远没有对应的人（判据在
+ * {@code DefaultAgentTaskService#realUser}）。
  */
 final class AgentTaskScheduleRunner implements Runnable {
 
@@ -63,8 +63,6 @@ final class AgentTaskScheduleRunner implements Runnable {
 
 	private final AgentTaskService tasks;
 
-	private final PermissionService permissions;
-
 	/**
 	 * 把描述模板解析成"当下这条任务的描述"（见 {@link AgentTaskScheduleDescriber}）。
 	 *
@@ -78,13 +76,11 @@ final class AgentTaskScheduleRunner implements Runnable {
 	private final ZoneId zone;
 
 	AgentTaskScheduleRunner(AgentTaskSchedule rule, AtomicLong fired, AgentTaskScheduleMapper schedules,
-			AgentTaskService tasks, PermissionService permissions, AgentTaskScheduleDescriber describer,
-			ZoneId zone) {
+			AgentTaskService tasks, AgentTaskScheduleDescriber describer, ZoneId zone) {
 		this.rule = rule;
 		this.fired = fired;
 		this.schedules = schedules;
 		this.tasks = tasks;
-		this.permissions = permissions;
 		this.describer = describer;
 		this.zone = zone;
 	}
@@ -110,8 +106,6 @@ final class AgentTaskScheduleRunner implements Runnable {
 						+ "如果反复出现，说明摘线程那一步没走到（见 AgentTaskScheduleService#setEnabled）", id);
 				return;
 			}
-			String publisher = loginOf(current.publisherId(), "发布人", id);
-			String assignee = loginOf(current.assigneeId(), "任务人", id);
 			// ★ 描述先进解析这一步：规则里那句是**周期性**的（"把昨天的失败运行汇总成晨报"），
 			// 而派出去的是一条一次性的活 —— 执行它的 Agent 看不到"这是每月 1 号的规则"，
 			// 它只看到那一句话。所以"昨天"必须在**这一刻**换成具体日期。
@@ -119,8 +113,8 @@ final class AgentTaskScheduleRunner implements Runnable {
 			// Agent 会照"昨天"去猜一个日子，而猜错是干错事（写错文件、汇总错日期），不是晚一天。
 			AgentTaskScheduleDescriber.Resolved resolved = describer.resolve(id, current.description(),
 					Instant.now(), zone);
-			AgentTaskService.Detail detail = tasks.create(AgentTaskService.Draft.scheduled(id, publisher, assignee,
-					resolved.description()));
+			AgentTaskService.Detail detail = tasks.create(AgentTaskService.Draft.scheduled(id, current.publisherId(),
+					current.assigneeId(), resolved.description()));
 			log.info("定时规则 #{} 第 {} 次触发：派出一条 agent 任务 #{}（{}）—— {}{}",
 					id, count, detail.task().id(), detail.task().status().label(), current.describe(),
 					resolved.changed() ? "；描述已按当下时间解析（模板里的周期说法换成了具体日期）"
@@ -139,27 +133,6 @@ final class AgentTaskScheduleRunner implements Runnable {
 			log.warn("定时规则 #{} 这一次触发失败了，它下一次仍会照常触发：{}", id, e.toString());
 			log.debug("定时规则 #{} 触发失败的完整堆栈", id, e);
 		}
-	}
-
-	/**
-	 * 用户 id → 登录名（{@link AgentTaskService#create} 收的那一份）。
-	 *
-	 * <p>账号查不到时<b>拒绝派活</b>并说明是谁：那条任务会挂在一个不存在的人名下，
-	 * 而它在界面上与一条正常任务长得一模一样。这种情形来自"账号被清掉了"
-	 * （agent_user 只停用不删除，所以正常路径上不会发生）。
-	 */
-	private String loginOf(Long userId, String what, Long scheduleId) {
-		if (userId == null) {
-			throw new IllegalStateException("定时规则 #%d 没有%s —— 这一列在写入路径上是必填的"
-					.formatted(scheduleId, what));
-		}
-		return permissions.findAccountById(userId)
-				.map(Account::name)
-				.orElseThrow(() -> new IllegalStateException(
-						("定时规则 #%d 的%s（用户 id %d）在账号表里已经不在了 —— 派出去的任务会挂在一个"
-								+ "不存在的人名下，所以这一次不派。请把这条规则的任务人改成现有账号"
-								+ "（发布人改不了，那条规则该停用后重建一条）。")
-								.formatted(scheduleId, what, userId)));
 	}
 
 }

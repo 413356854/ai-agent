@@ -2,21 +2,19 @@
  * 定时任务端点的**假数据**（应用管理 · 定时任务）。
  *
  * ---------------------------------------------------------------------------
- * 与 task-routes / skill-routes 同一条纪律：**有写端点，就必须有 __reset**
+ * 这一组有五个写端点，所以状态是**进程内可变**的
  * ---------------------------------------------------------------------------
- * 这一组有五个写端点（配规则 / 改规则 / 启停 / 手动触发 / 删除），
- * 界面自检要验的正是"配一条之后列表上多一行、改一条之后 `cron` 与 `nextRuns` 都换了、
- * 删一条之后它不见了"。所以状态是**进程内可变**的，并且必须提供
- * `POST /api/agent-task-schedules/__reset` —— 否则自检跑第二遍时会继承第一遍建出来的规则。
+ * 配规则 / 改规则 / 启停 / 手动触发 / 删除 —— 配一条之后列表上多一行、
+ * 改一条之后 `cron` 与 `nextRuns` 都换了、删一条之后它不见了。
  *
  * ---------------------------------------------------------------------------
- * ★ 它还要**兑现真后端那条最容易验错的行为**：改正则 = 删旧线程重加
+ * ★ 它还要**兑现真后端那条最容易做错的行为**：改正则 = 删旧线程重加
  * ---------------------------------------------------------------------------
  * 真后端改规则的实现固定是"先摘掉旧线程、再按新正则装一条"，所以改完之后
  * `nextRuns` **一定**是按新表达式算的（见 `AgentTaskScheduleService` 的类注释）。
- * 假后端如果只是把 `cron` 那一格改掉、而 `nextRuns` 沿用旧的，自检就会去断言
- * "改了之后下一次还是原来那个时刻" —— 那条断言在真后端上是错的，而它**不会报错**，
- * 只会让人以为功能坏了。所以这里跟着改 `nextRuns`（见 `reschedule`）。
+ * 假后端如果只是把 `cron` 那一格改掉、而 `nextRuns` 沿用旧的，界面上就会出现
+ * "改了规则，可下一次还是原来那个时刻" —— 而它与真后端的行为对不上。
+ * 所以这里跟着改 `nextRuns`（见 `reschedule`）。
  *
  * ---------------------------------------------------------------------------
  * ★ 正则的解析与"下一次触发"照真后端的样子算，不引 cron 库
@@ -28,13 +26,12 @@
  *   · `0 M H * * *`            每天 H:M
  *   · `0 M H ? * d1,d2`        每周几 H:M
  *   · `0 M H D * ?`            每月 D 号 H:M
- * 认不出来的（手写的那一档）按**每分钟一次**算：自检只需要一个稳定的、看得出变化的
- * `nextRuns`，而这里刻意不去半个半个地实现 cron —— 那会变成第二份判据，
- * 而它与真后端不一致时，自检红在一个看起来像界面问题的地方。
+ * 认不出来的（手写的那一档）按**每分钟一次**算：这里刻意不去半个半个地实现 cron ——
+ * 那会变成第二份判据，而它与真后端不一致时，问题会以"页面上的时刻不对"的形式出现。
  *
  * ⚠️ 但**格式判据要照搬**：6 段、字段数不对就是 400；「日」与「周」同时写具体值也是 400
  * （真后端那一条最值钱的判断：`0 0 9 1 * MON` 解析**成功**、语义是"或"，不报错）。
- * 自检要验的正是"页面上配不出这种表达式，而手写那一档会被后端拦下"。
+ * 所以页面上配不出这种表达式，而手写那一档会被后端拦下。
  *
  * ---------------------------------------------------------------------------
  * ★ 删除的判据：派过任务的不能删
@@ -50,17 +47,14 @@
  * 换成那一刻的具体日期；② 按解析后的那句生成 agent 任务记录。
  * 假后端**只做第 ② 件**，而且连任务都不真建（见下面那条：它只记账）。
  *
- * <p>所以这一页上与"解析"有关的东西，假后端这里**一条都验不到**：
- * 解析出来的描述长什么样、解析失败时"这一次不派活"、模板里没有时间说法时原样返回。
- * 那些由 `web/tools/probe-schedule-describer.mjs` 配一个可控的替身模型去打真后端验
- * （替身在 `web/tools/fake-openai.mjs`）。
+ * <p>所以这一页上与"解析"有关的东西（解析出来的描述长什么样、解析失败时"这一次不派活"、
+ * 模板里没有时间说法时原样返回）在假后端上**一条都看不到** —— 它只记账，不建真任务。
  *
- * <p>⚠️ <b>刻意不在假后端里造一句带假日期的描述</b>：那会让自检里出现
- * "描述里有具体日期"这种看起来验过了、其实验的是假数据的断言 ——
- * 而这一页最不能出错的就是那个日期（它会被拿去执行）。
+ * <p>⚠️ <b>刻意不在假后端里造一句带假日期的描述</b>：那会让"描述里有具体日期"这件事
+ * 看起来像是验过了，而其实验的是假数据 —— 而这一页最不能出错的就是那个日期。
  */
 
-import { findMockAccount, findMockAccountById } from './permission-routes.mjs'
+import { findMockAccountById } from './permission-routes.mjs'
 
 /** 初始规则：四条覆盖四种要显示的状态（正常启用 / 启用但停用 / 停用 / 派过任务）。 */
 const INITIAL_RULES = [
@@ -111,30 +105,15 @@ const INITIAL_RULES = [
 /**
  * 一条**曾经启用、正则被手工改坏**的规则。
  *
- * 它只在 `__break` 那一条自检辅助端点上被塞进列表 —— 真后端里出现这种行的唯一途径是
- * 有人手工改库（界面上的写入路径会拒掉算不出触发时刻的表达式）。
- * 自检要断的是界面上**说得出来**这件事：「启用但不在池子里 → 它不会自动触发」。
+ * 真后端里出现这种行的唯一途径是有人手工改库（界面上的写入路径会拒掉算不出触发时刻的
+ * 表达式），而界面上必须**说得出来**这件事：「启用但不在池子里 → 它不会自动触发」。
  */
-const BROKEN_RULE = {
-  id: 99,
-  cron: '0 0 9 31 2 *',
-  publisherId: 1,
-  assigneeId: 1,
-  description: '这一条的正则算不出下一次触发（2 月 31 号）—— 用来验界面上那句"它不会自己跑"。',
-  enabled: true,
-  runs: 0,
-  lastRunAt: null,
-}
-
-/** 派过的任务（`POST /{id}/trigger` 与自检用的读数）。 */
 function initialState() {
   return {
     rules: INITIAL_RULES.map(rule => ({ ...rule })),
     nextId: 5,
-    /** 手工触发派出去的任务：`{ taskId, scheduleId, statusLabel }`。 */
-    dispatched: [],
-    /** 每次写操作的调用记录 —— 自检用它断"改正则真的删了旧线程重加"（见文件头）。 */
-    audits: [],
+    /** 手工触发派出去的任务条数（只用来给假回执编号）。 */
+    dispatched: 0,
   }
 }
 
@@ -275,8 +254,8 @@ function allowedValues(field, min, max, names) {
  * 未来 5 次触发时刻（`yyyy-MM-dd HH:mm:ss`，本地时区）—— 真后端用 `CronExpression#next` 算。
  *
  * <h2>为什么它必须真的算，而不是"给几个看起来像的时刻"</h2>
- * 界面上那块预览是"我配的对不对"唯一的证据（`verify-ui.mjs` 有一条断言直接拿它
- * 与后端返回的这一份逐字比）。假后端随便给几个时刻，那条断言就永远为真 ——
+ * 界面上那块预览是"我配的对不对"唯一的证据（自检脚本当年直接拿它
+ * 与后端返回的这一份逐字比）。假后端随便给几个时刻，那块预览就不说明任何事 ——
  * 而"预览与真正跑的时刻对不上"正是这个功能最该被断住的一种错。
  *
  * <h2>算法：按最小步长往前走，逐格核对</h2>
@@ -378,13 +357,11 @@ function ruleView(rule) {
     cronDescription: fields ? describeCron(fields) : '（这句正则现在算不出下一次触发）',
     publisherId: rule.publisherId,
     publisher: nameOf(rule.publisherId),
-    // ★ 写请求里要的是**登录名**，所以这里必须另给一格 `assigneeName`。
-    // 只给 `assignee`（姓名）的话，界面把它当成登录名回传，而姓名与登录名通常是两个字符串
-    // —— 后端按登录名查账号查不到，于是"改规则"永远失败，报的还是"账号表里没有「李工」这个人"。
-    // 真后端那两格与这里逐字对应（`AgentTaskScheduleController#rule`）。
+    // ★ 两格"人"给的**都是姓名**（`nameOf` 是显示名优先的那一份），而写请求（PUT / POST）
+    // 收的是 `publisherId` / `assigneeId` 这两个**用户 id** —— 界面手上本来就有它们。
+    // 真后端那几格与这里逐字对应（`AgentTaskScheduleController#rule`）。
     assigneeId: rule.assigneeId,
     assignee: rule.assigneeId == null ? '未指定任务人' : nameOf(rule.assigneeId),
-    assigneeName: rule.assigneeId == null ? '' : loginOf(rule.assigneeId),
     description: rule.description,
     enabled: rule.enabled,
     runs: rule.runs,
@@ -409,7 +386,8 @@ function poolView() {
     // 池子按需建线程：挂了规则就有线程，一条都没挂时是 0（真后端实测就是这个数）
     poolSizeNow: scheduled === 0 ? 0 : Math.min(4, scheduled),
     scheduled,
-    cancelledPending: state.audits.filter(entry => entry.action === 'reschedule').length,
+    // 假后端不模拟"取消之后还排在队列里"这件事（真后端那个数来自 ScheduledFuture 的取消）
+    cancelledPending: 0,
   }
 }
 
@@ -431,24 +409,28 @@ function nameOf(userId) {
   return user.displayName || user.name
 }
 
-/** 登录名那一份（{@link #nameOf} 的对照）：写请求里要的是**它**。 */
-function loginOf(userId) {
-  const user = findMockAccountById(userId)
-  if (!user) return `用户#${userId}`
-  return user.name
-}
-
-/** 发布人 / 任务人都必须是账号表里真实存在的用户（与真后端 `realUser` 同一句话）。 */
-function realUser(name, what) {
-  if (name == null || String(name).trim() === '') {
-    return { error: `${what}必填 —— 发布人与任务人都要从用户列表里选一个真实用户` }
+/**
+ * 发布人 / 任务人必须是账号表里真实存在的用户 —— 判据是**用户 id**
+ * （与真后端 `DefaultAgentTaskScheduleService#realUser` 同一句话）。
+ *
+ * <p>⚠️ 它刻意**不认登录名**：真后端那两格收的就是 id，而"名字 → id"那一步在界面上
+ * 已经由选人框完成了（候选来自 `GET /api/permissions/users/search`）。
+ * 这里顺手接受一个名字的话，那些旧写法的请求会在假后端上成功、在真后端上 400 ——
+ * 那正是最该被这个文件挡住的一种"本地绿、线上红"。
+ */
+function realUser(userId, what) {
+  if (userId == null || String(userId).trim() === '') {
+    return {
+      error: `${what}必填 —— 发布人与任务人都要填账号表里的用户 id`
+        + '（搜索：GET /api/permissions/users/search?keyword=…，候选项里的 id 就是要填的那个）',
+    }
   }
-  const account = findMockAccount(String(name).trim())
+  const account = findMockAccountById(Number(userId))
   if (!account) {
     return {
-      error: `账号表里没有「${name}」这个人，不能当${what} —— 定时任务的发布人与任务人都必须是真实用户，`
-        + '因为每次触发都要用这两个 id 换回登录名去建任务；打错一个字不会有任何东西拦下这条规则，'
-        + '它只会在**触发的那一刻**失败，而那时你不在这一页上。',
+      error: `账号表里没有 id=${userId} 这个用户，不能当${what} —— 定时任务的发布人与任务人都必须是真实用户，`
+        + '因为每次触发都要按这两个 id 建任务；界面上那两格只能从用户列表的候选里选'
+        + '（GET /api/permissions/users/search?keyword=…），选完传上来的是候选里的 id。',
     }
   }
   return { account }
@@ -460,21 +442,6 @@ function realUser(name, what) {
 
 export function handleScheduleRoutes(req, res, url, json) {
   const pathname = url.pathname
-
-  if (req.method === 'POST' && pathname === '/api/agent-task-schedules/__reset') {
-    state = initialState()
-    json(res, { ok: true, rules: state.rules.length })
-    return true
-  }
-
-  // 自检辅助：塞一条"启用了但正则算不出下一次"的规则（见 BROKEN_RULE 的注释）
-  if (req.method === 'POST' && pathname === '/api/agent-task-schedules/__break') {
-    if (!state.rules.some(rule => rule.id === BROKEN_RULE.id)) {
-      state.rules = [...state.rules, { ...BROKEN_RULE }]
-    }
-    json(res, { ok: true, rules: state.rules.length })
-    return true
-  }
 
   if (req.method === 'GET' && pathname === '/api/agent-task-schedules') {
     json(res, snapshot(url.searchParams.get('userId') ? Number(url.searchParams.get('userId')) : null))
@@ -501,9 +468,9 @@ export function handleScheduleRoutes(req, res, url, json) {
 
   if (req.method === 'POST' && pathname === '/api/agent-task-schedules') {
     readBody(req, res, json, body => {
-      const publisher = realUser(body.publisher, '发布人')
+      const publisher = realUser(body.publisherId, '发布人')
       if (publisher.error) { json(res, { ok: false, error: publisher.error }, 400); return }
-      const assignee = realUser(body.assignee, '任务人')
+      const assignee = realUser(body.assigneeId, '任务人')
       if (assignee.error) { json(res, { ok: false, error: assignee.error }, 400); return }
       if (!body.description || !String(body.description).trim()) {
         json(res, { ok: false, error: '缺少 description（任务描述）—— 它同时是每次触发生成的那条任务的描述' }, 400)
@@ -523,7 +490,6 @@ export function handleScheduleRoutes(req, res, url, json) {
         lastRunAt: null,
       }
       state.rules = [...state.rules, rule]
-      state.audits.push({ action: 'create', id: rule.id, cron: rule.cron })
       const view = ruleView(rule)
       json(res, {
         ok: true,
@@ -545,7 +511,6 @@ export function handleScheduleRoutes(req, res, url, json) {
         return
       }
       rule.enabled = Boolean(body.enabled)
-      state.audits.push({ action: rule.enabled ? 'enable' : 'disable', id: rule.id })
       const view = ruleView(rule)
       json(res, {
         ok: true,
@@ -562,12 +527,10 @@ export function handleScheduleRoutes(req, res, url, json) {
   if (req.method === 'POST' && triggerMatch) {
     const rule = state.rules.find(item => item.id === Number(triggerMatch[1]))
     if (!rule) { json(res, { ok: false, error: `定时规则不存在：#${triggerMatch[1]}` }, 400); return true }
-    // 手工触发：**真的派一条任务**（记账 + 计数），不重排下一次触发（与真后端一致）
-    const taskId = 9000 + state.dispatched.length + 1
-    state.dispatched.push({ taskId, scheduleId: rule.id, statusLabel: '新发布' })
+    // 手工触发：派一条任务（假后端只记账 + 计数），不重排下一次触发（与真后端一致）
+    const taskId = 9000 + (++state.dispatched)
     rule.runs += 1
     rule.lastRunAt = now()
-    state.audits.push({ action: 'trigger', id: rule.id, taskId })
     json(res, {
       ok: true,
       scheduleId: rule.id,
@@ -584,7 +547,7 @@ export function handleScheduleRoutes(req, res, url, json) {
     const rule = state.rules.find(item => item.id === Number(idMatch[1]))
     if (!rule) { json(res, { ok: false, error: `定时规则不存在：#${idMatch[1]}` }, 400); return true }
     readBody(req, res, json, body => {
-      const assignee = realUser(body.assignee, '任务人')
+      const assignee = realUser(body.assigneeId, '任务人')
       if (assignee.error) { json(res, { ok: false, error: assignee.error }, 400); return }
       if (!body.description || !String(body.description).trim()) {
         json(res, { ok: false, error: '缺少 description（任务描述）—— 改规则时它也要给全' }, 400)
@@ -599,13 +562,12 @@ export function handleScheduleRoutes(req, res, url, json) {
       rule.description = String(body.description).trim()
       rule.enabled = body.enabled == null ? true : Boolean(body.enabled)
       // ★ 真后端固定做"删旧线程、按新正则重加"，所以这里也重算 nextRuns（见文件头）
-      state.audits.push({ action: 'reschedule', id: rule.id, from: previous, to: rule.cron })
       const view = ruleView(rule)
       json(res, {
         ok: true,
         rule: view,
         message: `规则 #${rule.id} 已改，旧线程已删除、按新正则重新装进调度线程池：`
-          + `${view.cron}（${view.cronDescription}）`,
+          + `${view.cron}（${view.cronDescription}；${previous} → ${rule.cron}）`,
       })
     })
     return true
@@ -626,7 +588,6 @@ export function handleScheduleRoutes(req, res, url, json) {
       return true
     }
     state.rules = state.rules.filter(item => item.id !== id)
-    state.audits.push({ action: 'delete', id })
     json(res, {
       ok: true,
       message: `规则 #${id} 已删除，它的线程已从调度线程池摘除`
@@ -643,17 +604,6 @@ export function handleScheduleRoutes(req, res, url, json) {
   }
 
   return false
-}
-
-/**
- * 派过几条任务 / 最近一次调用记录 —— 自检与探针读它。
- *
- * <p>它导出给 `sse-server.mjs` 挂一个只读诊断端点用：自检要断
- * **"改正则之后旧线程真的被删了重加"**（`audits` 里那一条 `reschedule`），
- * 而"改完之后界面上显示的是新正则"只证明界面**显示**对了。
- */
-export function mockScheduleAudits() {
-  return { audits: [...state.audits], dispatched: [...state.dispatched], rules: state.rules.length }
 }
 
 /**

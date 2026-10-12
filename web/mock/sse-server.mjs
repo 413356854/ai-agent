@@ -31,7 +31,7 @@ import { handleCostRoutes } from './cost-routes.mjs'
 import { handlePermissionRoutes } from './permission-routes.mjs'
 import { handlePromptRoutes } from './prompt-routes.mjs'
 import { handleRagRoutes } from './rag-routes.mjs'
-import { handleScheduleRoutes, mockScheduleAudits } from './schedule-routes.mjs'
+import { handleScheduleRoutes } from './schedule-routes.mjs'
 import { handleSkillRoutes } from './skill-routes.mjs'
 import { handleTaskRoutes } from './task-routes.mjs'
 
@@ -336,10 +336,8 @@ const server = createServer((req, res) => {
   //  Prompt 版本管理端点（阶段四 · 工程化第 3 件）
   //
   //  ⚠️ 这一组与上面所有组**性质不同**：它有四个**写**端点（存 / 生效 / 回滚 / 复位），
-  //  而且状态是**进程内可变**的 —— 因为界面自检要验的正是"点一下之后状态真的变了"。
-  //  代价与配套的两条纪律都写在 prompt-routes.mjs 开头，其中最重要的一条：
-  //  既然是状态机，就必须有 `POST /api/prompts/__reset`，
-  //  否则自检脚本跑第二遍时会继承第一遍改出来的版本号（与 HITL 的 __reset-approval 同一条经验）。
+  //  而且状态是**进程内可变**的 —— 点一下之后状态真的变，点第二下看到的是第一下的结果。
+  //  配套的纪律写在 prompt-routes.mjs 开头。
   // ---------------------------------------------------------------
   if (url.pathname.startsWith('/api/prompts') && handlePromptRoutes(req, res, url, json)) {
     return
@@ -354,8 +352,6 @@ const server = createServer((req, res) => {
   //
   //  所以它必须放在**所有 `req.method !== 'GET'` 的守卫之后、且在 404 之前** ——
   //  这里的 if 链是按前缀分派的，POST 请求会在更上面的分支里被放过去。
-  //  配套的纪律与 prompt-routes 一样：**可变状态必须配一条 __reset**，
-  //  否则自检脚本跑第二遍时会继承第一遍的状态（第十二轮实测踩过）。
   // ---------------------------------------------------------------
   if (
     (url.pathname.startsWith('/api/alerts') || url.pathname.startsWith('/api/canary')) &&
@@ -367,11 +363,10 @@ const server = createServer((req, res) => {
   // ---------------------------------------------------------------
   //  权限管理端点（应用管理 · 权限管理）
   //
-  //  ⚠️ 与 alerts / prompts 同一类：**有写端点，所以状态是进程内可变的**，
-  //  并且必须配一条 `POST /api/permissions/__reset`（自检跑第二遍时会用到）。
+  //  ⚠️ 与 alerts / prompts 同一类：**有写端点，所以状态是进程内可变的**。
   //  这一组与上面所有组还有一处**性质不同**：它的假数据要**照搬真后端的判据**
   //  （工具名对注册表、同名 409、目录按路径分段比），
-  //  否则"界面能不能把后端的拒绝显示清楚"这个分支在自检里永远走不到。
+  //  否则"界面能不能把后端的拒绝显示清楚"这个分支在假后端上永远走不到。
   //  三条纪律写在 permission-routes.mjs 开头。
   // ---------------------------------------------------------------
   if (url.pathname.startsWith('/api/permissions') && handlePermissionRoutes(req, res, url, json)) {
@@ -381,37 +376,26 @@ const server = createServer((req, res) => {
   // ---------------------------------------------------------------
   //  定时任务端点（应用管理 · 定时任务）
   //
-  //  ⚠️ 与上面三组同一类：**有写端点，所以状态是进程内可变的**，
-  //  并且必须配一条 `POST /api/agent-task-schedules/__reset`（自检跑第二遍时会用到）。
-  //  这一组的假数据要照搬真后端的三条判据：正则必须是 6 段、「日」与「周」不能同时写具体值、
-  //  **改规则 = 删旧线程按新正则重加**（所以改完之后 nextRuns 一定是按新表达式算的）。
-  //  最后那条最容易被假后端做错，而做错时自检会去断一条在真后端上不成立的结论 ——
-  //  三条纪律写在 schedule-routes.mjs 开头。
+  //  ⚠️ 与上面三组同一类：**有写端点，所以状态是进程内可变的**。
+  //  这一组的假数据要照搬真后端的判据：正则必须是 6 段、「日」与「周」不能同时写具体值、
+  //  **改规则 = 删旧线程按新正则重加**（所以改完之后 nextRuns 一定是按新表达式算的）、
+  //  两个"人"按用户 id 核账号表。四条纪律写在 schedule-routes.mjs 开头。
   //
   //  ⚠️ **它必须排在 `/api/agent-tasks` 之前**：`/api/agent-task-schedules`.startsWith(
   //  '/api/agent-tasks') 是**真的**（前缀到 "task" 都一样），排在后面时这一族请求会先被
   //  agent 任务那一组接走、返回 404，而现象是"定时任务那一页读不出数据"。
   // ---------------------------------------------------------------
-  if (url.pathname.startsWith('/api/agent-task-schedules')) {
-    // 只读诊断：那几次写操作的记录（自检用它断"改正则真的重排了线程"）。
-    // 真后端没有这个端点 —— 它是假后端的镜子，不参与界面渲染
-    if (req.method === 'GET' && url.pathname === '/api/agent-task-schedules/__audits') {
-      json(res, mockScheduleAudits())
-      return
-    }
-    if (handleScheduleRoutes(req, res, url, json)) {
-      return
-    }
+  if (url.pathname.startsWith('/api/agent-task-schedules') && handleScheduleRoutes(req, res, url, json)) {
+    return
   }
 
   // ---------------------------------------------------------------
   //  agent 任务端点（应用管理 · agent任务）
   //
-  //  ⚠️ 与 permissions 同一类：**有写端点，所以状态是进程内可变的**，
-  //  并且必须配一条 `POST /api/agent-tasks/__reset`（自检跑第二遍时会用到）。
+  //  ⚠️ 与 permissions 同一类：**有写端点，所以状态是进程内可变的**。
   //  这一组的假数据还要**照搬真后端的状态链**（推进到哪、生成哪条确认项、
   //  当前状态不允许的动作 → 409），否则"点一下卡片真的换列了吗"这件事
-  //  在自检里永远走不到 —— 而那正是这一页的全部内容。
+  //  在假后端上永远走不到 —— 而那正是这一页的全部内容。
   // ---------------------------------------------------------------
   if (url.pathname.startsWith('/api/agent-tasks') && handleTaskRoutes(req, res, url, json)) {
     return
@@ -420,35 +404,12 @@ const server = createServer((req, res) => {
   // ---------------------------------------------------------------
   //  skill 端点（应用管理 · skill管理）
   //
-  //  ⚠️ 与 permissions / agent-tasks 同一类：**有写端点，所以状态是进程内可变的**，
-  //  并且必须配一条 `POST /api/skills/__reset`（自检跑第二遍时会用到）。
+  //  ⚠️ 与 permissions / agent-tasks 同一类：**有写端点，所以状态是进程内可变的**。
   //  这一组的假数据要照搬真后端的四条判据（未登录写操作 400、文件夹必须在
-  //  自己角色的目录前缀里、归属判据是那一行的 owner_id、同名 409），
-  //  否则"只有拥有者能改能删"与"未登录时按钮是禁用的"这两件事在自检里都是假绿。
+  //  自己角色的目录前缀里、归属判据是那一行的 owner_id、同名 409）。
   //  三条纪律写在 skill-routes.mjs 开头。
   // ---------------------------------------------------------------
   if (url.pathname.startsWith('/api/skills') && handleSkillRoutes(req, res, url, json)) {
-    return
-  }
-
-  // ---------------------------------------------------------------
-  //  定时任务端点（应用管理 · 定时任务）
-  //
-  //  ⚠️ 与上面三组同一类：**有写端点，所以状态是进程内可变的**，
-  //  并且必须配一条 `POST /api/agent-task-schedules/__reset`（自检跑第二遍时会用到）。
-  //  这一组的假数据要照搬真后端的三条判据：正则必须是 6 段、「日」与「周」不能同时写具体值、
-  //  **改规则 = 删旧线程按新正则重加**（所以改完之后 nextRuns 一定是按新表达式算的）。
-  //  最后那条最容易被假后端做错，而做错时自检会去断一条在真后端上不成立的结论 ——
-  //  三条纪律写在 schedule-routes.mjs 开头。
-  // ---------------------------------------------------------------
-  if (url.pathname.startsWith('/api/agent-task-schedules') && handleScheduleRoutes(req, res, url, json)) {
-    return
-  }
-
-  // 只读诊断：定时任务那几次写操作的记录（自检用它断"改正则真的重排了线程"）。
-  // 真后端没有这个端点 —— 它是假后端的镜子，不参与界面渲染
-  if (req.method === 'GET' && url.pathname === '/api/agent-task-schedules/__audits') {
-    json(res, mockScheduleAudits())
     return
   }
 

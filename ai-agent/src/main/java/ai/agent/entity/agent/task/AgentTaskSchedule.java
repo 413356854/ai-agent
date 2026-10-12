@@ -47,8 +47,8 @@ import java.util.List;
  * @param publisher 发布人的姓名（读侧关联查询得到；账号那一行不在时为空）
  * @param assigneeId 任务人的用户 id（新规则必填；库里可能有早期留下的空行）
  * @param assignee 任务人的姓名（读侧关联查询得到；为空时界面显示「未指定任务人」）
- *        ⚠️ 它是**姓名**不是登录名 —— 写请求收登录名，那一份由
- *        {@code AgentTaskScheduleService#loginName} 单独给（见那个方法的注释）
+ *        ⚠️ 它是**姓名**（显示名优先），不是登录名也不是 id ——
+ *        写请求（改规则）收的是 {@code assigneeId}，界面不要拿这一格回传
  * @param description 任务描述（非空）
  * @param enabled 是否启用；停用的规则<b>不在调度线程池里</b>（那一格没有线程）
  * @param createdAt 落库时间（未落库时为 {@code null}）
@@ -121,9 +121,8 @@ public record AgentTaskSchedule(Long id, String cron, Long publisherId, String p
 	/**
 	 * 任务人那一格该显示的字；没指派时是那句「未指定任务人」。
 	 *
-	 * <p>⚠️ 它是**姓名**，不是登录名 —— 写请求（改规则）收的是登录名，
-	 * 界面不能把这一份回传上去（见 {@code AgentTaskScheduleController#rule} 里
-	 * {@code assigneeName} 那一格）。
+	 * <p>⚠️ 它是**姓名**（显示名优先），既不是登录名也不是 id ——
+	 * 改规则时回传的是 {@code assigneeId}（见 {@code AgentTaskScheduleController#rule}）。
 	 */
 	public String assigneeLabel() {
 		return assigneeId == null ? "未指定任务人" : nameOf(assigneeId, assignee);

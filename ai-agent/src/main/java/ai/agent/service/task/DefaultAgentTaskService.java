@@ -42,10 +42,13 @@ import java.util.List;
  * 所以本类的 {@code @Transactional} 保的是"答复一次确认项"这件事的原子性。
  *
  * <h2>发布人 / 任务人必须是真实账号</h2>
- * 判据在 {@link #realUser}，它落在服务层而不是实体的构造器里：那条判据要读账号表，
- * 而实体的构造点里有一个是"从库里读回一行"。它对应界面上的一处做法 ——
- * 那两格是<b>搜索之后从下拉里选</b>的，不是可以随便打字的输入框
- * （落库的是账号 id，而账号表里查不到的名字不会有任何约束拦下这条任务）。
+ * 判据在 {@code realUser}（两个重载：按登录名的那一份与按用户 id 的那一份），
+ * 它落在服务层而不是实体的构造器里：那条判据要读账号表，
+ * 而实体的构造点里有一个是"从库里读回一行"。
+ * 两个入口给的写法不同 —— "人在界面上发布"给的是两个<b>登录名</b>（那两格是搜索之后
+ * 从下拉里选的，不是可以随便打字的输入框），"定时规则派活"给的是规则里存下来的两个
+ * <b>用户 id</b>（见 {@link AgentTaskService.Draft#scheduled}）。两条路都核一遍账号表，
+ * 于是落库的发布人 / 任务人一定是账号表里真实存在的那一行（库里存 id，姓名不落库）。
  *
  * <h2>写完就调度一次任务执行</h2>
  * 每一次任务记录更新之后都调一次 {@link AgentTaskDispatch#onTaskUpdated}（已完成 / 已取消除外，
@@ -185,7 +188,11 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	@Override
 	@Transactional
 	public Detail create(String publisher, String assignee, String description) {
-		return create(AgentTaskService.Draft.published(publisher, assignee, description));
+		// 这一支收的是登录名（界面那两格给的是搜索候选里的名字），在这里换成账号表里的 id；
+		// 换不到时当场 400。"定时规则派活"那一支手上只有 id，直接进下面那个写入口
+		Account from = realUser(publisher, "发布人");
+		Account to = realUser(assignee, "任务人");
+		return create(from.id(), to.id(), description, null);
 	}
 
 	/**
@@ -196,27 +203,39 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	 * 状态、步骤、当前执行人、后续整条链完全一致。这正是"定时派出来的活与人发的活
 	 * 在系统里没有行为差异"这句话的落点：差异只在<b>由来</b>那一列。
 	 *
+	 * <p>两个"人"在这一层是<b>用户 id</b>（{@link AgentTaskService.Draft} 上就是它们），
+	 * 核账号表那一步仍然做 —— 不在账号表里的 id 当场 400，而不是落一条
+	 * 永远没有对应的人的任务。
+	 *
 	 * <p>写由来是<b>单独一步</b>（不是 insert 的一个参数）：那条 SQL 的每一个调用点
 	 * 都是"人在界面上发布"，并进去就等于每个调用点都要显式传一个 null。
 	 */
 	@Override
 	@Transactional
 	public Detail create(AgentTaskService.Draft draft) {
-		// 两个名字都换成账号表里那一行自己的写法：调用方写进来的 "Admin" 落库与回执都是 "admin"
-		// （大小写与前后空格都以账号表为准），而落库的是这两个账号的 id（姓名不落库）
-		AgentTask task = draft(realUser(draft.publisher(), "发布人"), realUser(draft.assignee(), "任务人"),
-				draft.description());
+		return create(draft.publisherId(), draft.assigneeId(), draft.description(), draft.scheduleId());
+	}
+
+	/**
+	 * 建一条任务：两个"人"是用户 id，第四格是"这次是谁派来的"（人在界面上发布时是 {@code null}）。
+	 *
+	 * <p>两条入口（名字那一支 / 草稿那一支）都落到这里，于是"状态、步骤、当前执行人、
+	 * 由来那一列怎么落"只有一份实现；而 {@code scheduleId == null} 与
+	 * {@code draft.scheduled()} 是同一个判断的两种写法（见 {@link AgentTaskService.Draft}）。
+	 */
+	private Detail create(Long publisherId, Long assigneeId, String description, Long scheduleId) {
+		AgentTask task = draft(realUser(publisherId, "发布人"), realUser(assigneeId, "任务人"), description);
 		tasks.insert(task.publisherId(), task.assigneeId(), task.description(), task.status().storedValue(),
 				task.currentExecutorId(), task.currentStep());
 		Long id = AgentTaskTransitions.requiredKey(tasks.lastInsertId(), "任务");
 		log.info("新建 agent 任务 #{}：{}{}", id, task.describe(),
-				draft.scheduled() ? "（由定时任务规则 #" + draft.scheduleId() + " 派出）" : "（人在界面上发布）");
-		if (draft.scheduled()) {
+				scheduleId == null ? "（人在界面上发布）" : "（由定时任务规则 #" + scheduleId + " 派出）");
+		if (scheduleId != null) {
 			// ★ 传的是**刚拿到的主键**，不是 `task.id()`：`task` 是一份"入库之前"的记录，
 			// 它的 id 是 null（id 由库生成）—— 拿它去 update 就是 `where id = null`，
 			// **影响 0 行**，于是报"任务不存在"、整个事务回滚，而任务其实已经插进去了。
 			// 实测踩过（见 AgentTaskTransitions#setSchedule 的注释，那里为此改了签名）
-			transitions.setSchedule(id, draft.scheduleId());
+			transitions.setSchedule(id, scheduleId);
 		}
 		// 新发布也要调度：判断需求有没有歧义这一步在 agent 手上，不等下一个定时周期
 		dispatchAfterCommit(AgentTaskStatus.NEW);
@@ -520,6 +539,9 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	 * 一个都查不到 —— 那样一条任务在界面上与正常任务长得一模一样，只是永远没有对应的人。
 	 * 判据落在服务层而不是实体里，是因为它要读账号表。
 	 *
+	 * <p>它只在"人在界面上发布"那一条路上用（那两格是搜索选择器，值就是候选里的登录名）——
+	 * 写入口自己收的是用户 id，见 {@link #realUser(Long, String)}。
+	 *
 	 * <p>返回值取账号表里那一行本身（id + 姓名）：落库的是它的 id，写进来的 "Admin" 与
 	 * 回执里的姓名都按它那一行的写法（于是"这个名字到底指谁"不需要读的人再猜一次大小写）。
 	 *
@@ -540,7 +562,28 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	}
 
 	/**
-	 * 按 id 取人（界面上传进来的"当前登录的人"）—— 与 {@link #realUser} 同一条取舍，按 id 的那一份。
+	 * 按用户 id 取人 —— 与 {@link #realUser(String, String)} 同一条判据的另一半。
+	 *
+	 * <p>定时规则派活那条路给的就是用户 id（它从库里读出来的两列），所以这一层按 id 核账号表：
+	 * 那一行不在时当场 400 / 记一条 WARN，而不是落一条永远没有对应的人的任务 ——
+	 * 那种任务在界面上与正常任务长得一模一样。
+	 *
+	 * <p>与按名字那一支一样<b>不接受 null</b>：这一列在两个写入路径上都是必填的
+	 * （{@code agent_task.publisher_id} 是 NOT NULL）。
+	 */
+	private Account realUser(Long userId, String what) {
+		if (userId == null) {
+			throw new TaskInvalidException("这条任务的" + what + "没有用户 id —— "
+					+ "发布人与任务人在落库时都是必填的账号 id（不是姓名）");
+		}
+		return permissions.findAccountById(userId).orElseThrow(() -> new TaskInvalidException(
+				("账号表里没有 id=%d 这个用户，不能当%s —— 发布人与任务人都是账号表里真实存在的人。")
+						.formatted(userId, what)));
+	}
+
+	/**
+	 * 按 id 取人（界面上传进来的"当前登录的人"）—— 与 {@link #realUser(Long, String)} 同一条判据，
+	 * 只有报错文案指向的下一步不同。
 	 *
 	 * <p>走的同样是一次真实查询，于是"这个 id 根本不在账号表里"会当着用户的面报 400：
 	 * 那种情况来自本地存着的一条过期的登录记录（账号后来被清掉了），而**两种猜测都是错的** ——

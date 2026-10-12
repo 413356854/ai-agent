@@ -9,6 +9,8 @@
   ⚠️ 两个"人"的列存的是 agent_user.id，姓名**由这里关联查询出来**（publisher_name /
   assignee_name）—— 表里没有姓名列，所以读侧必须带这两个 LEFT JOIN，
   少一个那一格就会静默变成空串（界面显示「未指定任务人」，看起来像真的没指派）。
+  ⚠️ 写侧（insert / update）收的也是这两个 id：界面上的候选来自
+  GET /api/permissions/users/search，选完给出来的就是它的 id。
   ⚠️ LEFT 而不是 INNER：账号那一行万一不在（手工清过库），规则照样读得出来，
   代价只是姓名那一格为空；INNER JOIN 会让那条规则从列表里消失，
   而"它静悄悄地不再触发了"是这一页最难发现的一种坏法（页面上少一行，没人会去数行数）。
@@ -94,11 +96,6 @@
 	<update id="updateEnabled">
 		UPDATE agent_task_schedule SET enabled = #{enabled} WHERE id = #{id}
 	</update>
-
-	<!-- 登录名（写请求要的那一份，与读侧那两个姓名的差别见 AgentTaskScheduleMapper#findLoginName） -->
-	<select id="findLoginName" resultType="java.lang.String">
-		SELECT name FROM agent_user WHERE id = #{id}
-	</select>
 
 	<delete id="delete">
 		DELETE FROM agent_task_schedule WHERE id = #{id}
