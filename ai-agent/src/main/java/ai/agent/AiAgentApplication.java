@@ -2,6 +2,7 @@ package ai.agent;
 
 import ai.agent.config.AgentApprovalProperties;
 import ai.agent.config.AgentTaskProperties;
+import ai.agent.config.AgentTaskScheduleProperties;
 import ai.agent.config.ChatCallProperties;
 import ai.agent.config.ReviewProperties;
 import ai.agent.config.SkillPromptProperties;
@@ -57,9 +58,15 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * 而那种错看起来像包扫描没生效）。
  *
  * <p>{@code @EnableScheduling} 在这里而不是某个配置类上：全项目只有
- * {@code AgentTaskScheduler} 一个定时任务，而 {@code @Scheduled} 不生效时
+ * {@code AgentTaskScheduler} 一个 {@code @Scheduled} 任务，而 {@code @Scheduled} 不生效时
  * <b>不报错</b>（只是永远不触发）—— 让"这个应用有定时任务"这件事只出现在一个地方，
  * 排查"它为什么不响"时才有一个确定的入口。
+ *
+ * <p>⚠️ <b>定时任务那一页的调度不靠这个注解</b>：它的周期是用户敲进去的数据，
+ * 装在 {@code AgentTaskScheduleScheduler} 自己那个 {@link java.util.concurrent.ThreadPoolTaskScheduler}
+ * 上（按 {@code CronTrigger} 一条条注册，改一条就删旧线程重加）。
+ * 两者都在这一个应用里跑，但"谁在调度"这件事因此有两个明确的落点：
+ * 一个 {@code @Scheduled}（部署参数），一个线程池（用户数据）。
  *
  * <p>{@link AgentTaskProperties}（{@code ai.agent.task}）是 agent 任务执行的配置：
  * 触发周期、一轮处理几条、几个任务点要人确认计划、执行时拿哪一档权限。
@@ -70,13 +77,18 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * 系统提示词里最多列几条技能的 name + desc、以及取正文时单次返回多少字符。
  * 它们与文件类工具那两个上限同族（都是"回填给模型的上下文预算"），
  * 但拼的是<b>每一轮都要付一遍</b>的系统提示词，所以单独一处。
+ *
+ * <p>{@link AgentTaskScheduleProperties}（{@code ai.agent.schedule}）是定时任务那一页的：
+ * 总开关与调度线程池的线程数。它刻意只有两个键 —— 那一页的其余东西（正则、发布人、
+ * 任务人、描述）都是**数据**，不是部署参数。
  */
 @SpringBootApplication
 @MapperScan("ai.agent.mapper")
 @EnableScheduling
 @EnableConfigurationProperties({ ChatCallProperties.class, RagProperties.class, AgentApprovalProperties.class,
 		ReviewProperties.class, WorkspaceProperties.class, WorkspaceFileProperties.class,
-		WorkspaceCommandProperties.class, AgentTaskProperties.class, SkillPromptProperties.class })
+		WorkspaceCommandProperties.class, AgentTaskProperties.class, SkillPromptProperties.class,
+		AgentTaskScheduleProperties.class })
 public class AiAgentApplication {
 
 	public static void main(String[] args) {

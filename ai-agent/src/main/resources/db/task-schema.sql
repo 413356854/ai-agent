@@ -83,6 +83,12 @@
 --  与 agent_user 同一条规矩：删掉一行会让"当时为什么取消"这个问题失去主语。
 --  取消保留整条任务与它的全部确认项，取消原因与状态同一次写入（见 agent_task.cancel_reason）。
 --
+--  【schedule_id：它是"定时任务派出来的活"与"人发的活"唯一的差别】
+--  其余每一列、以及整条状态链，两类任务完全共用（见 db/schedule-schema.sql 的头注：
+--  定时规则到点做的事就是调一次 AgentTaskService#create，与人点「发布任务」同一个入口）。
+--  所以这一列不是分类字段，而是**由来**：它让"这条规则派过几条、最后一次是什么时候"
+--  数得出来，也让卡片上能写出"它为什么又出现了"。
+--
 --  【写法贴 MySQL】
 --  与 agent-schema.sql / permissions-schema.sql 同族：AUTO_INCREMENT /
 --  TIMESTAMP DEFAULT CURRENT_TIMESTAMP / ON UPDATE CURRENT_TIMESTAMP /
@@ -139,6 +145,21 @@ CREATE TABLE IF NOT EXISTS agent_task (
   -- 与 cancel_reason 唯一的差别是**选填**：这一格要记的是"没做成"这个判断本身，
   -- 而原因可能一时说不清 —— 逼着人写一句他写不出来的话，结果是那一格被填成"没做完"
   incomplete_reason   VARCHAR(512) NULL COMMENT '未完成原因：与 status=NOT_COMPLETED 同一次写入（选填）',
+  -- 由来：这条任务是不是某条定时规则派出来的（agent_task_schedule.id）。
+  -- NULL = 人在界面上点「发布任务」发的；有值 = 那条规则到点派出来的。
+  --
+  -- 【为什么要这一列】定时任务派出来的活与人发的活在库里长得**完全一样**
+  -- （同一张表、同一条状态链），于是"这个点怎么又派了一模一样的活"在界面上无解 ——
+  -- 去看 agent任务 那一页只能看到一堆描述相同的卡片。
+  -- 有了它，定时任务那一页才数得出"这条规则派过几条、最后一次是什么时候"。
+  --
+  -- 【为什么不做外键】agent_task 是**过程数据**（会被清理、会被归档），
+  -- 而规则要长期留着：加了外键之后清一次历史任务就会连带删掉规则本身，
+  -- 那种坏法是"规则凭空不见了"，且与"有人删了它"长得一样。
+  -- 代价说清：规则被删之后，它派出去的那些任务上这一列会**指向一个不存在的 id**
+  -- —— 这正是"那一刻确实有这么一条规则"的痕迹，读侧 LEFT JOIN 会落空，
+  -- 界面显示成「已删除的规则 #id」，而不是把这一列抹掉。
+  schedule_id         BIGINT       NULL COMMENT '由来：是不是某条定时规则派出来的（agent_task_schedule.id）；NULL = 人在界面上发布的',
   created_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   updated_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
   PRIMARY KEY (id)

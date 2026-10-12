@@ -73,8 +73,69 @@ public interface AgentTaskService {
 	 *
 	 * <p><b>没有 agentId 这个入参</b>：它由平台在第一次接手这条任务时写入
 	 * （见 {@code AgentTaskProperties#agentId}）。
+	 *
+	 * <p>它落下的任务 {@code schedule_id} 一定是空 —— 这一条是"人在界面上发布的"。
+	 * 定时规则派活走的是 {@link #create(Draft)} 那一支。
 	 */
 	Detail create(String publisher, String assignee, String description);
+
+	/**
+	 * 按一份"建任务草稿"发布 —— <b>"这次是谁派来的"在这一个入参里</b>。
+	 *
+	 * <h2>为什么要有它，而不是给上面那个方法加一个 scheduleId 参数</h2>
+	 * 加参数之后两个调用点（人发布 / 定时规则派活）在签名上长得一样，
+	 * 读代码时分不出"哪一处传了 null、为什么传 null"；而且漏传一次是一个
+	 * <b>没有报错</b>的错（那条任务会显示成"人发布的"）。
+	 * 显式两个入口之后，"定时派活必须说出自己是哪条规则"由类型保证：
+	 * {@link Draft} 只有 {@link Draft#scheduled} 能给出带 scheduleId 的那一份。
+	 *
+	 * <h2>草稿里的姓名是"登录名"，不是用户 id</h2>
+	 * 与 {@link #create(String, String, String)} 一样，这里存的仍是名字，
+	 * 因为账号表的核对发生在这一层（{@code DefaultAgentTaskService#realUser}）——
+	 * 定时规则那边手上也只有它当初存下来的两个用户 id，由它自己换回名字传进来
+	 * （见 {@code DefaultAgentTaskScheduleService}）。
+	 */
+	Detail create(Draft draft);
+
+	/**
+	 * 一份"建任务草稿"：发布人 / 任务人（登录名）+ 描述 + （可选）由来。
+	 *
+	 * <p>两个静态工厂就是全部构造点，于是"这次是谁派来的"在编译期就只有两种可能：
+	 * {@link #published}（人发的，{@code scheduleId} 恒为 null）与
+	 * {@link #scheduled}（定时规则派的，必须说出是哪一条）。
+	 *
+	 * @param publisher 发布人的登录名
+	 * @param assignee 任务人的登录名
+	 * @param description 任务描述
+	 * @param scheduleId 派活的定时规则 id；人发布的为 {@code null}
+	 */
+	record Draft(String publisher, String assignee, String description, Long scheduleId) {
+
+		/** 人在界面上点「发布任务」发的那一种。 */
+		public static Draft published(String publisher, String assignee, String description) {
+			return new Draft(publisher, assignee, description, null);
+		}
+
+		/**
+		 * 定时规则到点派出来的那一种。
+		 *
+		 * <p>规则 id <b>必填</b>：它是任务卡片上"它为什么又出现了"唯一的答案，
+		 * 也是"这条规则派过几条"唯一的数法（见 {@code AgentTaskMapper#scheduleRunCounts}）。
+		 * 允许它为空就等于允许"匿名地派活"，而那种任务与人发的在库里完全一样。
+		 */
+		public static Draft scheduled(Long scheduleId, String publisher, String assignee, String description) {
+			if (scheduleId == null) {
+				throw new IllegalArgumentException("定时规则派活必须说出自己是哪一条规则（scheduleId）—— "
+						+ "它是那条任务的由来，也是「这条规则派过几条」唯一的数法");
+			}
+			return new Draft(publisher, assignee, description, scheduleId);
+		}
+
+		/** 这次是不是定时规则派的。 */
+		public boolean scheduled() {
+			return scheduleId != null;
+		}
+	}
 
 	/**
 	 * 推进当前事件：{@link AgentTaskStatus#EXECUTING} → 待验收（登记执行结果，可空）。

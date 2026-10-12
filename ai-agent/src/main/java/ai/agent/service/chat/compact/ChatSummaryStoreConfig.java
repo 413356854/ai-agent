@@ -19,6 +19,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * 换库实现只需配 {@code ai.chat.summary.store=jdbc}
  * （见 {@link JdbcChatSummaryStore}），本类的 bean 会自动让位。
  *
+ * <p>⚠️ 两个装配约束：类名不能与下面那个 {@code @Bean} 方法名相同（两者推导出的 bean 名字都是
+ * {@code inMemoryChatSummaryStore}，而 Boot 默认禁止覆盖 bean 定义 → 启动抛
+ * {@code BeanDefinitionOverrideException}）；也不能加私有构造器
+ * （{@code @Configuration} 默认要 CGLIB 生成子类 → {@code No visible constructors}）。
+ *
  * <h2>为什么它不做淘汰</h2>
  * 一条会话一行、一份摘要几百字，它的规模由"有多少个会话"决定 ——
  * 与 {@code ChatMemory} 那张表同一个量级，不会因为对话变长而变大。
@@ -26,10 +31,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * 而那个失效是静默的（prompt 里少一段背景，模型只是答得差一点）。
  */
 @Configuration
-public class InMemoryChatSummaryStore {
-
-	private InMemoryChatSummaryStore() {
-	}
+public class ChatSummaryStoreConfig {
 
 	@Bean
 	@ConditionalOnMissingBean(ChatSummaryStore.class)

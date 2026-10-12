@@ -18,7 +18,7 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * <b>启动时核对 agent 任务那两张表的形状</b> —— 表在不在、本代码要用的列在不在。
+ * <b>启动时核对 agent 任务那三张表的形状</b> —— 表在不在、本代码要用的列在不在。
  *
  * <p>做法与 {@link PermissionSchemaCheck} 逐条相同（那边的类注释写清了它接住的是什么：
  * {@code CREATE TABLE IF NOT EXISTS} 只保证表存在、不保证表是新的，
@@ -27,9 +27,14 @@ import java.util.Map;
  *
  * <h2>为什么它不合并进 {@link PermissionSchemaCheck}</h2>
  * 两个检查各自对着"重建代价"说话：权限那几张表重建的代价是重新配一遍角色；
- * 任务这两张表在脚手架阶段只有测试数据，重建是零代价。合并成一个类会让那句
+ * 任务这三张表在脚手架阶段只有测试数据，重建是零代价。合并成一个类会让那句
  * "处理方式二选一"只能写一份，而它对两种表的含义不同 ——
  * 与其写一句模糊的公共说明，不如让两处各自把话说准。
+ *
+ * <p>⚠️ {@code agent_task.schedule_id} 这条列加进来之后，<b>库里那张已经存在的 agent_task
+ * 一定会缺这一列</b>（脚本只建缺的表、不改已有的表）—— 所以这个检查会当场拒绝启动，
+ * 并把处理方式写出来。这是刻意的：不定时任务这一页的功能在"读一条任务"上就会炸，
+ * 而那种炸法出现在看板上（"整页打不开"），离原因（少一列）很远。
  */
 @Component
 public class TaskSchemaCheck implements InitializingBean {
@@ -45,9 +50,12 @@ public class TaskSchemaCheck implements InitializingBean {
 
 	static {
 		REQUIRED.put("agent_task", List.of("id", "publisher_id", "assignee_id", "description", "status",
-				"current_executor_id", "current_step", "agent_id", "result", "cancel_reason", "incomplete_reason"));
+				"current_executor_id", "current_step", "agent_id", "result", "cancel_reason", "incomplete_reason",
+				"schedule_id"));
 		REQUIRED.put("agent_task_confirm", List.of("id", "task_id", "step_index", "confirm_type", "description",
 				"option_set", "answer"));
+		REQUIRED.put("agent_task_schedule", List.of("id", "cron", "publisher_id", "assignee_id", "description",
+				"enabled"));
 	}
 
 	private final DataSource dataSource;
@@ -82,10 +90,10 @@ public class TaskSchemaCheck implements InitializingBean {
 		if (!problems.isEmpty()) {
 			throw new IllegalStateException(("agent 任务表结构与代码对不上（脚本 db/task-schema.sql 只建缺的表，"
 					+ "**不会改已经存在的表**）：%s。"
-					+ "处理方式二选一：① 删掉这两张表（agent_task_confirm / agent_task，有外键、按这个顺序删）"
-					+ "再启动一次，脚本会按最新定义重建；② 手工 ALTER TABLE 补上缺的列。"
-					+ "⚠️ 走第一条之前先确认表里没有要留的任务 —— 删了就没有了（账号那种「只停用不删除」的规矩"
-					+ "在这两张表上不适用：它们是过程数据）")
+					+ "处理方式二选一：① 删掉这三张表（agent_task_confirm / agent_task_schedule / agent_task，"
+					+ "有外键、按这个顺序删）再启动一次，脚本会按最新定义重建；② 手工 ALTER TABLE 补上缺的列。"
+					+ "⚠️ 走第一条之前先确认表里没有要留的任务与规则 —— 删了就没有了（账号那种「只停用不删除」的规矩"
+					+ "在这三张表上不适用：它们是过程数据与配置）")
 					.formatted(problems));
 		}
 		log.info("agent 任务表结构核对完成：{} 张表、{} 个承重列都在", REQUIRED.size(),

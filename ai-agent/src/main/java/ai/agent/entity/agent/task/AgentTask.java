@@ -53,13 +53,18 @@ import java.time.Instant;
  * @param incompleteReason 未完成原因；状态不是 {@link AgentTaskStatus#NOT_COMPLETED} 时为空。
  *        与取消原因不同，它<b>选填</b>：验收那一刻"没做成"这件事本身就是要记的东西，
  *        而原因可能一时说不清 —— 逼着人写一句他写不出来的话，结果是那一格被填成"没做完"
+ * @param scheduleId 由来：这条任务是不是某条定时规则派出来的（{@code agent_task_schedule.id}）。
+ *        <b>为空 = 人在界面上发布的</b>；有值 = 那条规则到点派出来的。
+ *        它不由 {@link #draft} 给（人发布的任务永远是空），也不由 {@link #revisedDescription} 那类
+ *        改写方法碰 —— 只由 {@code AgentTaskTransitions#setSchedule} 在
+ *        "平台替规则建任务"那一条路上按 id 直接写库，读回来时才落进这个字段。
  * @param createdAt 落库时间（未落库时为 {@code null}）
  * @param updatedAt 最近一次变更时间（未落库时为 {@code null}）
  */
 public record AgentTask(Long id, Long publisherId, String publisher, Long assigneeId, String assignee,
 		String description, AgentTaskStatus status, Long currentExecutorId, String currentExecutor, int currentStep,
-		String agentId, String result, String cancelReason, String incompleteReason, Instant createdAt,
-		Instant updatedAt) {
+		String agentId, String result, String cancelReason, String incompleteReason, Long scheduleId,
+		Instant createdAt, Instant updatedAt) {
 
 	/** 与 DDL 的 {@code agent_id VARCHAR(128)} 对齐。 */
 	public static final int MAX_AGENT_ID_CHARS = 128;
@@ -111,9 +116,10 @@ public record AgentTask(Long id, Long publisherId, String publisher, Long assign
 	 *
 	 * <p>它固定了三个字段，于是"新任务长什么样"只有这一处定义：
 	 * 状态 {@link AgentTaskStatus#NEW}、步骤 1、当前执行人是任务人（球在他手上，
-	 * 由他发起第一条需求确认）；{@code agentId} 也在这里定成 {@code null} ——
-	 * 发布人不填它，值由平台在第一次接手这条任务时写入。
-	 * 调用方没有机会把它们拼错，也没有机会把 agentId 塞进来。
+	 * 由他发起第一条需求确认）；{@code agentId} 与 {@code scheduleId} 也在这里定成 {@code null}
+	 * —— 前者由平台在第一次接手这条任务时写入（见 {@code AgentTaskProperties#agentId}），
+	 * 后者只在"定时规则派活"那一条路上写入（见 {@code AgentTaskTransitions#setSchedule}）。
+	 * 调用方没有机会把它们拼错，也没有机会把它们塞进来。
 	 *
 	 * <p>发布人与任务人<b>都要给全</b>（id 与姓名，空字符串在这里就被拒）：
 	 * "这两个用户在账号表里存不存在"是服务层的事（它才拿得到账号表），
@@ -123,7 +129,7 @@ public record AgentTask(Long id, Long publisherId, String publisher, Long assign
 			String description) {
 		return new AgentTask(null, publisherId, publisher, requiredId(assigneeId, "任务人"),
 				required(assignee, "任务人姓名", MAX_NAME_CHARS), description, AgentTaskStatus.NEW, assigneeId,
-				assignee, 1, null, null, null, null, null, null);
+				assignee, 1, null, null, null, null, null, null, null);
 	}
 
 	/**

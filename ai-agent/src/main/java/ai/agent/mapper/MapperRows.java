@@ -10,6 +10,7 @@ import ai.agent.entity.agent.permission.RoleTool;
 import ai.agent.entity.agent.skill.AgentSkill;
 import ai.agent.entity.agent.task.AgentTask;
 import ai.agent.entity.agent.task.AgentTaskConfirm;
+import ai.agent.entity.agent.task.AgentTaskSchedule;
 import ai.agent.entity.agent.task.AgentTaskStatus;
 import ai.agent.entity.agent.task.ConfirmOptions;
 import ai.agent.entity.agent.task.ConfirmType;
@@ -334,16 +335,19 @@ public final class MapperRows {
 	 * <p>三个姓名（{@code publisher_name} / {@code assignee_name} / {@code current_executor_name}）
 	 * 是 SQL 关联 {@code agent_user} 查出来的，表里没有它们 —— 所以它们可能为 null
 	 * （账号那一行不在时），而 id 才是库里真正存的那一份（见 {@link AgentTask} 的类注释）。
+	 *
+	 * <p>{@code scheduleId} 为 null 是**有含义的**（这条任务是人发布的），不编默认值 ——
+	 * 编一个（例如 0）会让"人发的"与"第 0 号规则派的"变成同一件事。
 	 */
 	public record AgentTaskRow(Long id, Long publisherId, String publisherName, Long assigneeId, String assigneeName,
 			String description, String status, Long currentExecutorId, String currentExecutorName, Integer currentStep,
-			String agentId, String result, String cancelReason, String incompleteReason, Instant createdAt,
-			Instant updatedAt) {
+			String agentId, String result, String cancelReason, String incompleteReason, Long scheduleId,
+			Instant createdAt, Instant updatedAt) {
 
 		public AgentTask toDomain() {
 			return new AgentTask(id, publisherId, publisherName, assigneeId, assigneeName, description,
 					AgentTaskStatus.parse(status), currentExecutorId, currentExecutorName, nz(currentStep), agentId,
-					result, cancelReason, incompleteReason, createdAt, updatedAt);
+					result, cancelReason, incompleteReason, scheduleId, createdAt, updatedAt);
 		}
 	}
 
@@ -386,6 +390,66 @@ public final class MapperRows {
 			return new AgentSkill(id, folder, name, description, content, ownerId, ownerName, lastModifiedBy,
 					lastModifiedName, createdAt, updatedAt);
 		}
+	}
+
+	// ==================================================================
+	//  agent 定时任务（agent_task_schedule）
+	// ==================================================================
+
+	/**
+	 * {@code agent_task_schedule} 的一行。
+	 *
+	 * <p>{@code enabled} 保持 {@code Integer}：DDL 里那一列是 {@code TINYINT}，
+	 * 而构造器映射对基本类型会在实例化时匹配失败（见本类的类注释）——
+	 * 转成 {@code boolean} 在 {@link #toDomain()} 里做，判据只有一处。
+	 *
+	 * <p>两个姓名（{@code publisher_name} / {@code assignee_name}）是 SQL 关联
+	 * {@code agent_user} 查出来的，表里没有它们 —— 所以它们可能为 null
+	 * （账号那一行不在时），而两个 id 才是库里真正存的那一份。
+	 *
+	 * <p><b>⚠️ 这是构造器映射</b>：参数顺序必须与 {@code AgentTaskScheduleMapper.xml} 里
+	 * resultMap 的 {@code <arg>} 顺序、以及 {@link AgentTaskSchedule} 的构造参数顺序逐字对齐。
+	 * 这里连续的三个 {@code String}（cron / description / …）错位了也看不出来。
+	 */
+	public record AgentTaskScheduleRow(Long id, String cron, Long publisherId, String publisherName, Long assigneeId,
+			String assigneeName, String description, Integer enabled, Instant createdAt, Instant updatedAt) {
+
+		public AgentTaskSchedule toDomain() {
+			return new AgentTaskSchedule(id, cron, publisherId, publisherName, assigneeId, assigneeName,
+					description, enabled != null && enabled != 0, createdAt, updatedAt);
+		}
+	}
+
+	/**
+	 * 一条规则的"它到底派过几条任务、最后一次是什么时候"（SQL 聚合 {@code agent_task} 得到）。
+	 *
+	 * <p>它与规则本身<b>分开取</b>：规则的读侧不碰任务表（那条 LEFT JOIN 会让"读规则列表"
+	 * 随任务表一起变重），而这一份只在界面上要显示"派过几条"时才查，而且一次查一批
+	 * （按 {@code schedule_id} 分组，不是每条规则查一次 —— 那是典型的 N+1）。
+	 *
+	 * <p>⚠️ 计数列按 {@code nz} 归零（本类第一条转换纪律）：{@code COUNT(*)} 不会是 null，
+	 * 走 {@code nz} 只是防线。而 {@code lastAt} 的 null 是**有含义的**（一次都没派过），
+	 * 不编默认值。
+	 */
+	public record ScheduleRunRow(Long scheduleId, Long runs, Instant lastAt) {
+
+		public ScheduleRun toDomain() {
+			return new ScheduleRun(scheduleId, nz(runs), lastAt);
+		}
+	}
+
+	/**
+	 * 上一条的领域形态（界面要显示的那一份）。
+	 *
+	 * <p>{@code runs} 是基本类型 {@code long}，而上面的行类型是包装类型 ——
+	 * 转换在 {@link ScheduleRunRow#toDomain()} 里做，理由见本类的类注释
+	 * （构造器映射对基本类型会在实例化时匹配失败）。
+	 *
+	 * @param scheduleId 哪条规则
+	 * @param runs 它派过几条任务；0 = 一条都没派过
+	 * @param lastAt 最后一次派任务的时间；{@code null} = 一次都没派过
+	 */
+	public record ScheduleRun(Long scheduleId, long runs, Instant lastAt) {
 	}
 
 	// ==================================================================

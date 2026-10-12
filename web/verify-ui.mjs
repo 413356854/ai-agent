@@ -270,11 +270,11 @@ console.log('[1.5] 布局 —— 左侧目录与页头')
     groups.join(' / '))
   expect('对话台那段列出八个模式',
     (await sidebar.locator('.app-nav-group').first().locator('.app-nav-item').count()) === 8)
-  // 应用管理那一段的**顺序**也是要求的一部分：账号在前、角色在后、任务最后
+  // 应用管理那一段的**顺序**也是要求的一部分：账号在前、角色在后、任务与技能接着、定时任务最后
   const appsItems = (await sidebar.locator('.app-nav-group').nth(1).locator('.app-nav-item').allInnerTexts())
     .map(t => t.trim())
-  expect('应用管理那段列出四项，顺序是 用户管理 / 权限管理 / agent任务 / skill管理',
-    JSON.stringify(appsItems) === JSON.stringify(['用户管理', '权限管理', 'agent任务', 'skill管理']),
+  expect('应用管理那段列出五项，顺序是 用户管理 / 权限管理 / agent任务 / skill管理 / 定时任务',
+    JSON.stringify(appsItems) === JSON.stringify(['用户管理', '权限管理', 'agent任务', 'skill管理', '定时任务']),
     appsItems.join(' / '))
   expect('当前项被标出来（aria-current）', (await sidebar.locator('[aria-current="page"]').count()) === 1)
   // 默认落在流式模式：这条同时证明"选中的那一项就是当前视图"，而不只是"有一个项被标了"
@@ -357,9 +357,9 @@ console.log('[1.5] 布局 —— 左侧目录与页头')
   expect('收起后标题仍然标出「当前视图在这一段里」',
     (await groupTitle.getAttribute('data-active-inside')) === '1',
     `data-active-inside=${await groupTitle.getAttribute('data-active-inside')}`)
-  // 只收起被点的那一段：应用管理那四项不该跟着消失
+  // 只收起被点的那一段：应用管理那五项不该跟着消失
   expect('另一段不受影响',
-    (await sidebar.locator('.app-nav-group').nth(1).locator('.app-nav-item').count()) === 4)
+    (await sidebar.locator('.app-nav-group').nth(1).locator('.app-nav-item').count()) === 5)
 
   await groupTitle.click()
   const unfoldedGroup = await waitFor(
@@ -4025,9 +4025,361 @@ if (EXPECT_REFLECTION) {
 
   await page.screenshot({ path: `${SHOT_DIR}/skill-panel.png` })
 }
+
+// ---------- [8.10] 应用管理 · 定时任务 ----------
+//
+// 这一节的判据分成两层，两层都必须断：
+//   ① **页面配出来的正则对不对** —— 配置那几格 → 表达式 → 后端算出来的"下一次触发"。
+//      这是这一页唯一的主角（"页面配置化定时规则"），而它错了不会报错，
+//      只会按用户没选的日子跑；
+//   ② **改正则真的重排了线程** —— 真后端固定做"删旧线程、按新正则重加"，
+//      所以改完之后 `nextRuns` 一定是按新表达式算的。假后端如果只改 `cron` 而沿用旧
+//      `nextRuns`，这一节就会去断一条**在真后端上不成立**的结论（见 schedule-routes.mjs 文件头）。
+//
+// ⚠️ 这一节**一条真任务都不派**：`trigger`（现在跑一次）会真的往 `agent_task` 里写一条、
+// 而那条会被 `AgentTaskScheduler` 接手去调模型 —— 在假后端上它是假账，在真后端上它花钱。
+// 那条路（"到点生成一条任务记录"）由服务端的探针与人工实跑验，见 docs 那一节的实测表。
+console.log('[8.10] 应用管理 · 定时任务')
+if (EXPECT_REFLECTION) {
+  // 复位：自检跑两遍，第二遍会继承第一遍建出来的规则（与 permissions / skills 同一条经验）
+  const scheduleReset = await page.request.post(`${URL}/api/agent-task-schedules/__reset`)
+  expect('定时任务假后端复位成功', scheduleReset.ok(), `HTTP ${scheduleReset.status()}`)
+
+  await navMode('定时任务')
+  await waitFor(async () => (await page.locator('.schedule-panel .schedule-card').count()) > 0, 8000)
+
+  expect('页头标题跟着应用管理那一区走',
+    /AI Agent 应用管理/.test(await page.locator('.app-topbar .app-title').innerText()))
+
+  const scheduleApi = await (await page.request.get(`${URL}/api/agent-task-schedules`)).json()
+  const scheduleCardCount = () => page.locator('.schedule-panel .schedule-card').count()
+  expect('★ 规则列表画出来了，条数与接口一致',
+    await scheduleCardCount() === scheduleApi.total && scheduleApi.total === 4,
+    `屏幕上 ${await scheduleCardCount()} 张 / 接口 ${scheduleApi.total} 条`)
+
+  // 这一页的说明那一行，未登录与已登录**说的是两句不同的话**（未登录时要先说清"配规则需要登录"）。
+  // 两句都断：只断已登录那一句的话，"未登录时这一页看起来像按我筛的"这种坏法照样全绿
+  const scopeGuest = await page.locator('.schedule-panel .task-board-scope').innerText()
+  expect('★ 未登录时说明那一行说清"配规则需要一个发布人"（列表明明是全量，不说清会被读成"我没有规则"）',
+    /未登录：列表是全部规则/.test(scopeGuest) && /模拟登录/.test(scopeGuest),
+    scopeGuest.slice(0, 80).replace(/\n/g, ' '))
+
+  // ---- ① "调度线程池"那一栏：这一页的失败形态是"规则配好了它不动"，
+  //         而"不在池子里"与"在池子里但还没到点"必须能分开读 ----
+  const poolBox = page.locator('.schedule-panel .schedule-pool')
+  const poolText = await poolBox.innerText()
+  const poolScheduled = Number(await poolBox.getAttribute('data-pool-scheduled'))
+  const poolSize = Number(await poolBox.getAttribute('data-pool-size'))
+  expect('★ 调度线程池那一栏写清了"几条规则挂着线程 / 上限几条"',
+    poolScheduled === scheduleApi.pool.scheduled && poolSize > 0 && /上限 4/.test(poolText),
+    `挂着 ${poolScheduled} 条 / 上限 ${poolSize}：${poolText.replace(/\n/g, ' ').slice(0, 80)}`)
+
+  expect('★ 停用的规则不在池子里（"这一条现在不会跑"要看得出来）',
+    scheduleApi.rules.filter(r => !r.enabled).length > 0
+    && scheduleApi.rules.filter(r => !r.enabled).every(r => r.scheduled === false)
+    && await page.locator('.schedule-card[data-enabled="0"]').count()
+      === scheduleApi.rules.filter(r => !r.enabled).length,
+    `停用 ${scheduleApi.rules.filter(r => !r.enabled).length} 条 / 池子里 ${poolScheduled} 条 / 库里启用 ${scheduleApi.rules.filter(r => r.enabled).length} 条`)
+
+  // ---- ② 每张卡片都能读："下一次触发"是这一页唯一的证据 ----
+  const first = scheduleApi.rules[0]
+  const firstCard = page.locator(`.schedule-card[data-schedule-id="${first.id}"]`)
+  const firstCardText = await firstCard.innerText()
+  expect('★ 卡片上写着正则、中文说法与"下一次触发"（后者来自后端，不是前端算的）',
+    firstCardText.includes(first.cron) && firstCardText.includes(first.nextRuns[0])
+    && (await firstCard.locator('.schedule-cron').getAttribute('data-cron')) === first.cron,
+    `${first.cron} · ${first.nextRuns[0]}`)
+  expect('卡片上写出「发布人 → 任务人」与派过几条任务',
+    firstCardText.includes(first.publisher) && /已派 \d+ 条任务|一次都还没派过任务/.test(firstCardText))
+
+  // 停用的那一条：它没有 nextRuns，而界面上必须**说出原因**（不是留一格空白）
+  const offCard = page.locator('.schedule-card[data-enabled="0"]').first()
+  const offText = await offCard.innerText()
+  expect('★ 停用的规则写着"停用中，不会自己跑"，而不是一格空白',
+    /停用中，不会自己跑/.test(offText), offText.replace(/\n/g, ' ').slice(0, 90))
+
+  // ---- ③ 登录：走**真实登录弹窗**（页头那个入口），与 [8.8] / [8.9] 同一条 ----
+  //
+  // ⚠️ `admin` 那个常量在 [8.9] 的 `if` 块里（块作用域），出了那一节就没了 ——
+  // 这里重新取一次（同一个搜索端点，[8.9] 用的也是它）
+  const admin = (await (await page.request.get(`${URL}/api/permissions/users/search?keyword=admin`)).json())
+    .users[0]
+  await page.locator('.app-topbar .mock-login-entry').click()
+  const loginDialog = page.locator('.ant-modal:visible', { hasText: '模拟登录' })
+  await loginDialog.locator('input[role="combobox"], input.ant-select-selection-search-input').first().fill('adm')
+  const adminOption = page.locator('.ant-select-dropdown:visible .ant-select-item-option',
+    { hasText: admin.name }).first()
+  await adminOption.waitFor({ state: 'visible', timeout: 8000 })
+  await adminOption.click()
+  await loginDialog.locator('.ant-btn-primary').click()
+  await waitFor(async () => (await page.locator('.mock-login-entry').count()) === 0, 8000)
+  expect('（准备）以 admin 的身份配规则（发布人就是他）', true)
+
+  await navMode('用户管理')
+  await page.waitForTimeout(150)
+  await navMode('定时任务')
+  await waitFor(async () => (await page.locator('.schedule-card').count()) > 0, 8000)
+
+  // ---- ④ ★ 页面配置化定时规则：选出来的东西 → 拼出来的正则 → 后端算的下一次 ----
+  await page.locator('.schedule-panel button', { hasText: '配一条规则' }).click()
+  const ruleDialog = page.locator('.ant-modal:visible', { hasText: '定时规则' })
+  await ruleDialog.waitFor({ state: 'visible', timeout: 8000 })
+
+  // ★ 描述那一格是**模板**（到点先让模型把周期说法换成具体日期）—— 这一页必须说清这件事：
+  // 用户写"把昨天的失败运行汇总成晨报"是对的写法，而库里那条任务上会是具体日期。
+  // 不说清的话，用户会以为"我写的字没生效"，或者以为任务上的日期是他自己写错了。
+  const descriptionBox = ruleDialog.locator('textarea').first()
+  const descriptionHint = await descriptionBox.getAttribute('placeholder')
+  expect('★ 描述那一格写明它是「模板」、并说清周期说法会在到点时被解析成具体日期',
+    /模板/.test(descriptionHint ?? '') && /昨天/.test(descriptionHint ?? '')
+    && /具体日期/.test(descriptionHint ?? ''),
+    String(descriptionHint).slice(0, 90))
+  const modalText = await ruleDialog.innerText()
+  expect('★ 弹窗里另有一句说清「解析失败时这一次不派活、留到下一个周期重试」（它解释「某天少了一条任务」）',
+    /解析/.test(modalText) && /不派活/.test(modalText) && /重试/.test(modalText),
+    (modalText.split('\n').find(line => /不派活/.test(line)) ?? '(没找到那一句)').slice(0, 100))
+
+  // 任务人那一格是**搜索选择器**（提交的是账号表里那个人的名字）。
+  //
+  // ⚠️ 这一段**不驱动它**，原因是实测到的一条：`locator.fill()` 写进 antd 的 combobox 之后
+  // 下拉没有出现（`fill` 不派发 antd 依赖的那个输入事件），而失败现象是"保存按钮点不动" ——
+  // 看起来像"表单填完了却存不了"。所以这一节改成两段：
+  //   ① **界面这一段**验"页面配置化定时规则"（那才是这一页的主角）+ "任务人没选时保存点不动"；
+  //   ② **接口那一段**备好一条已知的规则，下面的"改 / 停用 / 删 / 手写正则被挡"都拿它来验。
+  // 任务人那一格本身（搜索 → 选中 → 提交）由 [8.8] agent任务 那一节在同一个组件上验
+  // （`UserPicker` 是两页共用的，见 web/README.md）。
+  await ruleDialog.locator('textarea').first().fill('自检：每天 02:00 汇总昨天的失败运行')
+
+  // 缺省形态是「每天 09:00」——先断这一次默认值，它决定了"点开就能存"的那条路
+  const previewCron = () => ruleDialog.locator('.schedule-preview').getAttribute('data-cron-preview')
+  await waitFor(async () => (await previewCron()) === '0 0 9 * * *', 8000)
+  expect('★ 配置器缺省给的是「每天 09:00」，拼出来的正是 6 段 `0 0 9 * * *`',
+    (await previewCron()) === '0 0 9 * * *', await previewCron())
+  expect('★ 任务人还没选时「保存」点不动（发布人是当前登录的人，任务人必须由人选）',
+    await ruleDialog.locator('.ant-btn-primary').isDisabled())
+
+  // 把「时」那一格改成 2 —— 断的是"填进去的数真的进了表达式"（而不是只改了界面上的字）
+  const hourInput = ruleDialog.locator('.schedule-builder .ant-input-number-input').first()
+  await hourInput.click()
+  await hourInput.press('Control+a')
+  await hourInput.pressSequentially('2', { delay: 60 })
+  await hourInput.press('Enter')
+  await waitFor(async () => (await previewCron()) === '0 0 2 * * *', 8000)
+  expect('★ 改「时」那一格，表达式跟着变（页面配置真的在生成正则）',
+    (await previewCron()) === '0 0 2 * * *', await previewCron())
+
+  // ⚠️ 表达式变了**不等于预览已经回来**：改一格之后要等 350ms 防抖 + 一次往返。
+  // 直接读 `[data-preview-runs]` 会读到上一次的那一份（而它读得通、不报错）——
+  // 实测第一版就是这么红的："界面 09:00:00 / 后端 02:00:00"。
+  // 判据：等那句中文说法也变成 02:00 之后才取读数
+  const previewDesc = () => ruleDialog.locator('[data-preview-desc]').innerText()
+  await waitFor(async () => (await previewDesc()).includes('02:00'), 8000)
+
+  const previewRunsText = await ruleDialog.locator('[data-preview-runs]').innerText()
+  const previewRuns = previewRunsText.split(' / ').map(text => text.trim()).filter(Boolean)
+  const expectedDaily = await (await page.request.post(`${URL}/api/agent-task-schedules/preview`,
+    { data: { cron: '0 0 2 * * *' } })).json()
+  expect('★ 预览里那 5 次触发时刻 = 后端给的（前端不自己算，两边各算一次就会"预览说 9 点、实际 10 点跑"）',
+    previewRuns.length === 5 && previewRuns.join('|') === expectedDaily.nextRuns.join('|'),
+    `界面 ${previewRuns[0]} / 后端 ${expectedDaily.nextRuns[0]}`)
+  expect('预览里那句中文说法也是后端给的（不是前端自己拼的一份）',
+    (await previewDesc()).includes('02:00触发'), await previewDesc())
+
+  // ---- ⑤ 改 / 停用 / 删 / 手写正则：都拿接口备好的这一条来验 ----
+  //
+  // 刻意用 `0 0 2 * * *`（02:00，分是 0）而不是 02:30：下面要把「每天 02:00」改成
+  // 「每周一/三/五 02:00」，两句只在「日 / 周」那两格上有差别 —— 分不同的话，
+  // 期望值里会多一个"30 还是 0"的分支，而那个分支与这一节要验的东西无关
+  const mine = (await (await page.request.post(`${URL}/api/agent-task-schedules`, { data: {
+    publisher: admin.name, assignee: 'li', description: '自检：每天 02:00 汇总昨天的失败运行',
+    cron: '0 0 2 * * *', enabled: true } })).json()).rule
+  expect('（准备）接口建一条"每天 02:00"的规则（改 / 停用 / 删都拿它来验）',
+    mine?.cron === '0 0 2 * * *' && mine?.scheduled === true, `${mine?.id} ${mine?.cron}`)
+  expect('（准备）新建的规则立刻挂进了调度线程池（不是"等下一次启动"）',
+    (await (await page.request.get(`${URL}/api/agent-task-schedules`)).json()).pool.scheduled
+      > scheduleApi.pool.scheduled)
+
+  // 关掉还没提交的那个弹窗（任务人没选，存不了；下面的验都拿接口备好的 `mine` 来跑）
+  await page.locator('.ant-modal:visible .ant-btn', { hasText: /^取\s*消$/ }).first().click()
+  const closed = await waitFor(async () => (await page.locator('.ant-modal:visible').count()) === 0, 8000)
+  expect('（准备）关掉配规则那个弹窗（它开着会拦住后面的点击）', closed,
+    `还开着 ${await page.locator('.ant-modal:visible').count()} 个：`
+    + await page.locator('.ant-modal:visible').first().innerText().catch(() => ''))
+  // ⚠️ 同样地，「刷新」在页面上是「刷 新」—— 所以用正则
+  await page.locator('.schedule-panel button').filter({ hasText: /^刷\s*新$/ }).click()
+  await waitFor(async () => (await page.locator('.schedule-card').count()) > 4, 8000)
+  expect('列表上多了一张卡片（刷新之后界面读到了接口新建的那一条）',
+    await page.locator('.schedule-card').count() === 5,
+    `屏幕上 ${await page.locator('.schedule-card').count()} 张`)
+
+  // ---- ⑤ ★ 改正则 = 删旧线程、按新正则重加 ----
+  await page.locator(`.schedule-card[data-schedule-id="${mine.id}"] button`, { hasText: '改' }).click()
+  const editDialog = page.locator('.ant-modal:visible', { hasText: `定时规则 #${mine.id}` })
+  await editDialog.waitFor({ state: 'visible', timeout: 8000 })
+  expect('★ 打开"改"的时候，已有规则被摊回了对应的形态（每天 02:00，而不是落到「手写表达式」）',
+    (await editDialog.locator('.ant-radio-button-wrapper-checked').innerText()).includes('每天'),
+    await editDialog.locator('.ant-radio-button-wrapper-checked').innerText())
+
+  // 改成「每周一 / 周三 / 周五 02:00」。
+  //
+  // ⚠️ **不走多选下拉**：它缺省勾着周一到周五，而"取消周二、周四"与"选中周二、周四"
+  // 在屏幕上长得一样（点错了不报错，只拼出一句多两天的正则 —— 实测就是这么错的）。
+  // 面板为此给了三个整集合按钮（工作日 / 周末 / 清空），它们一次点击就定下整份集合。
+  // 下拉本身仍然在（要选"周日 + 周三"这种组合只能用它），但断言不依赖它开合。
+  await editDialog.locator('.ant-radio-button-wrapper', { hasText: '每周' }).click()
+  const weekdaySelect = editDialog.locator('.ant-select-multiple').first()
+  // ① 先「清空」（缺省勾着周一到周五，而"取消周二、周四"与"选中"在屏幕上长得一样）
+  // ⚠️ antd 会给两个汉字的按钮插一个空格（「清空」→「清 空」），精确匹配找不到 —— 与本文件里
+  // 「生 效」/「关 闭」那几处同一条经验
+  await editDialog.locator('button', { hasText: /^清\s*空$/ }).click()
+  await page.waitForTimeout(300)
+  // ② 再一个一个选中三天
+  await weekdaySelect.locator('input').first().click()
+  await page.waitForTimeout(600)
+  const weekdayOptions = page.locator('.ant-select-dropdown .ant-select-item-option')
+  for (const day of ['周一', '周三', '周五']) {
+    await weekdayOptions.filter({ hasText: day }).first().click()
+    await page.waitForTimeout(200)
+  }
+  const weekCron = await waitFor(async () => {
+    const value = await editDialog.locator('.schedule-preview').getAttribute('data-cron-preview')
+    // 「日」那一格必须是 ?：见下面那条断言
+    return value && value.includes('?') ? value : false
+  }, 8000)
+  expect('★ 「清空 + 选三天」拼出来的是"就这三天"（0 0 2 ? * 1,3,5），没有多出来的日子',
+    weekCron === '0 0 2 ? * 1,3,5', String(weekCron))
+  expect('★ 选「每周」时「日」那一格写的是 ? ——「日」与「周」同时写具体值会被解析成"或"，而它不报错',
+    !!weekCron && /^0 0 2 \? \* /.test(weekCron), String(weekCron))
+
+  const weekPreview = await (await page.request.post(`${URL}/api/agent-task-schedules/preview`,
+    { data: { cron: weekCron } })).json()
+  expect('★ 每周那一条的"下一次触发"落在选中的那几天上（后端算的）',
+    weekPreview.nextRuns.length === 5
+    && weekPreview.nextRuns.every(run => /2026-10-\d\d/.test(run)),
+    weekPreview.nextRuns.join(' / '))
+
+  await editDialog.locator('.ant-btn-primary').click()
+  const rescheduled = await waitFor(async () => {
+    const now = await (await page.request.get(`${URL}/api/agent-task-schedules`)).json()
+    const hit = now.rules.find(r => r.id === mine.id)
+    return hit && hit.cron === weekCron ? hit : false
+  }, 8000)
+  expect('★ 改完之后库里的正则逐字是界面上那一句',
+    !!rescheduled && rescheduled.cron === weekCron, `${rescheduled?.cron}`)
+  expect('★ 改完之后"下一次触发"的说明是按**新**正则算的（删旧线程重加，而不是沿用旧的那一份）',
+    !!rescheduled && rescheduled.cronDescription !== mine.cronDescription
+    && rescheduled.cronDescription.includes('周一'),
+    `${mine.cronDescription} → ${rescheduled ? rescheduled.cronDescription : '（没改成功）'}`)
+  // ⚠️ 这里**不断** `nextRuns[0]` 与改之前不同：`0 0 2 * * *`（每天）与 `0 0 2 ? * 1,3,5`（每周一三五）
+  // 在周一这一天算出来的下一次是**同一个时刻**（02:00 已过则都是明天，未过则都是今天）。
+  // 拿它当"重排过了"的证据是一条依赖"今天星期几"的断言 —— 实测在周一跑是绿的，
+  // 换一天就可能红，而红的原因与功能无关。真正的证据是上面那条 cron 与下面那条 audit。
+
+  const audits = await (await page.request.get(`${URL}/api/agent-task-schedules/__audits`)).json()
+  const rescheduleAudit = audits.audits.filter(a => a.action === 'reschedule' && a.id === mine.id).pop()
+  expect('★ 假后端记下了那一次"删旧线程重加"（from → to），界面上的"已改"确实走的这条路',
+    !!rescheduleAudit && rescheduleAudit.from === '0 0 2 * * *' && rescheduleAudit.to === weekCron,
+    rescheduleAudit ? `${rescheduleAudit.from} → ${rescheduleAudit.to}` : '没有记录')
+  // ---- ⑥ ★ 手写那一档：后端会把 5 段式挡下来（Unix crontab 的直觉写法） ----
+  await page.locator(`.schedule-card[data-schedule-id="${mine.id}"] button`, { hasText: '改' }).click()
+  const customDialog = page.locator('.ant-modal:visible', { hasText: `定时规则 #${mine.id}` })
+  await customDialog.locator('.ant-radio-button-wrapper', { hasText: '手写表达式' }).click()
+  const cronInput = customDialog.locator('.schedule-builder input.ant-input').first()
+  await cronInput.fill('0 9 * * 1')
+  await waitFor(async () =>
+    (await customDialog.locator('.ant-alert-error').count()) > 0, 8000)
+  const cronError = await customDialog.locator('.ant-alert-error').innerText()
+  expect('★ 5 段式被挡下来，而且那句话说的是"必须是 6 段"（Unix crontab 的写法这里不接受）',
+    /6 fields|6 段/.test(cronError), cronError.replace(/\n/g, ' ').slice(0, 110))
+  expect('★ 正则不合法时「保存」是点不动的（后端照样会再校验一遍，但界面不该让人白点一次）',
+    await customDialog.locator('.ant-btn-primary').isDisabled())
+  await customDialog.locator('.ant-btn', { hasText: /^取\s*消$/ }).click()
+  await waitFor(async () => (await page.locator('.ant-modal:visible').count()) === 0, 8000)
+
+  // ---- ⑦ ★ 派过任务的规则不能删（那些任务还留着，而这条规则是它们唯一的由来） ----
+  const withRuns = scheduleApi.rules.find(r => r.runs > 0)
+  await page.locator(`.schedule-card[data-schedule-id="${withRuns.id}"] button`, { hasText: '删' }).click()
+  const deleteRefused = await waitFor(async () =>
+    /已经派过 \d+ 条任务，不能删/.test(await page.locator('.schedule-panel').innerText()), 8000)
+  const refusedText = await page.locator('.schedule-panel').innerText()
+  expect('★ 已经派过任务的规则删不掉，而且那句话把"要停就停用"说了出来',
+    deleteRefused && /要停就\s*\*?\*?停用/.test(refusedText),
+    refusedText.split('\n').find(line => /已经派过/.test(line))?.slice(0, 110) ?? '')
+  const afterRefuse = await (await page.request.get(`${URL}/api/agent-task-schedules`)).json()
+  expect('删不掉之后那一行还在（不是"界面上报错、库里其实删了"）',
+    afterRefuse.rules.some(r => r.id === withRuns.id))
+
+  // ---- ⑧ 启停：停用会把线程从池子里摘掉 ----
+  //
+  // ⚠️ antd 给两个汉字的按钮插了一个空格（「停用」→「停 用」、「启用」→「启 用」），
+  // 精确文本匹配找不到 —— 与本文件里「生 效」「关 闭」「清 空」那几处同一条经验
+  const enabledRule = afterRefuse.rules.find(r => r.enabled && r.id !== mine.id)
+  await page.locator(`.schedule-card[data-schedule-id="${enabledRule.id}"] button`)
+    .filter({ hasText: /^停\s*用$/ }).click()
+  const disabledRule = await waitFor(async () => {
+    const now = await (await page.request.get(`${URL}/api/agent-task-schedules`)).json()
+    const hit = now.rules.find(r => r.id === enabledRule.id)
+    return hit && !hit.enabled && hit.nextRuns.length === 0 ? hit : false
+  }, 8000)
+  expect('★ 停用之后它不在池子里了：nextRuns 为空（不是"算不出来"，是"它不会跑"）',
+    !!disabledRule && disabledRule.scheduled === false)
+  const disabledCard = page.locator(`.schedule-card[data-schedule-id="${enabledRule.id}"]`)
+  expect('卡片跟着变成停用态（左侧色标 + 标签 + 那句"不会自己跑"）',
+    (await disabledCard.getAttribute('data-enabled')) === '0'
+    && /停用中，不会自己跑/.test(await disabledCard.innerText()))
+
+  // ---- ⑨ 删掉自己刚建的那一条：它一次都没派过任务，所以删得掉 ----
+  await page.locator(`.schedule-card[data-schedule-id="${mine.id}"] button`, { hasText: '删' }).click()
+  const removed = await waitFor(async () => {
+    const now = await (await page.request.get(`${URL}/api/agent-task-schedules`)).json()
+    return now.rules.some(r => r.id === mine.id) ? false : now
+  }, 8000)
+  expect('★ 一条都没派过的规则删得掉（它是配错的草稿，没有历史要留）', !!removed)
+  expect('删掉之后列表上没有它了',
+    await page.locator(`.schedule-card[data-schedule-id="${mine.id}"]`).count() === 0)
+
+  // ---- ⑩ ★ 启用但算不出下一次 = 它没挂上线程（真后端里只有手工改库能造出来） ----
+  expect('（准备）往假后端塞一条"启用了但正则算不出下一次"的规则',
+    (await page.request.post(`${URL}/api/agent-task-schedules/__break`)).ok())
+  await page.locator('.schedule-panel button').filter({ hasText: /^刷\s*新$/ }).click()
+  // ⚠️ 等的是**那一张卡本身**（"多了一张卡"不够：删除那一段刚让总数变了，
+  // 用总数当判据会读到刷新前的旧 DOM，而失败信息是"等不到那个元素"）
+  const brokenCard = page.locator('.schedule-card[data-scheduled="0"][data-enabled="1"]').first()
+  await brokenCard.waitFor({ state: 'visible', timeout: 8000 })
+  const brokenText = await brokenCard.innerText()
+  expect('★ 启用但没挂上线程的那一条被**显式说出来**了（它的现象就是"它永远不触发"，不写出来没人查得到）',
+    /不在调度线程池里/.test(brokenText) && /不会自动触发/.test(brokenText),
+    brokenText.replace(/\n/g, ' ').slice(0, 110))
+
+  await page.screenshot({ path: `${SHOT_DIR}/schedule-panel.png` })
+  await page.request.post(`${URL}/api/agent-task-schedules/__reset`).catch(() => null)
+
+  // 收尾：退出登录（后面的模式往返那一节不该带着登录态）
+  const exitButton = page.locator('.mock-login-exit')
+  if (await exitButton.count() > 0) {
+    await exitButton.click()
+    await waitFor(async () => (await page.locator('.mock-login-entry').count()) === 1, 8000)
+  }
+}
 else {
+  // 真后端：只断言这一页读得出来。
+  // ⚠️ 一条写都不跑 —— `POST /api/agent-task-schedules` 会真的建规则并把它**装进调度线程池**，
+  // 而那条规则到点会真的派任务（花钱）。所以真后端这条路上连"配一条"都不点
+  await navMode('定时任务')
+  await waitFor(async () => (await page.locator('.schedule-panel').count()) > 0, 8000)
+  const panelText = await page.locator('.schedule-panel').innerText()
+  expect('真后端的定时任务页可读（空库时给的是「还没有定时规则」而不是报错）',
+    /定时任务（\d+ 条规则）/.test(panelText) && /调度线程池：/.test(panelText),
+    panelText.split('\n').slice(0, 3).join(' ').slice(0, 100))
+}
+
+if (!EXPECT_REFLECTION) {
   // 真后端：只断言这一页渲染得出来 —— 库里没有技能时它是空状态，而不是报错
   // （这一族端点的写路径会真的往 `db_ai_agent` 里写记录，所以一条都不跑，理由同 [8.6]）
+  //
+  // ⚠️ 这一支写成独立的 `if (!EXPECT_REFLECTION)` 而不是 `else`：`[8.10]`（定时任务）那一节
+  // 代码上落在 skill 这一节与模式往返之间，插进去就把它那个 `if … else` 劈成了两半。
+  // 判据与上面那个 `else` 完全相同，只是写法上不依赖"紧跟在前一个 if 之后"。
   await navMode('skill管理')
   await waitFor(async () => (await page.locator('.skill-panel').count()) > 0, 8000)
   const panelText = await page.locator('.skill-panel').innerText()

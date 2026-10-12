@@ -206,6 +206,29 @@ public class AgentTaskTransitions {
 		log.info("任务 #{} 交给 Agent 应用「{}」（由平台在接手这条任务时写入）", task.id(), agentId);
 	}
 
+	/**
+	 * 盖上"这条任务由哪条定时规则派出来"（{@code agent_task.schedule_id}）。
+	 *
+	 * <p>与 {@link #setAgentId} 同一条做法：单独一步、单独一条 SQL。
+	 * 值的来源只有一处 —— {@code AgentTaskScheduleRunner} 在派活时传自己那条规则的 id，
+	 * 所以"人在界面上发布的任务"这一列<b>永远是 NULL</b>（发布请求体里根本没有它）。
+	 *
+	 * <p>⚠️ 它收的是<b>任务 id</b>，不是一条任务记录 —— 这一条与同类里其它方法不同，是刻意的：
+	 * 唯一的调用点在"任务刚插入、主键刚拿到"那一刻，而那时手上那条记录的 {@code id} 还是 {@code null}
+	 * （id 由库生成）。收记录的话调用方就得自己拼一条带 id 的假记录，而那一步漏掉的表现是
+	 * {@code where id = null}：**影响 0 行**、报"任务不存在"、整个事务回滚 ——
+	 * 而任务其实已经插进去了（实测踩过，见 {@code DefaultAgentTaskService#create}）。
+	 * 收 id 就没有这个可漏的步骤。
+	 */
+	@Transactional
+	public void setSchedule(Long taskId, Long scheduleId) {
+		if (tasks.updateScheduleId(taskId, scheduleId) != 1) {
+			throw new TaskInvalidException("任务不存在：#" + taskId);
+		}
+		log.info("任务 #{} 的由来已登记：定时任务规则 #{}（这一列回答「它为什么又出现了」）",
+				taskId, scheduleId);
+	}
+
 	// ------------------------------------------------------------------
 	//  共用判据
 	// ------------------------------------------------------------------

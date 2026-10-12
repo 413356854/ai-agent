@@ -31,6 +31,7 @@ import { handleCostRoutes } from './cost-routes.mjs'
 import { handlePermissionRoutes } from './permission-routes.mjs'
 import { handlePromptRoutes } from './prompt-routes.mjs'
 import { handleRagRoutes } from './rag-routes.mjs'
+import { handleScheduleRoutes, mockScheduleAudits } from './schedule-routes.mjs'
 import { handleSkillRoutes } from './skill-routes.mjs'
 import { handleTaskRoutes } from './task-routes.mjs'
 
@@ -378,6 +379,32 @@ const server = createServer((req, res) => {
   }
 
   // ---------------------------------------------------------------
+  //  定时任务端点（应用管理 · 定时任务）
+  //
+  //  ⚠️ 与上面三组同一类：**有写端点，所以状态是进程内可变的**，
+  //  并且必须配一条 `POST /api/agent-task-schedules/__reset`（自检跑第二遍时会用到）。
+  //  这一组的假数据要照搬真后端的三条判据：正则必须是 6 段、「日」与「周」不能同时写具体值、
+  //  **改规则 = 删旧线程按新正则重加**（所以改完之后 nextRuns 一定是按新表达式算的）。
+  //  最后那条最容易被假后端做错，而做错时自检会去断一条在真后端上不成立的结论 ——
+  //  三条纪律写在 schedule-routes.mjs 开头。
+  //
+  //  ⚠️ **它必须排在 `/api/agent-tasks` 之前**：`/api/agent-task-schedules`.startsWith(
+  //  '/api/agent-tasks') 是**真的**（前缀到 "task" 都一样），排在后面时这一族请求会先被
+  //  agent 任务那一组接走、返回 404，而现象是"定时任务那一页读不出数据"。
+  // ---------------------------------------------------------------
+  if (url.pathname.startsWith('/api/agent-task-schedules')) {
+    // 只读诊断：那几次写操作的记录（自检用它断"改正则真的重排了线程"）。
+    // 真后端没有这个端点 —— 它是假后端的镜子，不参与界面渲染
+    if (req.method === 'GET' && url.pathname === '/api/agent-task-schedules/__audits') {
+      json(res, mockScheduleAudits())
+      return
+    }
+    if (handleScheduleRoutes(req, res, url, json)) {
+      return
+    }
+  }
+
+  // ---------------------------------------------------------------
   //  agent 任务端点（应用管理 · agent任务）
   //
   //  ⚠️ 与 permissions 同一类：**有写端点，所以状态是进程内可变的**，
@@ -401,6 +428,27 @@ const server = createServer((req, res) => {
   //  三条纪律写在 skill-routes.mjs 开头。
   // ---------------------------------------------------------------
   if (url.pathname.startsWith('/api/skills') && handleSkillRoutes(req, res, url, json)) {
+    return
+  }
+
+  // ---------------------------------------------------------------
+  //  定时任务端点（应用管理 · 定时任务）
+  //
+  //  ⚠️ 与上面三组同一类：**有写端点，所以状态是进程内可变的**，
+  //  并且必须配一条 `POST /api/agent-task-schedules/__reset`（自检跑第二遍时会用到）。
+  //  这一组的假数据要照搬真后端的三条判据：正则必须是 6 段、「日」与「周」不能同时写具体值、
+  //  **改规则 = 删旧线程按新正则重加**（所以改完之后 nextRuns 一定是按新表达式算的）。
+  //  最后那条最容易被假后端做错，而做错时自检会去断一条在真后端上不成立的结论 ——
+  //  三条纪律写在 schedule-routes.mjs 开头。
+  // ---------------------------------------------------------------
+  if (url.pathname.startsWith('/api/agent-task-schedules') && handleScheduleRoutes(req, res, url, json)) {
+    return
+  }
+
+  // 只读诊断：定时任务那几次写操作的记录（自检用它断"改正则真的重排了线程"）。
+  // 真后端没有这个端点 —— 它是假后端的镜子，不参与界面渲染
+  if (req.method === 'GET' && url.pathname === '/api/agent-task-schedules/__audits') {
+    json(res, mockScheduleAudits())
     return
   }
 

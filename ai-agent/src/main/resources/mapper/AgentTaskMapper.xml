@@ -35,6 +35,9 @@
 			<arg column="result" javaType="java.lang.String"/>
 			<arg column="cancel_reason" javaType="java.lang.String"/>
 			<arg column="incomplete_reason" javaType="java.lang.String"/>
+			<!-- 由来（有没有定时规则）。可为 null = 人发布的；构造器映射对基本类型会匹配失败，
+			     所以这一列走包装类型（见 MapperRows 的类注释） -->
+			<arg column="schedule_id" javaType="java.lang.Long"/>
 			<arg column="created_at" javaType="java.time.Instant"
 				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
 			<arg column="updated_at" javaType="java.time.Instant"
@@ -48,7 +51,7 @@
 		t.assignee_id, assignee_user.name AS assignee_name,
 		t.current_executor_id, executor_user.name AS current_executor_name,
 		t.description, t.status, t.current_step, t.agent_id, t.result, t.cancel_reason, t.incomplete_reason,
-		t.created_at, t.updated_at
+		t.schedule_id, t.created_at, t.updated_at
 	</sql>
 
 	<!-- 三个 LEFT JOIN 是"姓名从哪来"的唯一出处（理由见文件头） -->
@@ -60,8 +63,9 @@
 	</sql>
 
 	<!--
-	  发布时不写 agent_id：那一列由平台在第一次接手这条任务时用 updateAgentId 写入。
-	  于是"这条任务交给哪个 Agent 应用"只有一个来源，发布人给不了它。
+	  发布时不写 agent_id（那一列由平台在第一次接手这条任务时用 updateAgentId 写入），
+	  也不写 schedule_id（那一列只有"定时规则派活"那一条路会写，见下面那条 updateScheduleId）——
+	  于是"这条任务交给哪个 Agent 应用"与"它是不是定时派出来的"各自只有一个来源，发布人给不了它们。
 	-->
 	<insert id="insert">
 		INSERT INTO agent_task (publisher_id, assignee_id, description, status, current_executor_id, current_step)
@@ -149,6 +153,38 @@
 	<update id="updateAgentId">
 		UPDATE agent_task SET agent_id = #{agentId} WHERE id = #{id}
 	</update>
+
+	<!--
+	  盖上"这条任务由哪条定时规则派出来"（见 AgentTaskMapper#updateScheduleId）。
+	  单独一条 SQL，不并进 insert：insert 的每一个调用点都是"人在界面上发布"，
+	  那一列在那些路径上恒为 NULL —— 并进去就等于每个调用点都要传一个 null。
+	-->
+	<update id="updateScheduleId">
+		UPDATE agent_task SET schedule_id = #{scheduleId} WHERE id = #{id}
+	</update>
+
+	<!-- resultMap 里的计数列用包装类型：构造器映射对基本类型会在实例化时匹配失败（见 MapperRows 的类注释） -->
+	<resultMap id="scheduleRunRow" type="ai.agent.mapper.MapperRows$ScheduleRunRow">
+		<constructor>
+			<idArg column="schedule_id" javaType="java.lang.Long"/>
+			<arg column="runs" javaType="java.lang.Long"/>
+			<arg column="last_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+		</constructor>
+	</resultMap>
+
+	<!--
+	  若干条规则各自派过几条任务、最后一次是什么时候。
+	  一次查一批（GROUP BY schedule_id），不是每条规则查一次 —— 那是典型的 N+1。
+	  ⚠️ schedule_id 为 NULL 的行（人发布的任务）不在此列：`IN (…)` 天然把它们排除在外。
+	-->
+	<select id="scheduleRunCounts" resultMap="scheduleRunRow">
+		SELECT schedule_id, COUNT(*) AS runs, MAX(created_at) AS last_at
+		  FROM agent_task
+		 WHERE schedule_id IN
+		<foreach item="id" collection="scheduleIds" open="(" separator="," close=")">#{id}</foreach>
+		 GROUP BY schedule_id
+	</select>
 
 	<update id="updateCancel">
 		UPDATE agent_task SET cancel_reason = #{cancelReason} WHERE id = #{id}

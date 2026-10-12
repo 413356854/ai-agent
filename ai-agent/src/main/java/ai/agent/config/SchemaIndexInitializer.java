@@ -80,6 +80,10 @@ public class SchemaIndexInitializer implements InitializingBean {
 			new Definition("idx_agent_task_status", "agent_task (status, updated_at)"),
 			// agent_task_confirm：任务详情按任务取它的确认项，按步骤排
 			new Definition("idx_agent_task_confirm_task", "agent_task_confirm (task_id, step_index)"),
+			// agent_task_schedule：启动时按 enabled 取"要装进调度线程池的那些"；
+			// 以及"这条规则派过几条任务"那条 GROUP BY（schedule_id 分组 + 取最大时间）
+			new Definition("idx_agent_task_schedule_enabled", "agent_task_schedule (enabled, id)"),
+			new Definition("idx_agent_task_schedule_origin", "agent_task (schedule_id, created_at)"),
 			// agent_skill：列表按拥有者取（登录时）并按最近修改排在前
 			new Definition("idx_agent_skill_owner", "agent_skill (owner_id, updated_at)"));
 

@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  agent_task_schedule 表的 SQL。
+
+  ⚠️ 插入与取键是两条语句、两次调用（LAST_INSERT_ID() 是连接级的），
+  理由与三条实测的弯路见 AgentTaskScheduleMapper 的类注释。
+
+  ⚠️ 两个"人"的列存的是 agent_user.id，姓名**由这里关联查询出来**（publisher_name /
+  assignee_name）—— 表里没有姓名列，所以读侧必须带这两个 LEFT JOIN，
+  少一个那一格就会静默变成空串（界面显示「未指定任务人」，看起来像真的没指派）。
+  ⚠️ LEFT 而不是 INNER：账号那一行万一不在（手工清过库），规则照样读得出来，
+  代价只是姓名那一格为空；INNER JOIN 会让那条规则从列表里消失，
+  而"它静悄悄地不再触发了"是这一页最难发现的一种坏法（页面上少一行，没人会去数行数）。
+
+  ⚠️ 姓名的取法与 AgentSkillMapper.xml 逐字相同：**显示名优先，没填退回登录名**。
+  ⚠️ enabled 读成 Integer（不是 boolean）、解析放在 MapperRows.AgentTaskScheduleRow#toDomain() 里：
+  构造器映射对基本类型会在实例化时匹配失败（见 MapperRows 的类注释）。
+-->
+<mapper namespace="ai.agent.mapper.AgentTaskScheduleMapper">
+
+	<resultMap id="agentTaskScheduleRow" type="ai.agent.mapper.MapperRows$AgentTaskScheduleRow">
+		<constructor>
+			<idArg column="id" javaType="java.lang.Long"/>
+			<arg column="cron" javaType="java.lang.String"/>
+			<arg column="publisher_id" javaType="java.lang.Long"/>
+			<arg column="publisher_name" javaType="java.lang.String"/>
+			<arg column="assignee_id" javaType="java.lang.Long"/>
+			<arg column="assignee_name" javaType="java.lang.String"/>
+			<arg column="description" javaType="java.lang.String"/>
+			<arg column="enabled" javaType="java.lang.Integer"/>
+			<arg column="created_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="updated_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+		</constructor>
+	</resultMap>
+
+	<!-- 别名与 resultMap 里的 column 逐字对应 -->
+	<sql id="scheduleColumns">
+		s.id, s.cron, s.publisher_id,
+		COALESCE(NULLIF(TRIM(publisher_user.display_name), ''), publisher_user.name) AS publisher_name,
+		s.assignee_id,
+		COALESCE(NULLIF(TRIM(assignee_user.display_name), ''), assignee_user.name) AS assignee_name,
+		s.description, s.enabled, s.created_at, s.updated_at
+	</sql>
+
+	<!-- 两个 LEFT JOIN 是"姓名从哪来"的唯一出处（理由见文件头） -->
+	<sql id="scheduleFrom">
+		FROM agent_task_schedule s
+		LEFT JOIN agent_user publisher_user ON publisher_user.id = s.publisher_id
+		LEFT JOIN agent_user assignee_user ON assignee_user.id = s.assignee_id
+	</sql>
+
+	<insert id="insert">
+		INSERT INTO agent_task_schedule (cron, publisher_id, assignee_id, description, enabled)
+		VALUES (#{cron}, #{publisherId}, #{assigneeId}, #{description}, #{enabled})
+	</insert>
+
+	<select id="lastInsertId" resultType="java.lang.Long">
+		SELECT LAST_INSERT_ID()
+	</select>
+
+	<select id="findById" resultMap="agentTaskScheduleRow">
+		SELECT <include refid="scheduleColumns"/>
+		<include refid="scheduleFrom"/>
+		WHERE s.id = #{id}
+	</select>
+
+	<!-- 列表一次取全量。排序的兜底见 AgentTaskScheduleMapper#list 的注释（updated_at 是秒精度） -->
+	<select id="list" resultMap="agentTaskScheduleRow">
+		SELECT <include refid="scheduleColumns"/>
+		<include refid="scheduleFrom"/>
+		ORDER BY s.updated_at DESC, s.id DESC
+	</select>
+
+	<!--
+	  要装进调度线程池的那些（enabled 的判据做在 SQL 里，理由见 AgentTaskScheduleMapper#listEnabled）。
+	  排序按 id 升序：装线程的顺序要稳定，否则"哪一条占着线程"每次启动都不一样。
+	-->
+	<select id="listEnabled" resultMap="agentTaskScheduleRow">
+		SELECT <include refid="scheduleColumns"/>
+		<include refid="scheduleFrom"/>
+		WHERE s.enabled = 1
+		ORDER BY s.id
+	</select>
+
+	<update id="update">
+		UPDATE agent_task_schedule
+		   SET cron = #{cron}, assignee_id = #{assigneeId}, description = #{description}, enabled = #{enabled}
+		 WHERE id = #{id}
+	</update>
+
+	<update id="updateEnabled">
+		UPDATE agent_task_schedule SET enabled = #{enabled} WHERE id = #{id}
+	</update>
+
+	<!-- 登录名（写请求要的那一份，与读侧那两个姓名的差别见 AgentTaskScheduleMapper#findLoginName） -->
+	<select id="findLoginName" resultType="java.lang.String">
+		SELECT name FROM agent_user WHERE id = #{id}
+	</select>
+
+	<delete id="delete">
+		DELETE FROM agent_task_schedule WHERE id = #{id}
+	</delete>
+
+</mapper>

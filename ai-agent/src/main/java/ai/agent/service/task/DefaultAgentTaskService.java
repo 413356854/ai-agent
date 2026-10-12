@@ -185,13 +185,39 @@ public class DefaultAgentTaskService implements AgentTaskService {
 	@Override
 	@Transactional
 	public Detail create(String publisher, String assignee, String description) {
+		return create(AgentTaskService.Draft.published(publisher, assignee, description));
+	}
+
+	/**
+	 * 建一条任务的<b>唯一写入口</b>（人在界面上发布、定时规则到点派活都走这里）。
+	 *
+	 * <p>两条路在这一层只差一件事：{@code draft.scheduled()} 时多写一次
+	 * {@code agent_task.schedule_id}（{@code AgentTaskTransitions#setSchedule}）——
+	 * 状态、步骤、当前执行人、后续整条链完全一致。这正是"定时派出来的活与人发的活
+	 * 在系统里没有行为差异"这句话的落点：差异只在<b>由来</b>那一列。
+	 *
+	 * <p>写由来是<b>单独一步</b>（不是 insert 的一个参数）：那条 SQL 的每一个调用点
+	 * 都是"人在界面上发布"，并进去就等于每个调用点都要显式传一个 null。
+	 */
+	@Override
+	@Transactional
+	public Detail create(AgentTaskService.Draft draft) {
 		// 两个名字都换成账号表里那一行自己的写法：调用方写进来的 "Admin" 落库与回执都是 "admin"
 		// （大小写与前后空格都以账号表为准），而落库的是这两个账号的 id（姓名不落库）
-		AgentTask task = draft(realUser(publisher, "发布人"), realUser(assignee, "任务人"), description);
+		AgentTask task = draft(realUser(draft.publisher(), "发布人"), realUser(draft.assignee(), "任务人"),
+				draft.description());
 		tasks.insert(task.publisherId(), task.assigneeId(), task.description(), task.status().storedValue(),
 				task.currentExecutorId(), task.currentStep());
 		Long id = AgentTaskTransitions.requiredKey(tasks.lastInsertId(), "任务");
-		log.info("新建 agent 任务 #{}：{}", id, task.describe());
+		log.info("新建 agent 任务 #{}：{}{}", id, task.describe(),
+				draft.scheduled() ? "（由定时任务规则 #" + draft.scheduleId() + " 派出）" : "（人在界面上发布）");
+		if (draft.scheduled()) {
+			// ★ 传的是**刚拿到的主键**，不是 `task.id()`：`task` 是一份"入库之前"的记录，
+			// 它的 id 是 null（id 由库生成）—— 拿它去 update 就是 `where id = null`，
+			// **影响 0 行**，于是报"任务不存在"、整个事务回滚，而任务其实已经插进去了。
+			// 实测踩过（见 AgentTaskTransitions#setSchedule 的注释，那里为此改了签名）
+			transitions.setSchedule(id, draft.scheduleId());
+		}
 		// 新发布也要调度：判断需求有没有歧义这一步在 agent 手上，不等下一个定时周期
 		dispatchAfterCommit(AgentTaskStatus.NEW);
 		return detail(id);

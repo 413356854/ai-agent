@@ -2603,3 +2603,167 @@ body {
   font-size: 12px;
   line-height: 1.6;
 }
+
+/* ------------------------------------------------------------------ */
+/*  应用管理 · 定时任务（SchedulePanel）                                 */
+/*                                                                    */
+/*  颜色一律从 :root 的变量取（深浅两套取值在那里换）—— 手写一个色值     */
+/*  的后果是"数据全对、只有那一块在深色下白得刺眼，而没有任何东西会报错"  */
+/* ------------------------------------------------------------------ */
+
+.schedule-pool {
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* 规则列表：一条一行。用纵向排列而不是表格 —— 每条要显示的字段里有
+   一段可能很长的描述（默认夹住、可展开），表格的单元格撑不住它 */
+.schedule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.schedule-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  /* 停用与启用的左侧色标：一眼看出哪几条现在会跑。
+     它不替代文字（标签上照样写着启用 / 停用），只是让"哪几条在跑"不必逐行读 */
+  border-left: 3px solid var(--border-strong);
+  border-radius: 6px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.schedule-card:hover {
+  box-shadow: 0 2px 6px var(--shadow-soft);
+}
+
+.schedule-card.is-on {
+  border-left-color: var(--brand);
+}
+
+/* 停用的整条压暗一档：它与启用混在一起时，"这条现在不会跑"必须是**看得出来**的 */
+.schedule-card.is-off {
+  background: var(--bg-subtle);
+}
+
+.schedule-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 让动作按钮挤到右端（标题那一行是 flex，用一段空白把它推开） */
+.schedule-card-spacer {
+  flex: 1 1 auto;
+}
+
+.schedule-cron {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.schedule-cron-desc {
+  font-size: 12px;
+}
+
+.schedule-card-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.schedule-card-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.schedule-card-desc {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text);
+}
+
+.schedule-card-meta {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.schedule-next {
+  color: var(--brand-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 「算不出下一次」与「停用中」都不是错误，但它们要说清"它不会自己跑"——
+   用次要色而不是警示色：真正的错误（启用却没挂上线程）另有一条红框提示 */
+.schedule-next.is-none {
+  color: var(--text-tertiary);
+}
+
+.schedule-card-runs {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.schedule-card-alert {
+  margin-top: 2px;
+}
+
+/* 弹窗里的配置区（那个"页面配置化定时规则"的本体） */
+.schedule-builder {
+  padding: 10px 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.schedule-builder-summary {
+  font-size: 12px;
+}
+
+/* 预览区：拼出来的正则 + 后端给的中文说法 + 未来 5 次。
+   它是这个弹窗的重点，所以单独一个框、底色与配置区区分开 */
+.schedule-preview {
+  padding: 10px 12px;
+  background: var(--brand-bg);
+  border: 1px solid var(--brand-border);
+  border-radius: 6px;
+}
+
+.schedule-cron-text {
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.schedule-preview-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.schedule-preview-runs strong {
+  color: var(--text);
+}
+
+.schedule-preview-hint {
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}

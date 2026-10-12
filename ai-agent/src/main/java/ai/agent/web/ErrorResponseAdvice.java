@@ -1,5 +1,6 @@
 package ai.agent.web;
 
+import ai.agent.service.task.TaskScheduleResolveException;
 import ai.agent.service.token.TokenBudgetExceededException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -97,6 +98,45 @@ public class ErrorResponseAdvice {
 		return ResponseEntity.status(e.getStatusCode())
 				.contentType(MediaType.APPLICATION_JSON)
 				.body(body);
+	}
+
+	/**
+	 * 定时任务的描述模板没解析出来（{@link TaskScheduleResolveException}，502）。
+	 *
+	 * <p>为什么单独一条而不是靠上面那个 {@code @ExceptionHandler(ResponseStatusException)}：
+	 * 这个异常<b>不是</b> {@code ResponseStatusException} 的子类 —— 它刻意不继承 web 层的类型
+	 * （那一层在 {@code service.task} 包里不该出现）。而它上面的 {@code @ResponseStatus}
+	 * 只声明状态码、<b>不负责把话送到客户端</b>：实测（见本类的类注释）
+	 * {@code ResponseStatusExceptionResolver} 只设状态码、不经过 {@code /error}，
+	 * 所以那个注解的 {@code reason} 才是唯一能带话的字段，而它一旦给了就会盖掉异常自己的 message。
+	 * 在这里显式接住，两件事就都成立：状态码是 502，话是那句能照着处置的话。
+	 *
+	 * <p>它多带一格 {@code cause}：这句话是给<b>用户</b>看的（"这一次没派活"），
+	 * 而失败的技术原因（超时 / 401 / 输出超长）是给<b>排障的人</b>看的，两者分开更省事。
+	 */
+	@ExceptionHandler(TaskScheduleResolveException.class)
+	public ResponseEntity<Map<String, Object>> handleScheduleResolve(TaskScheduleResolveException e) {
+		log.warn("定时任务的描述模板没解析出来（这一次不派活）：{}", e.getMessage());
+
+		Map<String, Object> body = new LinkedHashMap<>();
+		body.put("status", HttpStatus.BAD_GATEWAY.value());
+		body.put("error", "描述模板未解析出来");
+		body.put("message", (e.getMessage() == null ? "定时任务的描述模板没解析出来" : e.getMessage())
+				+ "；这一次没有派活，那条规则会留到下一个周期重试");
+		body.put("cause", rootMessage(e));
+		return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+				.contentType(MediaType.APPLICATION_JSON)
+				.body(body);
+	}
+
+	/** 剥到最内层的异常消息 —— 排障要看的是根因，不是 SDK 的包装层。 */
+	private static String rootMessage(Throwable e) {
+		Throwable cause = e;
+		while (cause.getCause() != null && cause.getCause() != cause) {
+			cause = cause.getCause();
+		}
+		String message = cause.getMessage();
+		return message == null || message.isBlank() ? cause.getClass().getSimpleName() : message;
 	}
 
 }

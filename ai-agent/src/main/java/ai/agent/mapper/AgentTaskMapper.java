@@ -157,6 +157,26 @@ public interface AgentTaskMapper {
 	int updateAgentId(@Param("id") Long id, @Param("agentId") String agentId);
 
 	/**
+	 * 盖上"这条任务由哪条定时规则派出来"（{@code agent_task.schedule_id}）。
+	 *
+	 * <p>与 {@link #updateAgentId} 同一条做法：单独一条 SQL，不并进 {@link #insert} ——
+	 * insert 的每一个调用点都是"人在界面上发布"，那一列在那些路径上恒为 NULL。
+	 * 而值本身只有定时调度线程知道（见 {@code AgentTaskScheduleRunner}）。
+	 */
+	int updateScheduleId(@Param("id") Long id, @Param("scheduleId") Long scheduleId);
+
+	/**
+	 * 若干条规则各自派过几条任务、最后一次是什么时候（一次查一批，不是每条规则查一次）。
+	 *
+	 * <p>它是 {@code ScheduleRunRow} 的唯一来源 —— 界面上"这条规则派过几条"
+	 * 靠的是 {@code agent_task.schedule_id} 那一列，而不是规则里存了一个计数
+	 * （存计数就要在每次派活之后写第二个地方，而漏写一次不会有任何报错）。
+	 *
+	 * @param scheduleIds 规则 id（空集合时调用方不该调这个方法 —— `IN ()` 是语法错）
+	 */
+	List<MapperRows.ScheduleRunRow> scheduleRunCounts(@Param("scheduleIds") List<Long> scheduleIds);
+
+	/**
 	 * 未完成原因（验收那一格选「任务未完成」时补的那一句）。
 	 *
 	 * <p>它与 {@link #updateCancel} <b>不共用</b>：两者的状态不同

@@ -76,7 +76,22 @@ public enum PromptKind {
 	 * 而这一份的产物是一段给人看、也给模型当背景的资料。
 	 */
 	CHAT_COMPACTION("chat-compaction", "prompts/chat-compaction.st",
-			"对话历史压缩的系统提示词：把被挤出的旧对话压成一份保留事实的摘要");
+			"对话历史压缩的系统提示词：把被挤出的旧对话压成一份保留事实的摘要"),
+
+	/**
+	 * 定时任务<b>把描述模板解析成"当下这条任务的描述"</b>的系统提示词。
+	 *
+	 * <p>它回答的是"一句带周期的描述（'昨天''上个月''本周'）到点该变成什么"：
+	 * 哪些词要落到具体日期、哪些必须逐字保留、以及<b>输出只能是那句描述本身</b>
+	 * （不要解释、不要围栏、不要顺手把要求改掉或加码）。
+	 *
+	 * <p>读法与 {@link #AGENT_LOOP} 一样（每次解析前读一次），所以换一版对<b>下一次触发</b>生效。
+	 * 它与另外几份都不能互换：{@link #CHAT_COMPACTION} 的产物是给人看的资料、
+	 * {@link #TASK_REVIEW} 输出 JSON、{@link #AGENT_LOOP} 是带工具的技术助手 ——
+	 * 而这一份的产物是<b>要直接写进 agent 任务那一列</b>的一句任务描述。
+	 */
+	TASK_SCHEDULE("task-schedule", "prompts/task-schedule.st",
+			"定时任务的描述模板解析：把「昨天 / 上个月 / 本周」这类周期说法落到当下那一天的具体日期，只输出那句描述本身");
 
 	private final String defaultValue;
 

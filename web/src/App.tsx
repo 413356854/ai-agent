@@ -12,6 +12,7 @@ import { NavToggle } from './components/NavToggle'
 import { PermissionPanel } from './components/PermissionPanel'
 import { PromptPanel } from './components/PromptPanel'
 import { RagPanel } from './components/RagPanel'
+import { SchedulePanel } from './components/SchedulePanel'
 import { SkillPanel } from './components/SkillPanel'
 import { StructuredResultCard } from './components/StructuredResultCard'
 import { ThemeToggle } from './components/ThemeToggle'
@@ -25,6 +26,7 @@ import { mockLoginLabel, useMockLogin } from './hooks/useMockLogin'
 import { usePermissions } from './hooks/usePermissions'
 import { usePrompt } from './hooks/usePrompt'
 import { useRagDiag } from './hooks/useRagDiag'
+import { useSchedules } from './hooks/useSchedules'
 import { useSidebarCollapse } from './hooks/useSidebarCollapse'
 import { useSkills } from './hooks/useSkills'
 import { useStructuredChat } from './hooks/useStructuredChat'
@@ -73,8 +75,13 @@ import type { Mode } from './nav'
  * 第十二个（应用管理 · skill管理）回到"配东西"，但它配的是一条条**有主人的记录**：
  * 文件夹目录来自登录人角色的目录前缀（与权限那一页同源），而改与删只对拥有者开放 ——
  * 于是这一页上"我现在是谁"第一次成了一个**写操作的判据**（前面十一页里它最多只影响筛选）。
+ * 第十三个（应用管理 · 定时任务）也配东西，但配的是**"以后什么时候会有一件活"**：
+ * 一条规则四件事（定时正则 / 发布人 / 任务人 / 任务描述），到点它只生成一条 agent 任务记录
+ * —— 它自己不调模型，所以它属于应用管理区而不是对话台（判据与 agent 任务那一条相同）。
+ * 界面上它与前十二页最不同的一处是"有个东西在替人自动做事"：所以调度线程池那一栏必须画出来，
+ * 而"下一次什么时候跑"必须由后端算（前端算一份就会出现"预览说 9 点、实际 10 点跑"）。
  *
- * 十二个 hook 都挂在 App 上（而不是按视图条件挂载）：切换视图时对话记录和实验数据不会被清空，
+ * 十三个 hook 都挂在 App 上（而不是按视图条件挂载）：切换视图时对话记录和实验数据不会被清空，
  * 来回切两次不会丢掉刚才的结果 —— 这也是把状态放在这一层的理由。
  * **Agent 那一页尤其需要这样**：一次任务会真的调模型花钱、要等十几秒，
  * 切走再切回来就重跑一遍（再花一次钱）的代价太大。
@@ -135,6 +142,11 @@ export default function App(
   // **按当前登录的人筛**（列表只给"他拥有的"），文件夹选项集也按他算（角色的目录前缀）。
   // 所以它同样要拿到那个 id 才挂得起来：没登录时不筛（全部记录），而写操作一律不可用
   const skills = useSkills(mode === 'skill', mockLogin.user?.id ?? null)
+  // 第十三个（定时任务）：进面板拉一次（规则 + 调度线程池）。它**不按人筛** ——
+  // 一条别人配的规则照样会在半夜派活，所以列表永远是全量；
+  // userId 只是回显"页头现在是谁"（配新规则的发布人就是他，没登录时按钮不可用）。
+  // 那句"下一次触发"要等列表回来才有，所以这一页进来时必须拉一次
+  const schedules = useSchedules(mode === 'schedules', mockLogin.user?.id ?? null)
 
   const listRef = useRef<HTMLElement>(null)
 
@@ -143,7 +155,7 @@ export default function App(
   // 它们同时也都不显示页头那块 conversationId + 「新会话」—— 那两样属于对话状态。
   const isDiagnostic = mode === 'threads' || mode === 'rag' || mode === 'agent' || mode === 'cost'
     || mode === 'prompt' || mode === 'alerts' || mode === 'users' || mode === 'permissions'
-    || mode === 'tasks' || mode === 'skill'
+    || mode === 'tasks' || mode === 'skill' || mode === 'schedules'
   const activeCount = mode === 'stream' ? stream.messages.length : structured.turns.length
   const busy = mode === 'stream' ? stream.streaming : structured.loading
   const conversationId = mode === 'structured' ? structured.conversationId : stream.conversationId
@@ -230,6 +242,12 @@ export default function App(
           <SkillPanel
             skills={skills}
             userId={mockLogin.user?.id ?? null}
+            loginName={mockLogin.user ? mockLoginLabel(mockLogin.user) : null}
+          />
+        ) : mode === 'schedules' ? (
+          // 与 agent任务 那一页同一条：名字从 mockLogin 取（配新规则的发布人就是他）
+          <SchedulePanel
+            schedules={schedules}
             loginName={mockLogin.user ? mockLoginLabel(mockLogin.user) : null}
           />
         ) : mode === 'threads' ? (
