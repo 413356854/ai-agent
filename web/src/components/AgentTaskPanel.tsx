@@ -18,8 +18,9 @@ const { Text, Paragraph } = Typography
  *
  * <h2>★ 五条不能省的说法</h2>
  * <ol>
- *   <li><b>卡片停在哪一列 = 现在等谁</b>：看板不解释这一点，"待处理"就只是一个堆着东西的筐；
- *       所以列头写出这一列收的是哪几种状态，卡片上写出当前执行人；</li>
+ *   <li><b>卡片停在哪一列 = 这件事办到哪一段</b>：看板不解释这一点，列名就只是几个堆着东西的筐；
+ *       所以列头写出这一列收的是哪几种状态，卡片上写出状态标签与当前执行人 ——
+ *       「执行中」那一列里唯一还在等人答复的是「待确认计划」，它靠自己的状态标签认出来；</li>
  *   <li><b>"新发布"不等于"待确认需求"</b>：前者还没有确认项可答（它等 agent 判需求有没有歧义），
  *       后者有一条在等他答 —— 两个状态挨着，说反了会让用户去找一个不存在的按钮；</li>
  *   <li><b>取消原因要显示出来</b>：取消是这一页唯一"没有下文"的结局，
@@ -102,7 +103,7 @@ export function AgentTaskPanel({ tasks, loginName }: {
         className="diag-card diag-card-wide"
         title={<Flex gap={8} align="center" wrap>
           <span>任务看板（{data?.total ?? 0} 条）</span>
-          <Tag color="geekblue">按状态分列 · 卡片停在哪一列就等于现在等谁</Tag>
+          <Tag color="geekblue">按状态分列 · 卡片停在哪一列 = 这件事办到了哪一段</Tag>
         </Flex>}
         extra={<Space>
           <Button onClick={tasks.reload} disabled={tasks.busy}>刷新</Button>
@@ -128,7 +129,7 @@ export function AgentTaskPanel({ tasks, loginName }: {
                     <span className="task-column-name">{column.label}</span>
                     <span className="task-column-count" data-count={column.count}>{column.count}</span>
                   </header>
-                  {/* 列的归属写在列头上：「待处理」收三种、「已完成」收两种（含已取消），
+                  {/* 列的归属写在列头上：「执行中」收四种、「已完成」收三种（含已取消与任务未完成），
                       不写的话用户不知道它们与另外三列的区别 */}
                   <div className="task-column-hint">{column.statusLabels.join(' / ')}</div>
                   <div className="task-column-cards">
@@ -258,12 +259,14 @@ function statusColor(status: string): string {
   // 只靠一个有色的标签区分太弱 —— 所以给它一个醒目的颜色（卡片上还有一条左侧警示边）
   if (status === 'NOT_COMPLETED') return 'volcano'
   if (status === 'EXECUTING') return 'processing'
-  // 「权限不足」与两个「待确认」同列（都在等人），但它等的不是答复而是一次处置 ——
+  // 「权限不足」与「待确认需求」同列，但它等的不是答复而是一次处置 ——
   // 同色会让它在那一列里混成"又一条待确认"，而它要的动作完全不同
   if (status === 'INSUFFICIENT_PERMISSION') return 'red'
+  // 两个"待确认"都是橙色（`PENDING*`）：「待确认计划」在「执行中」那一列里，
+  // 而它是那一列里唯一还在等人答复的一格 —— 橙色标签就是它在那一列里的标记
   if (status.startsWith('PENDING')) return 'orange'
-  // 「已确认需求 / 已确认计划」与「执行中」同列：球都在 agent 手上。
-  // 用同一个颜色是刻意的 —— 这三格对用户是同一件事（不必点，等它跑）
+  // 「已确认需求 / 已确认计划」与「执行中」同列：那三格球都在 agent 手上，用户点不动。
+  // 用同一个颜色是刻意的 —— 它们对用户是同一件事（等它跑）
   if (status.startsWith('CONFIRMED')) return 'processing'
   return 'blue'
 }

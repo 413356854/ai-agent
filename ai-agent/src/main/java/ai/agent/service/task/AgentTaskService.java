@@ -193,8 +193,8 @@ public interface AgentTaskService {
 	/**
 	 * 看板上的列 —— <b>五列</b>。
 	 *
-	 * <p><b>列的归并是一条业务定义，不是排版</b>：哪几个状态算"待处理"决定了
-	 * 界面上一眼看到的是"有几件事在等人"还是"分成三列各几条"。所以它写在服务层，
+	 * <p><b>列的归并是一条业务定义，不是排版</b>：哪几个状态算"执行中"决定了
+	 * 界面上一眼看到的是"有几件事已经在办"还是"分成几列各几条"。所以它写在服务层，
 	 * 与状态链一起被复用（界面只按 key 画，不自己算归属）。
 	 *
 	 * <p>{@link #COMPLETED} 一列收**三个**状态（已完成 / 任务未完成 / 已取消）：看板只画"这件事结束了没有"，
@@ -202,25 +202,27 @@ public interface AgentTaskService {
 	 * 且那一列大多数时候是空的。"没做成"与"没做"（取消）的区别靠卡片上的状态标签
 	 * 与那两行说明（未完成原因 / 取消原因）表达（列头的 {@code statusLabels} 也会把"这一列收哪几种"写出来）。
 	 *
-	 * <p>{@link #EXECUTING} 一列收**三个**状态（已确认需求 / 已确认计划 / 执行中）。
-	 * 它们对看板是同一件事：球在 agent 手上，人不该去点它 ——
-	 * 分成三列的话，一眼看去像是"有三件事在等人"，而实际上没有一件在等人。
-	 * 三个状态的进度差别靠卡片上的状态标签表达。
+	 * <p>{@link #EXECUTING} 一列收**四个**状态（已确认需求 / 待确认计划 / 已确认计划 / 执行中）：
+	 * 它们都已经过了"需求问清了没有"那一关，链在往前走（拆任务点 → 答计划 → 判授权 → 跑），
+	 * 对看板是同一件事 —— <b>这条活已经在办</b>。其中「待确认计划」还在等任务人答计划确认项，
+	 * 是这一列里唯一有可点动作的一格：它与另外三格的区别靠卡片上的状态标签与动作表达。
 	 *
-	 * <p>{@link #PENDING} 一列收**三个**状态（两个"待确认"与"权限不足"）：它们等的东西不同
-	 * （答复确认项 / 处置一次权限不足），但对看板的答案是同一个 —— <b>有三件事在等人，球都在人手上</b>。
-	 * 「权限不足」单开一列的话，那一列在多数时候是空的，而"现在有几件事在等我"这个唯一的问题
-	 * 反而要被两个列名拼起来才答得出。两者的区别靠卡片上的状态标签与动作（答复确认项 / 已修改任务）表达。
+	 * <p>{@link #PENDING} 一列收**两个**状态（待确认需求与权限不足）：它们等的都是
+	 * <b>这条任务本身还要不要再改一次</b> —— 待确认需求等需求确认项的答复（答完由 agent 再判一次歧义，
+	 * 仍判到歧义就带着新的一条确认项回到这一格），权限不足等"任务或权限改好后重走一遍"还是取消
+	 * （那一格的描述在详情里就是可改的输入框）。「权限不足」单开一列的话，那一列在多数时候是空的，
+	 * 而"现在有几件事在等我"这个唯一的问题反而要被两个列名拼起来才答得出。
+	 * 两者的区别靠卡片上的状态标签与动作（答复确认项 / 已修改任务）表达。
 	 */
 	enum Column {
 
 		NEW_TASK("new", "新任务", List.of(AgentTaskStatus.NEW)),
 
-		PENDING("pending", "待处理", List.of(AgentTaskStatus.PENDING_REQUIREMENT, AgentTaskStatus.PENDING_PLAN,
+		PENDING("pending", "待处理", List.of(AgentTaskStatus.PENDING_REQUIREMENT,
 				AgentTaskStatus.INSUFFICIENT_PERMISSION)),
 
 		EXECUTING("executing", "执行中", List.of(AgentTaskStatus.CONFIRMED_REQUIREMENT,
-				AgentTaskStatus.CONFIRMED_PLAN, AgentTaskStatus.EXECUTING)),
+				AgentTaskStatus.PENDING_PLAN, AgentTaskStatus.CONFIRMED_PLAN, AgentTaskStatus.EXECUTING)),
 
 		ACCEPTANCE("acceptance", "待验收", List.of(AgentTaskStatus.PENDING_ACCEPTANCE)),
 
@@ -273,7 +275,7 @@ public interface AgentTaskService {
 	 *
 	 * @param key 列的 key（对应 {@link Column#key}）
 	 * @param label 列名
-	 * @param statusLabels 这一列收的状态名（「待处理」靠它说清自己收的是哪三种、「已完成」收的是哪三种）
+	 * @param statusLabels 这一列收的状态名（「执行中」靠它说清自己收的是哪四种、「已完成」收的是哪三种）
 	 * @param tasks 这一列的任务（最近变更在前）
 	 */
 	record BoardColumn(String key, String label, List<String> statusLabels, List<AgentTask> tasks) {

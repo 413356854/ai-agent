@@ -132,7 +132,7 @@ export interface AgentTaskAction {
 export interface AgentTaskColumn {
   key: string
   label: string
-  /** 这一列收的状态名（「待处理」那列靠它说清自己收的是哪三种）。 */
+  /** 这一列收的状态名（「执行中」那列靠它说清自己收的是哪四种）。 */
   statusLabels: string[]
   count: number
   tasks: AgentTaskCard[]
