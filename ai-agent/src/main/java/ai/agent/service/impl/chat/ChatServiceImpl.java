@@ -50,10 +50,19 @@ public class ChatServiceImpl implements ChatService {
 
 	@Override
 	public Flux<ChatClientResponse> stream(String conversationId, String userText, double temperature) {
+		return stream(conversationId, userText, temperature, null);
+	}
+
+	@Override
+	public Flux<ChatClientResponse> stream(String conversationId, String userText, double temperature,
+			String knowledgeBaseBlock) {
 		return chatClient.prompt()
 				// 【每轮都重新取一次当前生效的提示词】这是"配置热更新"真正的落点：
 				// 换了一版之后，下一轮对话就用新的（不需要重启、不需要重新打包）
-				.system(prompts.currentContent(PromptKind.CHAT_SYSTEM))
+				//
+				// 知识库材料接在这一句后面：它是**这一次请求的数据**，不进版本库
+				// （同 AgentLoop 里技能目录/知识库材料那两段的位置与理由）
+				.system(withKnowledgeBase(prompts.currentContent(PromptKind.CHAT_SYSTEM), knowledgeBaseBlock))
 				.user(userText)
 				// 注意：options(...) 接收的是 ChatOptions.Builder，不是构建好的 ChatOptions
 				.options(OpenAiChatOptions.builder().temperature(temperature))
@@ -75,8 +84,13 @@ public class ChatServiceImpl implements ChatService {
 
 	@Override
 	public String call(String conversationId, String message) {
+		return call(conversationId, message, null);
+	}
+
+	@Override
+	public String call(String conversationId, String message, String knowledgeBaseBlock) {
 		return chatClient.prompt()
-				.system(prompts.currentContent(PromptKind.CHAT_SYSTEM))
+				.system(withKnowledgeBase(prompts.currentContent(PromptKind.CHAT_SYSTEM), knowledgeBaseBlock))
 				.user(message)
 				// 【读取历史会话】与上面 stream() 同一件事：非流式通路用的是同一个记忆 advisor，
 				// 同样按 conversationId 取历史并进本次 Prompt（判据与坑见 stream() 里的那段注释）
@@ -131,6 +145,18 @@ public class ChatServiceImpl implements ChatService {
 	@Override
 	public boolean hasDelta(String delta) {
 		return delta != null && !delta.isEmpty();
+	}
+
+	/**
+	 * 把知识库材料接到了系统提示词后面。
+	 *
+	 * <p>空块与没有块是同一件事（都不接）—— 但拼进来的那一块里**一定**有内容：
+	 * "查了没命中"与"查失败了"各有自己的一段文字（见 {@code KnowledgeBaseContextInjector}），
+	 * 所以不会出现"勾了知识库却什么都没注入"这种界面上看不出来的状态。
+	 */
+	private static String withKnowledgeBase(String systemPrompt, String knowledgeBaseBlock) {
+		return knowledgeBaseBlock == null || knowledgeBaseBlock.isBlank() ? systemPrompt
+				: systemPrompt + "\n\n" + knowledgeBaseBlock;
 	}
 
 	@Override

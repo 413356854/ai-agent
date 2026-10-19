@@ -168,6 +168,20 @@ public class AgentLoop {
 	private final String systemPrompt;
 
 	/**
+	 * <b>这一次运行的知识库材料块</b>（已经拼好的一段文本）；{@code null} = 这次没勾知识库。
+	 *
+	 * <h2>为什么它拼在系统提示词的最后一段</h2>
+	 * 与技能目录同一条理由（见 {@link #loadSystemPrompt} 的注释）：它是**这一次请求的数据**，
+	 * 不是提示词的组成部分 —— 写进版本库的后果是"每问一句就多出一个版本"，
+	 * 而版本库的用途是人与人之间的对照实验。
+	 *
+	 * <p>因此提示词指纹也覆盖不到它（同技能目录那条已知边界）：两次运行指纹相同、
+	 * 带的知识库材料却可以不同。要归因这一层，看的是 {@code /api/agent/ask} 响应里的
+	 * {@code retrieval} 块。
+	 */
+	private final String knowledgeBaseContext;
+
+	/**
 	 * 容器装配用的那一个（<b>标了 `@Autowired` 是必需的，不是风格</b>）。
 	 *
 	 * <p>类里有两个构造器，而 Spring 只在"只有一个候选"时才自动选它。有了第二个之后
@@ -180,7 +194,8 @@ public class AgentLoop {
 	@org.springframework.beans.factory.annotation.Autowired
 	public AgentLoop(ToolRegistry registry, ToolCallExecutor executor, ModelTurn modelTurn,
 			AgentLoopProperties properties, PromptService prompts, CanaryService canary) {
-		this(registry, executor, modelTurn, properties, prompts, canary, null, null, PromptKind.AGENT_LOOP, null);
+		this(registry, executor, modelTurn, properties, prompts, canary, null, null, PromptKind.AGENT_LOOP, null,
+				null);
 	}
 
 	/**
@@ -202,7 +217,7 @@ public class AgentLoop {
 	 */
 	private AgentLoop(ToolRegistry registry, ToolCallExecutor executor, ModelTurn modelTurn,
 			AgentLoopProperties properties, PromptService prompts, CanaryService canary, RunPermission permission,
-			SkillCatalog skills, PromptKind promptKind, String systemPrompt) {
+			SkillCatalog skills, PromptKind promptKind, String systemPrompt, String knowledgeBaseContext) {
 		this.registry = registry;
 		this.executor = executor;
 		this.modelTurn = modelTurn;
@@ -213,6 +228,8 @@ public class AgentLoop {
 		this.skills = skills;
 		this.promptKind = promptKind == null ? PromptKind.AGENT_LOOP : promptKind;
 		this.systemPrompt = systemPrompt == null || systemPrompt.isBlank() ? null : systemPrompt;
+		this.knowledgeBaseContext = knowledgeBaseContext == null || knowledgeBaseContext.isBlank() ? null
+				: knowledgeBaseContext;
 	}
 
 	/**
@@ -691,6 +708,12 @@ public class AgentLoop {
 			log.info("本次系统提示词里注入了技能：{}（{}）", skills.names(), skills.describe());
 			base = base + "\n\n" + skillCatalog;
 		}
+		if (knowledgeBaseContext != null) {
+			// 落一行 INFO：这是"模型这一侧到底看到了哪些知识库材料"的唯一凭据 ——
+			// 与 /api/agent/ask 响应里的 retrieval 块由同一次检索产出，所以两边不可能不一致
+			log.info("本次系统提示词里注入了知识库材料：{} 字", knowledgeBaseContext.length());
+			base = base + "\n\n" + knowledgeBaseContext;
+		}
 		return base;
 	}
 
@@ -740,7 +763,7 @@ public class AgentLoop {
 	 */
 	public AgentLoop withModelTurn(ModelTurn otherModel) {
 		return new AgentLoop(registry, executor, otherModel, properties, prompts, canary, permission, skills,
-				promptKind, systemPrompt);
+				promptKind, systemPrompt, knowledgeBaseContext);
 	}
 
 	/**
@@ -751,8 +774,7 @@ public class AgentLoop {
 	 * 在恢复之后拿到完全权限，而那种放大在页面上完全看不出来。
 	 */
 	public AgentLoop withPermission(RunPermission other) {
-		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, other, skills, promptKind,
-				systemPrompt);
+		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, other, skills, promptKind, systemPrompt, knowledgeBaseContext);
 	}
 
 	/**
@@ -766,8 +788,7 @@ public class AgentLoop {
 	 * {@code messages.isEmpty()} 那一个分支 —— 它只有新起的运行才会注入系统消息）。
 	 */
 	public AgentLoop withSkills(SkillCatalog other) {
-		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, permission, other, promptKind,
-				systemPrompt);
+		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, permission, other, promptKind, systemPrompt, knowledgeBaseContext);
 	}
 
 	/**
@@ -783,8 +804,7 @@ public class AgentLoop {
 	 * 给判定开灰度现在只能走接口（{@code POST /api/canary/start} 传 {@code kind=task-review}）。
 	 */
 	public AgentLoop withPromptKind(PromptKind other) {
-		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, permission, skills, other,
-				systemPrompt);
+		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, permission, skills, other, systemPrompt, knowledgeBaseContext);
 	}
 
 	/**
@@ -796,8 +816,22 @@ public class AgentLoop {
 	 * 判定那条链路上两者一起传：{@code TASK_REVIEW} + 填好 schema 的正文。
 	 */
 	public AgentLoop withSystemPrompt(String other) {
+		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, permission, skills, promptKind, other, knowledgeBaseContext);
+	}
+
+	/**
+	 * 换<b>这一次运行的知识库材料块</b>，其余装配照旧 —— 返回一个新实例。
+	 *
+	 * <p>与 {@link #withSkills} 同一条做法与同一条理由：它是"这一次请求的数据"，
+	 * 由调用方在开跑之前检索好再传进来（检索要花钱，不该由循环自己偷偷发起），
+	 * 而它拼在系统提示词的最后一段、不进版本库。
+	 *
+	 * <p>⚠️ 恢复运行时<b>不会重新检索</b>：注入后的那条系统消息已经在检查点的 transcript 里，
+	 * 续跑用的就是它（同技能目录那条已知边界）。
+	 */
+	public AgentLoop withKnowledgeBaseContext(String other) {
 		return new AgentLoop(registry, executor, modelTurn, properties, prompts, canary, permission, skills, promptKind,
-				other);
+				systemPrompt, other);
 	}
 
 }

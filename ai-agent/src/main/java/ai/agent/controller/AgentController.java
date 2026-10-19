@@ -10,8 +10,11 @@ import ai.agent.entity.agent.store.AgentRunRecord;
 import ai.agent.service.agent.store.AgentRunStore;
 import ai.agent.service.agent.store.RunStatus;
 import ai.agent.service.agent.trace.AgentTraceView;
+import ai.agent.service.rag.kb.KbRetrievalService;
+import ai.agent.service.rag.kb.KnowledgeBaseContextInjector;
 import ai.agent.config.AgentApprovalProperties;
 import ai.agent.entity.agent.AgentPermissionLevel;
+import ai.agent.entity.rag.kb.KbHit;
 import ai.agent.entity.tool.RunPermission;
 import ai.agent.entity.tool.ToolCallOutcome;
 import org.slf4j.Logger;
@@ -29,6 +32,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Agent 的界面入口（阶段三第 5 件）。
@@ -112,10 +116,21 @@ public class AgentController {
 	 */
 	private final ai.agent.service.skill.SkillDirectory skillDirectory;
 
+	/**
+	 * 知识库材料注入（勾了知识库时，开跑之前检索一次并拼进系统提示词）。
+	 *
+	 * <p>它放在控制器这一层而不是循环里：检索要花钱，而"什么时候花钱"必须是调用方看得见的一步
+	 * （与工作区、权限档位同一条规矩 —— 都在任何成本发生之前或同时定下来）。
+	 * 控制器在这里同样没有业务判断：检索、排序、重排与三种提示词形状都在
+	 * {@link KnowledgeBaseContextInjector} 里，这里只把结果放进函数调用。
+	 */
+	private final KnowledgeBaseContextInjector knowledgeBaseInjector;
+
 	public AgentController(ResumableAgentService service, AgentRunStore store, AgentConcurrencyLimitsView limitsView,
 			AgentApprovalService approvals, AgentApprovalProperties approvalProperties, AgentTraceView traceView,
 			ai.agent.config.WorkspaceProperties workspaceProperties,
-			ai.agent.service.skill.SkillDirectory skillDirectory) {
+			ai.agent.service.skill.SkillDirectory skillDirectory,
+			KnowledgeBaseContextInjector knowledgeBaseInjector) {
 		this.service = service;
 		this.store = store;
 		this.limitsView = limitsView;
@@ -124,6 +139,7 @@ public class AgentController {
 		this.traceView = traceView;
 		this.workspaceProperties = workspaceProperties;
 		this.skillDirectory = skillDirectory;
+		this.knowledgeBaseInjector = knowledgeBaseInjector;
 	}
 
 	/**
@@ -212,9 +228,51 @@ public class AgentController {
 		//
 		// 长度裁剪同一条理由（超长 → 写库抛 SQL 异常 → 用户的几个字变成"这次任务失败了"）
 		String tenantId = clamp(request == null ? null : request.tenantId(), MAX_TENANT_CHARS);
+		// 【知识库材料】勾了知识库就在这里检索一次，把结果拼进系统提示词。
+		//
+		// 为什么检索发生在**开跑之前**、而不是让循环自己在中途去查：
+		//   ① 它要花钱（一次 embedding 调用），而"什么时候花钱"应当由调用方看见；
+		//   ② 注入后的那段材料会随系统消息进检查点，于是断点恢复后仍然带着它 ——
+		//      中途去查的写法在恢复路径上会查第二次（结果可能不同，同一次运行的材料就不一致了）。
+		// 没勾知识库时不检索、不注入：那时系统提示词与以前逐字相同
+		Optional<KnowledgeBaseContextInjector.Injection> injection = knowledgeBaseInjector.inject(question,
+				request == null ? null : request.knowledgeBaseIds());
 		AgentRun run = service.runWithSkills(runId, question, null, intent, conversationId, tenantId,
-				permission, skills);
-		return assemble(runId, run, permission, skills);
+				permission, skills, null, null, injection.map(KnowledgeBaseContextInjector.Injection::block).orElse(null));
+		Map<String, Object> body = assemble(runId, run, permission, skills);
+		injection.ifPresent(value -> body.put("retrieval", retrievalView(value.result())));
+		return body;
+	}
+
+	/** 召回明细（给界面看的）；检索失败时为 {@code null} —— 那时响应里只有 "retrievalFailed" 那句话。 */
+	private Map<String, Object> retrievalView(KbRetrievalService.Result result) {
+		if (result == null) {
+			return Map.of("failed", true);
+		}
+		List<Map<String, Object>> hits = new ArrayList<>();
+		for (KbHit hit : result.hits()) {
+			Map<String, Object> cell = new LinkedHashMap<>();
+			cell.put("rank", hit.rank());
+			cell.put("kbId", hit.kbId());
+			cell.put("kbName", hit.kbName());
+			cell.put("documentId", hit.documentId());
+			cell.put("documentName", hit.documentName());
+			cell.put("chunkUid", hit.chunkUid());
+			cell.put("headingPath", hit.headingPath());
+			cell.put("vectorScore", hit.vectorScore());
+			cell.put("rerankScore", hit.rerankScore());
+			hits.add(cell);
+		}
+		Map<String, Object> body = new LinkedHashMap<>();
+		body.put("hits", hits);
+		body.put("hitCount", hits.size());
+		body.put("indexSize", result.indexSize());
+		body.put("candidateCount", result.candidateCount());
+		body.put("reranked", result.reranked());
+		body.put("rerankSkipReason", result.rerankSkipReason());
+		body.put("notes", result.notes());
+		body.put("elapsedMs", result.elapsedMs());
+		return body;
 	}
 
 	/**
@@ -647,21 +705,21 @@ public class AgentController {
 	 *            （与"问题不能为空"同一个形状：调用方可以改对）。
 	 */
 	public record AskRequest(String question, String intent, String conversationId, String tenantId,
-			String workspaceDir, String permissionLevel, Long executorId) {
+			String workspaceDir, String permissionLevel, Long executorId, List<Long> knowledgeBaseIds) {
 
 		/** 不带任何归因的构造器（最早的调用点与测试用）。 */
 		public AskRequest(String question) {
-			this(question, null, null, null, null, null, null);
+			this(question, null, null, null, null, null, null, null);
 		}
 
 		/** 带归因键、不带会话与租户的构造器（成本看板那批调用点用）。 */
 		public AskRequest(String question, String intent) {
-			this(question, intent, null, null, null, null, null);
+			this(question, intent, null, null, null, null, null, null);
 		}
 
 		/** 带归因键与会话、不带租户的构造器（第 2 件那批调用点用）。 */
 		public AskRequest(String question, String intent, String conversationId) {
-			this(question, intent, conversationId, null, null, null, null);
+			this(question, intent, conversationId, null, null, null, null, null);
 		}
 
 		/**
@@ -673,13 +731,13 @@ public class AgentController {
 		 */
 		public AskRequest(String question, String intent, String conversationId, String tenantId,
 				String workspaceDir) {
-			this(question, intent, conversationId, tenantId, workspaceDir, null, null);
+			this(question, intent, conversationId, tenantId, workspaceDir, null, null, null);
 		}
 
 		/** 带上工作区、档位与执行者（界面这条链路用；比上面多一个执行者）。 */
 		public AskRequest(String question, String intent, String conversationId, String tenantId,
 				String workspaceDir, String permissionLevel) {
-			this(question, intent, conversationId, tenantId, workspaceDir, permissionLevel, null);
+			this(question, intent, conversationId, tenantId, workspaceDir, permissionLevel, null, null);
 		}
 	}
 

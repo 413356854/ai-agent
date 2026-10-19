@@ -13,7 +13,8 @@ package ai.agent.entity.dto.chat;
  * <p>{@code temperature} 允许不传（null）——默认值放在 {@link #temperatureOrDefault()}，
  * 避免默认值散落在 Controller 各处。
  */
-public record ChatRequest(String conversationId, String message, Double temperature) {
+public record ChatRequest(String conversationId, String message, Double temperature,
+		java.util.List<Long> knowledgeBaseIds) {
 
 	/** 与 GET 接口的 {@code defaultValue} 保持一致，避免两条通路行为不一致。 */
 	public static final double DEFAULT_TEMPERATURE = 0.3;

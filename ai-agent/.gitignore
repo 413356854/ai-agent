@@ -1,5 +1,7 @@
 HELP.md
 target/
+# 构建期由 parent 里的 flatten-maven-plugin 生成（每次 process-resources 重写一次）
+.flattened-pom.xml
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
@@ -31,3 +33,8 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### 运行期产物 ###
+# 知识库上传的原件落在 ai.rag.kb.storage-path（默认 ./data/kb）下：
+# 它们是运行数据，不是源码 —— 提交进去会让仓库里混进别人的文档
+/data/

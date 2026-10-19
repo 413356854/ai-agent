@@ -182,6 +182,20 @@ public class TokenBudgetGuard {
 	 * @throws TokenBudgetExceededException 连"系统提示词 + 本次提问"都放不下时
 	 */
 	public BudgetCheck prepare(String conversationId, String userMessage) {
+		return prepare(conversationId, userMessage, 0);
+	}
+
+	/**
+	 * 与上面同一份账，多算一段<b>这次请求才会拼进系统提示词</b>的额外内容（知识库材料）。
+	 *
+	 * <h2>为什么不给这段内容另立一套账</h2>
+	 * 因为它是这个请求的一部分：不把它算进去的话，账目里"可用"的那部分会被它悄悄吃掉，
+	 * 表现为"预算说还够、实际发出去超了窗口"，而那一类的失败发生在模型侧，
+	 * 与本地的账对不上。所以它是<b>加在系统提示词那一项上</b>，不是第四项。
+	 *
+	 * @param extraSystemPromptTokens 这次请求额外拼进系统提示词的 token 数（没拼时为 0）
+	 */
+	public BudgetCheck prepare(String conversationId, String userMessage, int extraSystemPromptTokens) {
 		ChatCallProperties.Budget cfg = properties.getBudget();
 		if (!cfg.isEnabled()) {
 			return BudgetCheck.disabled();
@@ -192,7 +206,7 @@ public class TokenBudgetGuard {
 		int questionTokens = estimator.estimateMessage(userMessage);
 		// 【每次现算，不是读字段】提示词可以在运行中换版本，读一个构造期算好的常量
 		// 会让这个数永久过时 —— 而失效形态只是"历史被裁得比预期早"，没有任何报错
-		int systemPromptTokens = systemPromptTokens();
+		int systemPromptTokens = systemPromptTokens() + Math.max(0, extraSystemPromptTokens);
 		int base = systemPromptTokens + questionTokens + estimator.requestOverhead();
 		int allowance = cfg.inputAllowance();
 

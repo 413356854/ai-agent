@@ -125,8 +125,10 @@ public class TaskReviewRunner {
 				task.id(), what, loopProperties.maxSteps(), loopProperties.maxTokens(),
 				loopProperties.maxDurationMs(), permission.describe(), skills.describe());
 
+		// 判定这条链路不带知识库材料（最后一个 null）：它只输出 JSON 结论，
+		// 而"要不要查知识库"是执行那条链路的事
 		AgentRun run = agent.runWithSkills(runId, instruction, null, INTENT,
-				CONVERSATION_PREFIX + task.id(), null, permission, skills, PromptKind.TASK_REVIEW, system);
+				CONVERSATION_PREFIX + task.id(), null, permission, skills, PromptKind.TASK_REVIEW, system, null);
 
 		if (!run.answered()) {
 			// 【这里绝不返回默认结论】两个方向的默认值都是错的：默认"无歧义"会把没读懂的需求交给执行，

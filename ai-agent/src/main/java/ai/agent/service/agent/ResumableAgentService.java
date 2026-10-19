@@ -249,7 +249,8 @@ public class ResumableAgentService {
 	 */
 	public AgentRun runWithSkills(String runId, String question, ModelTurn modelTurn, String intent,
 			String conversationId, String tenantId, RunPermission permission, SkillCatalog skills) {
-		return runWithSkills(runId, question, modelTurn, intent, conversationId, tenantId, permission, skills, null, null);
+		return runWithSkills(runId, question, modelTurn, intent, conversationId, tenantId, permission, skills, null, null,
+				null);
 	}
 
 	/**
@@ -276,7 +277,7 @@ public class ResumableAgentService {
 	 */
 	public AgentRun runWithSkills(String runId, String question, ModelTurn modelTurn, String intent,
 			String conversationId, String tenantId, RunPermission permission, SkillCatalog skills,
-			PromptKind promptKind, String systemPrompt) {
+			PromptKind promptKind, String systemPrompt, String knowledgeBaseContext) {
 		RunPermission effective = permission == null ? RunPermission.none() : permission;
 		store.start(new AgentRunStore.Start(runId, question, properties.node(), intent, conversationId, tenantId)
 				.withPermissions(effective));
@@ -286,7 +287,8 @@ public class ResumableAgentService {
 			// 传了模型 / 权限 / 技能 / 提示词种类或正文就临时换一个 loop：AgentLoop 是无状态的
 			// （所有可变状态都在方法局部变量里），所以这里 new 一个是安全的 ——
 			// 不是"共享可变状态"那种危险做法
-			AgentLoop effectiveLoop = effectiveLoop(modelTurn, effective, skills, promptKind, systemPrompt);
+			AgentLoop effectiveLoop = effectiveLoop(modelTurn, effective, skills, promptKind, systemPrompt,
+					knowledgeBaseContext);
 			AgentRun run = effectiveLoop.run(runId, question, listener);
 			store.persistCompletedRun(runId, run);
 			return run;
@@ -314,7 +316,7 @@ public class ResumableAgentService {
 	 * @param systemPrompt 已经拼好的系统提示词正文；空白表示按 {@code promptKind} 去版本库读
 	 */
 	private AgentLoop effectiveLoop(ModelTurn modelTurn, RunPermission permission, SkillCatalog skills,
-			PromptKind promptKind, String systemPrompt) {
+			PromptKind promptKind, String systemPrompt, String knowledgeBaseContext) {
 		AgentLoop effective = modelTurn == null ? loop : loop.withModelTurn(modelTurn);
 		if (permission != null) {
 			effective = effective.withPermission(permission);
@@ -326,7 +328,11 @@ public class ResumableAgentService {
 			effective = effective.withPromptKind(promptKind);
 		}
 		// 正文覆盖排在种类之后：给了正文就以正文为准（种类此时只剩"指纹与灰度按哪一份算"这一层含义）
-		return systemPrompt == null || systemPrompt.isBlank() ? effective : effective.withSystemPrompt(systemPrompt);
+		if (systemPrompt != null && !systemPrompt.isBlank()) {
+			effective = effective.withSystemPrompt(systemPrompt);
+		}
+		return knowledgeBaseContext == null || knowledgeBaseContext.isBlank() ? effective
+				: effective.withKnowledgeBaseContext(knowledgeBaseContext);
 	}
 
 	/**

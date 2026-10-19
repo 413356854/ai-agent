@@ -31,8 +31,21 @@ public interface ChatService {
 	 */
 	Flux<ChatClientResponse> stream(String conversationId, String userText, double temperature);
 
+	/**
+	 * 与上面同一条流，多带一段<b>知识库材料块</b>（已经检索并拼好的那一段；没勾知识库时传 null）。
+	 *
+	 * <p>为什么参数是"拼好的文本"而不是"知识库 id 列表"：检索要花钱，而它必须在
+	 * <b>流开始之前</b>做完 —— Token 预算要把它算进去（见 {@code ChatController}），
+	 * 而 SSE 的响应头一旦发出就收不回来。这一层只负责把那段文本接到系统提示词后面。
+	 */
+	Flux<ChatClientResponse> stream(String conversationId, String userText, double temperature,
+			String knowledgeBaseBlock);
+
 	/** 非流式对话（对照用）。跑在 Servlet 栈上，会阻塞当前线程直到模型返回完毕。 */
 	String call(String conversationId, String message);
+
+	/** 非流式的那条，含义同上（多一段知识库材料块）。 */
+	String call(String conversationId, String message, String knowledgeBaseBlock);
 
 	/** 从流式响应中取出当前增量文本；非文本 chunk（如仅含元数据）返回空串。 */
 	String deltaOf(ChatClientResponse response);

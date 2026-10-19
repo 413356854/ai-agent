@@ -13,7 +13,7 @@
  */
 export type Mode =
   | 'stream' | 'structured' | 'threads' | 'rag' | 'agent' | 'cost' | 'prompt' | 'alerts'
-  | 'users' | 'permissions' | 'tasks' | 'skill' | 'schedules'
+  | 'users' | 'permissions' | 'tasks' | 'skill' | 'schedules' | 'knowledge'
 
 /** 导航分组 = 一级目录。它不是视觉分组：每个分组是一个独立的功能区，顶栏标题跟着它走 */
 export interface NavGroup {
@@ -58,7 +58,7 @@ export const NAV_SECTIONS: NavGroup[] = [
   {
     key: 'apps',
     label: 'AI Agent 应用管理',
-    title: 'AI Agent 应用管理：账号 / 角色 / 权限 / 任务 / 技能 / 定时',
+    title: 'AI Agent 应用管理：账号 / 角色 / 权限 / 任务 / 技能 / 定时 / 知识库',
     tag: { color: 'geekblue', text: '配一次 · 之后每次调用都按它生效' },
     items: [
       { mode: 'users', label: '用户管理' },
@@ -66,6 +66,7 @@ export const NAV_SECTIONS: NavGroup[] = [
       { mode: 'tasks', label: 'agent任务' },
       { mode: 'skill', label: 'skill管理' },
       { mode: 'schedules', label: '定时任务' },
+      { mode: 'knowledge', label: '知识库' },
     ],
   },
 ]

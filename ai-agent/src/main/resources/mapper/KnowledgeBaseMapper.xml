@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  knowledge_base 的 SQL（知识库）。
+
+  ⚠️ 这一份**没有** JOIN：知识库的列表页要显示"这个库有几份文档"，
+     但那个数走 KnowledgeDocumentMapper#countByStatus 一次 GROUP BY 查一批，
+     而不是在这里 LEFT JOIN kb_document —— 后者会让"读知识库列表"随文档表一起变重，
+     而文档数是另一个业务事实（见 MapperRows.KbDocumentCountRow）。
+
+  ⚠️ 所有时间列都挂 InstantTypeHandler：可空列（这里没有）与不可空列都要挂，
+     理由见该 handler 的类注释（不挂时构造器映射会在 null 上炸）。
+
+  ⚠️ 构造器映射：<constructor> 里的 <arg> 顺序必须与 MapperRows.KnowledgeBaseRow
+     的构造参数顺序逐字对齐 —— 连续的几个 String（name / description / embeddingProvider…）
+     错位了不会报错，只会静默显示成别的字段。
+-->
+<mapper namespace="ai.agent.mapper.KnowledgeBaseMapper">
+
+	<resultMap id="knowledgeBaseRow" type="ai.agent.mapper.MapperRows$KnowledgeBaseRow">
+		<constructor>
+			<idArg column="id" javaType="java.lang.Long"/>
+			<arg column="name" javaType="java.lang.String"/>
+			<arg column="description" javaType="java.lang.String"/>
+			<arg column="embedding_provider" javaType="java.lang.String"/>
+			<arg column="embedding_model" javaType="java.lang.String"/>
+			<arg column="embedding_dim" javaType="java.lang.Integer"/>
+			<arg column="collection_name" javaType="java.lang.String"/>
+			<arg column="chunk_strategy" javaType="java.lang.String"/>
+			<arg column="top_k" javaType="java.lang.Integer"/>
+			<arg column="similarity_threshold" javaType="java.lang.Double"/>
+			<arg column="rerank_enabled" javaType="java.lang.Integer"/>
+			<arg column="enabled" javaType="java.lang.Integer"/>
+			<arg column="created_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="updated_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+		</constructor>
+	</resultMap>
+
+	<sql id="knowledgeBaseColumns">
+		id, name, description, embedding_provider, embedding_model, embedding_dim, collection_name,
+		chunk_strategy, top_k, similarity_threshold, rerank_enabled, enabled, created_at, updated_at
+	</sql>
+
+	<!-- collection_name 先写空串占位：它要用刚生成的自增 id 拼，而插入那一刻 id 还不知道。
+	     真正的取值由 updateCollectionName 紧接着回写，两处都在建库那一个事务里。 -->
+	<insert id="insert">
+		INSERT INTO knowledge_base (name, description, embedding_provider, embedding_model, embedding_dim,
+			collection_name, chunk_strategy, top_k, similarity_threshold, rerank_enabled)
+		VALUES (#{name}, #{description}, #{embeddingProvider}, #{embeddingModel}, #{embeddingDim},
+			'', #{chunkStrategy}, #{topK}, #{similarityThreshold}, #{rerankEnabled})
+	</insert>
+
+	<select id="lastInsertId" resultType="java.lang.Long">
+		SELECT LAST_INSERT_ID()
+	</select>
+
+	<update id="updateCollectionName">
+		UPDATE knowledge_base SET collection_name = #{collectionName} WHERE id = #{id}
+	</update>
+
+	<!-- 排序：最近变更在前，同秒用 id 倒序兜底（updated_at 是秒精度） -->
+	<select id="list" resultMap="knowledgeBaseRow">
+		SELECT <include refid="knowledgeBaseColumns"/>
+		FROM knowledge_base
+		ORDER BY updated_at DESC, id DESC
+	</select>
+
+	<select id="findById" resultMap="knowledgeBaseRow">
+		SELECT <include refid="knowledgeBaseColumns"/>
+		FROM knowledge_base
+		WHERE id = #{id}
+	</select>
+
+	<select id="findByName" resultMap="knowledgeBaseRow">
+		SELECT <include refid="knowledgeBaseColumns"/>
+		FROM knowledge_base
+		WHERE name = #{name}
+	</select>
+
+	<select id="findByIds" resultMap="knowledgeBaseRow">
+		SELECT <include refid="knowledgeBaseColumns"/>
+		FROM knowledge_base
+		WHERE id IN
+		<foreach item="id" collection="ids" open="(" separator="," close=")">#{id}</foreach>
+		ORDER BY id
+	</select>
+
+	<!-- 改名不改 embedding 快照与 collection_name（见接口注释） -->
+	<update id="updateNameDescription">
+		UPDATE knowledge_base SET name = #{name}, description = #{description} WHERE id = #{id}
+	</update>
+
+	<update id="updateSearch">
+		UPDATE knowledge_base
+		   SET top_k = #{topK}, similarity_threshold = #{similarityThreshold}, rerank_enabled = #{rerankEnabled}
+		 WHERE id = #{id}
+	</update>
+
+	<update id="updateEnabled">
+		UPDATE knowledge_base SET enabled = #{enabled} WHERE id = #{id}
+	</update>
+
+	<delete id="delete">
+		DELETE FROM knowledge_base WHERE id = #{id}
+	</delete>
+
+</mapper>

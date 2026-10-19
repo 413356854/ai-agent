@@ -81,6 +81,14 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * <p>{@link AgentTaskScheduleProperties}（{@code ai.agent.schedule}）是定时任务那一页的：
  * 总开关与调度线程池的线程数。它刻意只有两个键 —— 那一页的其余东西（正则、发布人、
  * 任务人、描述）都是**数据**，不是部署参数。
+ *
+ * <p>DashScope 的自动配置<b>没有</b> {@code exclude}：那一条曾是 2.0.0-M1.1 的必需项
+ * （它的 {@code AutoConfiguration.imports} 列了不存在的
+ * {@code DashScopeMultimodalEmbeddingAutoConfiguration}，Boot 在排序阶段读元数据就失败），
+ * 而 2.0.0.0-RC1 的制品里有这个类，排序阶段不再有问题 —— 实测最小工程不加任何 exclude
+ * 直接启动成功。真正关掉百炼靠的是配置里的
+ * {@code spring.ai.model.chat=openai} 与 {@code spring.ai.dashscope.enabled=false}
+ * （见 {@code application.properties}）。
  */
 @SpringBootApplication
 @MapperScan("ai.agent.mapper")

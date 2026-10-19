@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  kb_chunk 的 SQL（知识库切片）。
+
+  ⚠️ listByDocument 是本项目唯一带 OFFSET 的查询（理由见 KbChunkMapper 的类注释）：
+     其余列表只有 LIMIT，因为那些列表"要一眼看全"；切片是翻着改的，必须能翻到后面。
+
+  ⚠️ 这里**没有** enabled 的过滤条件：调用方要按它过滤时就自己带上
+     （切片列表页要显示全部、检索侧只要启用的）。把过滤写死在 SQL 里，
+     前者就看不到停用的那些，而"看不到"会被当成"被删了"。
+-->
+<mapper namespace="ai.agent.mapper.KbChunkMapper">
+
+	<resultMap id="kbChunkRow" type="ai.agent.mapper.MapperRows$KbChunkRow">
+		<constructor>
+			<idArg column="id" javaType="java.lang.Long"/>
+			<arg column="uid" javaType="java.lang.String"/>
+			<arg column="kb_id" javaType="java.lang.Long"/>
+			<arg column="document_id" javaType="java.lang.Long"/>
+			<arg column="seq" javaType="java.lang.Integer"/>
+			<arg column="text" javaType="java.lang.String"/>
+			<arg column="heading_path" javaType="java.lang.String"/>
+			<arg column="token_count" javaType="java.lang.Integer"/>
+			<arg column="char_count" javaType="java.lang.Integer"/>
+			<arg column="enabled" javaType="java.lang.Integer"/>
+			<arg column="created_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="updated_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+		</constructor>
+	</resultMap>
+
+	<sql id="kbChunkColumns">
+		id, uid, kb_id, document_id, seq, text, heading_path, token_count, char_count, enabled,
+		created_at, updated_at
+	</sql>
+
+	<insert id="insertChunk">
+		INSERT INTO kb_chunk (uid, kb_id, document_id, seq, text, heading_path, token_count, char_count)
+		VALUES (#{uid}, #{kbId}, #{documentId}, #{seq}, #{text}, #{headingPath}, #{tokenCount}, #{charCount})
+	</insert>
+
+	<!-- 按 seq 排：界面上看到的顺序要与送进 embedding 的顺序一致（第 1 块就是文档开头那块） -->
+	<select id="listByDocument" resultMap="kbChunkRow">
+		SELECT <include refid="kbChunkColumns"/>
+		FROM kb_chunk
+		WHERE document_id = #{documentId}
+		ORDER BY seq
+		LIMIT #{limit} OFFSET #{offset}
+	</select>
+
+	<select id="countByDocument" resultType="java.lang.Long">
+		SELECT COUNT(*) FROM kb_chunk WHERE document_id = #{documentId}
+	</select>
+
+	<select id="countByKb" resultType="java.lang.Long">
+		SELECT COUNT(*) FROM kb_chunk WHERE kb_id = #{kbId}
+	</select>
+
+	<select id="countEnabledByKb" resultType="java.lang.Long">
+		SELECT COUNT(*) FROM kb_chunk WHERE kb_id = #{kbId} AND enabled = 1
+	</select>
+
+	<!-- 检索回来的是一组 uid，回表取正文。顺序由调用方按分数重排，所以这里不排序 -->
+	<select id="findByUids" resultMap="kbChunkRow">
+		SELECT <include refid="kbChunkColumns"/>
+		FROM kb_chunk
+		WHERE uid IN
+		<foreach item="uid" collection="uids" open="(" separator="," close=")">#{uid}</foreach>
+	</select>
+
+	<select id="findByUid" resultMap="kbChunkRow">
+		SELECT <include refid="kbChunkColumns"/>
+		FROM kb_chunk
+		WHERE uid = #{uid}
+	</select>
+
+	<update id="updateText">
+		UPDATE kb_chunk SET text = #{text}, token_count = #{tokenCount}, char_count = #{charCount}
+		 WHERE uid = #{uid}
+	</update>
+
+	<update id="updateEnabled">
+		UPDATE kb_chunk SET enabled = #{enabled} WHERE uid = #{uid}
+	</update>
+
+	<delete id="deleteByUid">
+		DELETE FROM kb_chunk WHERE uid = #{uid}
+	</delete>
+
+	<delete id="deleteByDocument">
+		DELETE FROM kb_chunk WHERE document_id = #{documentId}
+	</delete>
+
+	<delete id="deleteByKb">
+		DELETE FROM kb_chunk WHERE kb_id = #{kbId}
+	</delete>
+
+</mapper>

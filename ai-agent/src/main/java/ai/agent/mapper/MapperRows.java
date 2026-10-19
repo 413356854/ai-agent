@@ -17,6 +17,11 @@ import ai.agent.entity.agent.task.ConfirmType;
 import ai.agent.entity.alert.AlertEvent;
 import ai.agent.entity.chat.ConversationSummary;
 import ai.agent.entity.prompt.PromptVersion;
+import ai.agent.entity.rag.kb.KbChunk;
+import ai.agent.entity.rag.kb.KbChunkStrategy;
+import ai.agent.entity.rag.kb.KbDocumentStatus;
+import ai.agent.entity.rag.kb.KnowledgeBase;
+import ai.agent.entity.rag.kb.KnowledgeDocument;
 import ai.agent.entity.tool.RetrievalTrace;
 import ai.agent.service.agent.AgentFailureCause;
 import ai.agent.service.agent.AgentStopReason;
@@ -468,6 +473,66 @@ public final class MapperRows {
 
 		public ConversationSummary toDomain() {
 			return new ConversationSummary(conversationId, nz(coveredTurns), summary, nz(turnsCompacted), provider);
+		}
+	}
+
+	// ==================================================================
+	//  知识库（knowledge_base / kb_document / kb_chunk）
+	// ==================================================================
+
+	/**
+	 * {@code knowledge_base} 的一行。
+	 *
+	 * <p>{@code description} 的 null 是有含义的（没填说明），读侧显示「（未填说明）」——
+	 * 不编空串：空串在界面上与「填了但看不到」长得一样。
+	 */
+	public record KnowledgeBaseRow(Long id, String name, String description, String embeddingProvider,
+			String embeddingModel, Integer embeddingDim, String collectionName, String chunkStrategy, Integer topK,
+			Double similarityThreshold, Integer rerankEnabled, Integer enabled, Instant createdAt, Instant updatedAt) {
+
+		public KnowledgeBase toDomain() {
+			return new KnowledgeBase(id, name, description, embeddingProvider, embeddingModel, nz(embeddingDim),
+					collectionName, KbChunkStrategy.parse(chunkStrategy), nz(topK),
+					similarityThreshold == null ? 0.0 : similarityThreshold, rerankEnabled != null && rerankEnabled != 0,
+					enabled != null && enabled != 0, createdAt, updatedAt);
+		}
+	}
+
+	/**
+	 * {@code kb_document} 的一行。
+	 *
+	 * <p>{@code indexed_at} 的 null 与 {@code chunk_count} 的 0 <b>含义不同</b>（见
+	 * {@link KnowledgeDocument} 的类注释），所以两个都不归零。
+	 */
+	public record KbDocumentRow(Long id, Long kbId, String name, String format, Long sizeBytes, String path,
+			String status, Integer enabled, Integer chunkCount, Integer tokenCount, String error, Instant indexedAt,
+			Instant createdAt, Instant updatedAt) {
+
+		public KnowledgeDocument toDomain() {
+			return new KnowledgeDocument(id, kbId == null ? 0L : kbId, name, format, nz(sizeBytes), path,
+					KbDocumentStatus.parse(status), enabled != null && enabled != 0, nz(chunkCount), nz(tokenCount),
+					error, indexedAt, createdAt, updatedAt);
+		}
+	}
+
+	/** 文档列表的"每种状态几条"（界面上的分档计数；一次 GROUP BY 查出来，不是每种状态查一次）。 */
+	public record KbDocumentCountRow(String status, Long total) {
+	}
+
+	/**
+	 * {@code kb_chunk} 的一行。
+	 *
+	 * <p>与另外两个不同的是：这里**没有 {@code toDomain} 之外的加工** ——
+	 * 正文、序号、标题路径都是原样存原样读，界面上看到的就是送进 embedding 的那份文本
+	 * （拼接规则在 {@link KbChunk#embeddingText()}）。
+	 */
+	public record KbChunkRow(Long id, String uid, Long kbId, Long documentId, Integer seq, String text,
+			String headingPath, Integer tokenCount, Integer charCount, Integer enabled, Instant createdAt,
+			Instant updatedAt) {
+
+		public KbChunk toDomain() {
+			return new KbChunk(id, uid, kbId == null ? 0L : kbId, documentId == null ? 0L : documentId, nz(seq), text,
+					headingPath, nz(tokenCount), nz(charCount), enabled != null && enabled != 0, createdAt, updatedAt);
 		}
 	}
 

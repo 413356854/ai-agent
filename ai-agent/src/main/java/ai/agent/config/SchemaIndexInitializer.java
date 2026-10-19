@@ -85,7 +85,15 @@ public class SchemaIndexInitializer implements InitializingBean {
 			new Definition("idx_agent_task_schedule_enabled", "agent_task_schedule (enabled, id)"),
 			new Definition("idx_agent_task_schedule_origin", "agent_task (schedule_id, created_at)"),
 			// agent_skill：列表按拥有者取（登录时）并按最近修改排在前
-			new Definition("idx_agent_skill_owner", "agent_skill (owner_id, updated_at)"));
+			new Definition("idx_agent_skill_owner", "agent_skill (owner_id, updated_at)"),
+			// kb_document：文档列表按所属库取、最近上传在前；
+			// 启动清扫按状态捞"上次没跑完的"（两种状态一个 IN，走这条索引）
+			new Definition("idx_kb_document_kb", "kb_document (kb_id, created_at)"),
+			new Definition("idx_kb_document_status", "kb_document (status, id)"),
+			// kb_chunk：切片列表按文档取并按序号排（列表页唯一的访问路径）；
+			// 算 indexSize 与一致性核对时按库聚合
+			new Definition("idx_kb_chunk_document", "kb_chunk (document_id, seq)"),
+			new Definition("idx_kb_chunk_kb", "kb_chunk (kb_id, enabled)"));
 
 	private final DataSource dataSource;
 

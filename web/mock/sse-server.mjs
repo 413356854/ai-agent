@@ -32,6 +32,7 @@ import { handlePermissionRoutes } from './permission-routes.mjs'
 import { handlePromptRoutes } from './prompt-routes.mjs'
 import { handleRagRoutes } from './rag-routes.mjs'
 import { handleScheduleRoutes } from './schedule-routes.mjs'
+import { handleKnowledgeRoutes } from './knowledge-routes.mjs'
 import { handleSkillRoutes } from './skill-routes.mjs'
 import { handleTaskRoutes } from './task-routes.mjs'
 
@@ -413,11 +414,22 @@ const server = createServer((req, res) => {
     return
   }
 
+  // ---------------------------------------------------------------
+  //  知识库（应用管理 · 知识库）
+  //
+  //  ⚠️ 前缀是 /api/knowledge-bases，与上面任何一组都不撞（没有 /api/knowledge 这种前缀）。
+  //  这一组的假数据照搬真后端的**四个分支**：索引中 / 索引失败（带原因）/
+  //  已索引但一块都没切出来 / 重排不可用 —— 判据写在 knowledge-routes.mjs 开头。
+  // ---------------------------------------------------------------
+  if (url.pathname.startsWith('/api/knowledge-bases') && handleKnowledgeRoutes(req, res, url, json)) {
+    return
+  }
+
   res.writeHead(404, { 'Content-Type': 'application/json' })
   res.end(
     JSON.stringify({
       message:
-        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async、POST /api/agent/ask、GET /api/agent/*、GET /api/cost/*、GET|POST /api/prompts/*、GET|POST /api/alerts/*、GET|POST /api/canary/*、GET|POST|PUT|DELETE /api/permissions/*、GET|POST /api/agent-tasks/*、GET|POST|PUT|DELETE /api/skills/*',
+        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async、POST /api/agent/ask、GET /api/agent/*、GET /api/cost/*、GET|POST /api/prompts/*、GET|POST /api/alerts/*、GET|POST /api/canary/*、GET|POST|PUT|DELETE /api/permissions/*、GET|POST /api/agent-tasks/*、GET|POST|PUT|DELETE /api/skills/*、GET|POST|PUT|DELETE /api/knowledge-bases/*（含 /{id}/documents、/retrieve、/consistency）',
     }),
   )
 })

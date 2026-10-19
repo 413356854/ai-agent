@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  kb_document 的 SQL（知识库文档）。
+
+  ⚠️ indexed_at 可为 NULL，所以它那个 <arg> 上挂的 InstantTypeHandler 不是可选项：
+     没有它，构造器映射遇到 NULL 会在实例化时失败（见该 handler 的类注释第 1 条）。
+
+  ⚠️ markProcessed 会把 error 置回 NULL，markFailed 只写状态与原因（不动块数与时间）——
+     两条都是刻意的，理由写在 KnowledgeDocumentMapper 的类注释里。
+-->
+<mapper namespace="ai.agent.mapper.KnowledgeDocumentMapper">
+
+	<resultMap id="kbDocumentRow" type="ai.agent.mapper.MapperRows$KbDocumentRow">
+		<constructor>
+			<idArg column="id" javaType="java.lang.Long"/>
+			<arg column="kb_id" javaType="java.lang.Long"/>
+			<arg column="name" javaType="java.lang.String"/>
+			<arg column="format" javaType="java.lang.String"/>
+			<arg column="size_bytes" javaType="java.lang.Long"/>
+			<arg column="source_path" javaType="java.lang.String"/>
+			<arg column="status" javaType="java.lang.String"/>
+			<arg column="enabled" javaType="java.lang.Integer"/>
+			<arg column="chunk_count" javaType="java.lang.Integer"/>
+			<arg column="token_count" javaType="java.lang.Integer"/>
+			<arg column="error" javaType="java.lang.String"/>
+			<arg column="indexed_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="created_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+			<arg column="updated_at" javaType="java.time.Instant"
+				typeHandler="ai.agent.mapper.handler.InstantTypeHandler"/>
+		</constructor>
+	</resultMap>
+
+	<sql id="kbDocumentColumns">
+		id, kb_id, name, format, size_bytes, source_path, status, enabled, chunk_count, token_count,
+		error, indexed_at, created_at, updated_at
+	</sql>
+
+	<!-- status / enabled 用列默认值：插入那一刻这份文档一定是"已上传、启用"。 -->
+	<insert id="insert">
+		INSERT INTO kb_document (kb_id, name, format, size_bytes, source_path)
+		VALUES (#{kbId}, #{name}, #{format}, #{sizeBytes}, #{path})
+	</insert>
+
+	<select id="lastInsertId" resultType="java.lang.Long">
+		SELECT LAST_INSERT_ID()
+	</select>
+
+	<!-- 落盘名含自增 id，所以路径要在插入之后回写（见 KnowledgeDocumentMapper#updateSourcePath） -->
+	<update id="updateSourcePath">
+		UPDATE kb_document SET source_path = #{path} WHERE id = #{id}
+	</update>
+
+	<select id="findById" resultMap="kbDocumentRow">
+		SELECT <include refid="kbDocumentColumns"/>
+		FROM kb_document
+		WHERE id = #{id}
+	</select>
+
+	<select id="listByKb" resultMap="kbDocumentRow">
+		SELECT <include refid="kbDocumentColumns"/>
+		FROM kb_document
+		WHERE kb_id = #{kbId}
+		ORDER BY created_at DESC, id DESC
+	</select>
+
+	<select id="findByIds" resultMap="kbDocumentRow">
+		SELECT <include refid="kbDocumentColumns"/>
+		FROM kb_document
+		WHERE id IN
+		<foreach item="id" collection="ids" open="(" separator="," close=")">#{id}</foreach>
+	</select>
+
+	<!-- 分档计数：一次 GROUP BY 查出每种状态几条，界面上的四档数字都来自它 -->
+	<select id="countByStatus" resultType="ai.agent.mapper.MapperRows$KbDocumentCountRow">
+		SELECT status, COUNT(*) AS total
+		FROM kb_document
+		WHERE kb_id = #{kbId}
+		GROUP BY status
+	</select>
+
+	<select id="countByKb" resultType="java.lang.Long">
+		SELECT COUNT(*) FROM kb_document WHERE kb_id = #{kbId}
+	</select>
+
+	<select id="countEnabledByKb" resultType="java.lang.Long">
+		SELECT COUNT(*) FROM kb_document WHERE kb_id = #{kbId} AND enabled = 1
+	</select>
+
+	<!-- 启动清扫捞的那些。两种状态在这里一起取出来，由调用方按状态分头处置
+	     （UPLOADED 重新入队、PROCESSING 判失败），所以不写成两个查询。 -->
+	<select id="listUnfinished" resultMap="kbDocumentRow">
+		SELECT <include refid="kbDocumentColumns"/>
+		FROM kb_document
+		WHERE status IN ('UPLOADED', 'PROCESSING')
+		ORDER BY id
+	</select>
+
+	<update id="markProcessing">
+		UPDATE kb_document SET status = 'PROCESSING' WHERE id = #{id}
+	</update>
+
+	<!-- 三列一起写：它们描述同一次索引的结果（见接口注释）。error 同时置回 NULL。 -->
+	<update id="markProcessed">
+		UPDATE kb_document
+		   SET status = 'PROCESSED', chunk_count = #{chunkCount}, token_count = #{tokenCount},
+		       indexed_at = CURRENT_TIMESTAMP, error = NULL
+		 WHERE id = #{id}
+	</update>
+
+	<update id="markFailed">
+		UPDATE kb_document SET status = 'FAILED', error = #{error} WHERE id = #{id}
+	</update>
+
+	<!-- GREATEST(...,0)：负的块数在界面上没有解释（它只会来自"删的比切出来的多"） -->
+	<update id="decrementChunkCount">
+		UPDATE kb_document SET chunk_count = GREATEST(chunk_count - 1, 0) WHERE id = #{id}
+	</update>
+
+	<update id="markUploaded">
+		UPDATE kb_document SET status = 'UPLOADED' WHERE id = #{id}
+	</update>
+
+	<update id="updateEnabled">
+		UPDATE kb_document SET enabled = #{enabled} WHERE id = #{id}
+	</update>
+
+	<update id="updateName">
+		UPDATE kb_document SET name = #{name} WHERE id = #{id}
+	</update>
+
+	<delete id="delete">
+		DELETE FROM kb_document WHERE id = #{id}
+	</delete>
+
+	<select id="idsOfKb" resultType="java.lang.Long">
+		SELECT id FROM kb_document WHERE kb_id = #{kbId} ORDER BY id
+	</select>
+
+</mapper>

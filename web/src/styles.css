@@ -2767,3 +2767,75 @@ body {
   color: var(--text-tertiary);
   line-height: 1.5;
 }
+
+/* ==================================================================
+   知识库（第十四区）
+   只用变量取色：手写一个字面量的后果是"数据全对、只有那一块在深色下白得刺眼"，
+   而没有任何东西会报错
+   ================================================================== */
+
+.kb-panel {
+  /* 与其它面板一致：自己滚、撑满，不要横向溢出 */
+  min-width: 0;
+}
+
+.kb-meta {
+  padding: 4px 0;
+}
+
+/* 拖放区：看着像"可以往这里丢"，而不是一句说明文字 */
+.kb-drop {
+  border: 1px dashed var(--border-strong);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  background: var(--bg-subtle);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.kb-drop.is-over {
+  border-color: var(--brand);
+  background: var(--brand-bg);
+  color: var(--brand-ink);
+}
+
+/* 切片正文：等宽、可换行、不撑破表格 */
+.kb-chunk-text {
+  display: block;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.kb-preview-list {
+  max-height: 55vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kb-preview-item {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-subtle);
+}
+
+.kb-hit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kb-hit {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  min-width: 0;
+}

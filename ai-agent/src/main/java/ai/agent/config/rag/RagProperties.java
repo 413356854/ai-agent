@@ -41,6 +41,24 @@ public class RagProperties {
 	@NestedConfigurationProperty
 	private EmbeddingProperties vector = new EmbeddingProperties();
 
+	/**
+	 * 知识库（{@code ai.rag.kb.*}）。
+	 *
+	 * <p>与上面那几棵的区别见 {@link KnowledgeBaseProperties} 的类注释：
+	 * 那些是离线评测链路（语料在类路径、不连外部服务），这一棵是"文档从 HTTP 进来、
+	 * 向量落 Milvus、embedding 与重排调 DashScope"的生产链路。
+	 */
+	@NestedConfigurationProperty
+	private KnowledgeBaseProperties kb = new KnowledgeBaseProperties();
+
+	public KnowledgeBaseProperties getKb() {
+		return kb;
+	}
+
+	public void setKb(KnowledgeBaseProperties kb) {
+		this.kb = kb;
+	}
+
 	public EmbeddingProperties getVector() {
 		return vector;
 	}

@@ -12,6 +12,7 @@ import { NavToggle } from './components/NavToggle'
 import { PermissionPanel } from './components/PermissionPanel'
 import { PromptPanel } from './components/PromptPanel'
 import { RagPanel } from './components/RagPanel'
+import { KnowledgePanel } from './components/KnowledgePanel'
 import { SchedulePanel } from './components/SchedulePanel'
 import { SkillPanel } from './components/SkillPanel'
 import { StructuredResultCard } from './components/StructuredResultCard'
@@ -26,6 +27,7 @@ import { mockLoginLabel, useMockLogin } from './hooks/useMockLogin'
 import { usePermissions } from './hooks/usePermissions'
 import { usePrompt } from './hooks/usePrompt'
 import { useRagDiag } from './hooks/useRagDiag'
+import { useKnowledgeBase } from './hooks/useKnowledgeBase'
 import { useSchedules } from './hooks/useSchedules'
 import { useSidebarCollapse } from './hooks/useSidebarCollapse'
 import { useSkills } from './hooks/useSkills'
@@ -147,6 +149,7 @@ export default function App(
   // userId 只是回显"页头现在是谁"（配新规则的发布人就是他，没登录时按钮不可用）。
   // 那句"下一次触发"要等列表回来才有，所以这一页进来时必须拉一次
   const schedules = useSchedules(mode === 'schedules', mockLogin.user?.id ?? null)
+  const knowledge = useKnowledgeBase(mode === 'knowledge')
 
   const listRef = useRef<HTMLElement>(null)
 
@@ -155,7 +158,7 @@ export default function App(
   // 它们同时也都不显示页头那块 conversationId + 「新会话」—— 那两样属于对话状态。
   const isDiagnostic = mode === 'threads' || mode === 'rag' || mode === 'agent' || mode === 'cost'
     || mode === 'prompt' || mode === 'alerts' || mode === 'users' || mode === 'permissions'
-    || mode === 'tasks' || mode === 'skill' || mode === 'schedules'
+    || mode === 'tasks' || mode === 'skill' || mode === 'schedules' || mode === 'knowledge'
   const activeCount = mode === 'stream' ? stream.messages.length : structured.turns.length
   const busy = mode === 'stream' ? stream.streaming : structured.loading
   const conversationId = mode === 'structured' ? structured.conversationId : stream.conversationId
@@ -250,6 +253,9 @@ export default function App(
             schedules={schedules}
             loginUser={mockLogin.user}
           />
+        ) : mode === 'knowledge' ? (
+          // 知识库：列表 / 文档 / 切片 / 命中测试四层都在一个面板里切换（本项目没有路由）
+          <KnowledgePanel kb={knowledge} />
         ) : mode === 'threads' ? (
           // 面板自己带滚动容器：诊断内容比对话长得多，而且没有"新消息贴底"这个语义
           <ThreadBudgetPanel diag={diag} />

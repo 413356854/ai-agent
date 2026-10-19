@@ -4,6 +4,7 @@ import ai.agent.entity.dto.chat.ChatRequest;
 import ai.agent.service.support.chat.ChatRetryPolicy;
 import ai.agent.config.ChatCallProperties;
 import ai.agent.service.chat.ChatService;
+import ai.agent.service.rag.kb.KnowledgeBaseContextInjector;
 import ai.agent.service.token.TokenBudgetGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,8 +29,10 @@ import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -108,13 +111,23 @@ public class ChatController {
 
 	private final TokenBudgetGuard budgetGuard;
 
+	/** 知识库材料注入（勾了知识库时检索一次，拼进系统提示词并作为第一帧发给前端）。 */
+	private final ai.agent.service.rag.kb.KnowledgeBaseContextInjector knowledgeBaseInjector;
+
+	/** 只用来把材料块折算成 token（预算要把它算进去）。 */
+	private final ai.agent.service.token.TokenEstimator tokenEstimator;
+
 	public ChatController(ChatService chatService, ChatRetryPolicy retryPolicy, ChatCallProperties properties,
-			ChatMemoryRepository chatMemoryRepository, TokenBudgetGuard budgetGuard) {
+			ChatMemoryRepository chatMemoryRepository, TokenBudgetGuard budgetGuard,
+			ai.agent.service.rag.kb.KnowledgeBaseContextInjector knowledgeBaseInjector,
+			ai.agent.service.token.TokenEstimator tokenEstimator) {
 		this.chatService = chatService;
 		this.retryPolicy = retryPolicy;
 		this.properties = properties;
 		this.chatMemoryRepository = chatMemoryRepository;
 		this.budgetGuard = budgetGuard;
+		this.knowledgeBaseInjector = knowledgeBaseInjector;
+		this.tokenEstimator = tokenEstimator;
 	}
 
 	/**
@@ -132,7 +145,8 @@ public class ChatController {
 			consumes = MediaType.APPLICATION_JSON_VALUE,
 			produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 	public Flux<ServerSentEvent<Object>> streamByPost(@RequestBody ChatRequest request) {
-		return sseStream(request.conversationId(), request.message(), request.temperatureOrDefault());
+		return sseStream(request.conversationId(), request.message(), request.temperatureOrDefault(),
+				request.knowledgeBaseIds());
 	}
 
 	/**
@@ -144,8 +158,9 @@ public class ChatController {
 	public Flux<ServerSentEvent<Object>> streamByGet(
 			@RequestParam String conversationId,
 			@RequestParam String message,
-			@RequestParam(defaultValue = "0.3") double temperature) {
-		return sseStream(conversationId, message, temperature);
+			@RequestParam(defaultValue = "0.3") double temperature,
+			@RequestParam(name = "kbIds", required = false) List<Long> knowledgeBaseIds) {
+		return sseStream(conversationId, message, temperature, knowledgeBaseIds);
 	}
 
 	/**
@@ -153,9 +168,22 @@ public class ChatController {
 	 *
 	 * <p>GET / POST 共用这一份逻辑：事件组装规则只写一遍，避免两条通路行为漂移。
 	 */
-	private Flux<ServerSentEvent<Object>> sseStream(String conversationId, String message, double temperature) {
+	private Flux<ServerSentEvent<Object>> sseStream(String conversationId, String message, double temperature,
+			List<Long> knowledgeBaseIds) {
 		requireText(conversationId, "conversationId");
 		requireText(message, "message");
+
+		// 【知识库材料】勾了知识库就在这里检索一次；结果既拼进系统提示词，也作为第一帧发给前端。
+		//
+		// 顺序上它必须排在预算校验**之前**：那段材料会真的进请求，
+		// 不先算出来，预算就是按"不含材料的提示词"算的 —— 而那笔差额正好是这次新增的。
+		Optional<KnowledgeBaseContextInjector.Injection> injection = knowledgeBaseInjector.inject(message,
+				knowledgeBaseIds);
+		int extraSystemPromptTokens = injection
+			.map(value -> tokenEstimator.estimate(value.block()))
+			.orElse(0);
+		// 拼进系统提示词的那段文本；没勾知识库时为 null（那时提示词与以前逐字相同）
+		String knowledgeBaseBlock = injection.map(KnowledgeBaseContextInjector.Injection::block).orElse(null);
 
 		// Token 预算校验（学习点 2）：必须在流开始之前做。
 		//
@@ -164,7 +192,7 @@ public class ChatController {
 		// 放在这里则是一个普通的 400 响应，前端能给出准确提示（差多少、该怎么办）。
 		// 顺带一个好处：这一步在 Controller 的构造阶段之外、在返回 Flux 之前执行，
 		// 所以它是"发请求之前"的本地计算，不花任何模型调用成本。
-		TokenBudgetGuard.BudgetCheck budget = budgetGuard.prepare(conversationId, message);
+		TokenBudgetGuard.BudgetCheck budget = budgetGuard.prepare(conversationId, message, extraSystemPromptTokens);
 		if (budget.enabled()) {
 			if (budget.compacted()) {
 				log.warn("上下文超预算 → 压缩掉最旧的 {} 条历史（累计 {} 轮已进摘要，这次发出 {} 条）"
@@ -192,7 +220,22 @@ public class ChatController {
 		// 记录"这次对话有没有等到过首字"，只用于把失败原因说清楚（见 safeMessage）
 		AtomicBoolean sawFirstToken = new AtomicBoolean(false);
 
-		return withRetryAndTimeout(conversationId, message, temperature, sawFirstToken)
+		// 【第一帧：知识库召回明细】排在 content 之前发 ——
+		// 前端要在正文开始之前就能显示"这次带上了哪几条材料"，而 content 帧一开始推，
+		// 这一帧就没有位置了（第一条 content 之后到达的明细看起来像"中途插播"）。
+		// 不勾知识库时这一帧不发：没有任何明细可报，发一个空帧只会让前端多一个分支
+		Flux<ServerSentEvent<Object>> kbFrame = injection
+			.map(value -> Flux.just(ServerSentEvent.builder()
+				.event("kb")
+				.data((Object) knowledgeBaseFrame(value))
+				.build()))
+			.orElseGet(Flux::empty);
+
+		// 正文那一条流（首帧之外的其余帧）单独成形：知识库帧要在它前面，而它内部的
+		// mapNotNull/done/error 三段只认 ChatClientResponse —— 把知识库帧混进这条链里，
+		// 那三段就会拿到 ServerSentEvent（编译不过；就算强转过去，deltaOf 也读不出东西）
+		Flux<ServerSentEvent<Object>> contentStream = withRetryAndTimeout(conversationId, message, temperature,
+				sawFirstToken, knowledgeBaseBlock)
 				.doOnNext(r -> lastUsage.set(chatService.usageOf(r)))
 				.mapNotNull(r -> {
 					String delta = chatService.deltaOf(r);
@@ -219,6 +262,44 @@ public class ChatController {
 							.data((Object) Map.of("message", safeMessage(e, sawFirstToken.get())))
 							.build());
 				});
+		return kbFrame.concatWith(contentStream);
+	}
+
+	/**
+	 * 知识库那一帧的内容（给前端看，不含给模型看的那段文本）。
+	 *
+	 * <p>它同时带着"重排到底生效没有"：重排失败会静默退回向量顺序，
+	 * 而人以为排过序了 —— 所以 {@code reranked} 与 {@code rerankSkipReason} 必须跟着明细一起发。
+	 */
+	private Map<String, Object> knowledgeBaseFrame(KnowledgeBaseContextInjector.Injection injection) {
+		var result = injection.result();
+		Map<String, Object> body = new LinkedHashMap<>();
+		if (result == null) {
+			// 检索本身失败：给前端的说法与给模型的说法一致（这次没有材料，且原因是失败而不是"没有内容"）
+			body.put("failed", true);
+			body.put("note", "知识库检索失败，本次回答没有带知识库材料");
+			return body;
+		}
+		List<Map<String, Object>> hits = new ArrayList<>();
+		for (var hit : result.hits()) {
+			Map<String, Object> cell = new LinkedHashMap<>();
+			cell.put("rank", hit.rank());
+			cell.put("kbId", hit.kbId());
+			cell.put("kbName", hit.kbName());
+			cell.put("documentId", hit.documentId());
+			cell.put("documentName", hit.documentName());
+			cell.put("headingPath", hit.headingPath());
+			cell.put("vectorScore", hit.vectorScore());
+			cell.put("rerankScore", hit.rerankScore());
+			hits.add(cell);
+		}
+		body.put("hits", hits);
+		body.put("hitCount", hits.size());
+		body.put("indexSize", result.indexSize());
+		body.put("reranked", result.reranked());
+		body.put("rerankSkipReason", result.rerankSkipReason());
+		body.put("notes", result.notes());
+		return body;
 	}
 
 	/**
@@ -266,7 +347,7 @@ public class ChatController {
 	 * 有首字的分支才换成 idle。这样"模型一直不响应"和"回答到一半不动了"才都有上限。
 	 */
 	private Flux<ChatClientResponse> withRetryAndTimeout(String conversationId, String message, double temperature,
-			AtomicBoolean sawFirstToken) {
+			AtomicBoolean sawFirstToken, String knowledgeBaseBlock) {
 		ChatCallProperties.Retry retryCfg = properties.getRetry();
 
 		// 每个订阅（= 每次尝试）独立计数：用局部变量，天然随重订阅重置
@@ -281,7 +362,7 @@ public class ChatController {
 					long startedAt = System.nanoTime();
 					log.info("模型调用开始 conversationId={} attempt={}/{}", conversationId, n, retryCfg.getMaxAttempts() + 1);
 
-					return chatService.stream(conversationId, message, temperature)
+					return chatService.stream(conversationId, message, temperature, knowledgeBaseBlock)
 							// 首个 chunk 到达 → 关闭重试闸门。
 							// 注意这里用"任意 chunk"而不是"有正文"：一旦模型的流已经开始产出，
 							// 重发请求就会让模型侧上下文错乱，所以闸门要尽早关上；

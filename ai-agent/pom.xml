@@ -2,11 +2,14 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
 	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
 	<modelVersion>4.0.0</modelVersion>
+	<!-- 上游 parent：它再 import spring-boot-dependencies、spring-ai-bom 与
+	     spring-ai-alibaba-extensions-bom（DashScope starter 的版本由最后一个管）。
+	     relativePath 置空：这份 parent 只从仓库取，磁盘上没有同级目录 -->
 	<parent>
-		<groupId>org.springframework.boot</groupId>
-		<artifactId>spring-boot-starter-parent</artifactId>
-		<version>4.1.1</version>
-		<relativePath/> <!-- lookup parent from repository -->
+		<groupId>com.alibaba.cloud.ai</groupId>
+		<artifactId>spring-ai-alibaba</artifactId>
+		<version>2.0.0.0-RC1</version>
+		<relativePath/>
 	</parent>
 	<groupId>ai.agent</groupId>
 	<artifactId>ai-agent</artifactId>
@@ -27,8 +30,26 @@
 		<url/>
 	</scm>
 	<properties>
+		<!-- 三处版本覆盖的原因是 parent 定的基线不是本项目要跑的那一套（见 docs 技术基线）：
+		     ① java.version：parent 写 17 并据此设 maven.compiler.source/target，
+		        不覆盖则编译目标掉到 17，虚拟线程那部分代码过不去；
+		     ② spring-boot.version：parent 写 4.1.0，本项目每个模块的版本号都由它决定，
+		        覆盖成 4.1.1 才能回到原基线；
+		     ③ spring-ai.version：parent 写 2.0.0，这里显式写出来是为了让"跑的是哪一版"
+		        在 properties 里一眼可见，不是靠父 pom 猜 -->
 		<java.version>21</java.version>
-		<spring-ai.version>2.0.1</spring-ai.version>
+		<spring-boot.version>4.1.1</spring-boot.version>
+		<spring-ai.version>2.0.0</spring-ai.version>
+		<!-- parent 的 build 里默认绑了四个会失败或会改写文件的插件，逐个关掉：
+		     checkstyle 的 configLocation 是相对它自己 reactor 根的 tools/src/checkstyle/checkstyle.xml，
+		     本项目没有那个路径；spotless:apply 绑在 process-sources，javaformat 会改写源码；
+		     ⚠️ 反而 sorter 没有"只检查不改"的关闭方式，它的 skip 参数就是这里的 maven.sorter.skip：
+		     不写它，每次构建都会把这份 pom 重排一遍（缩进换成 4 空格、`<url/>` 展开成 `<url></url>`），
+		     那是 150 行以上的无意义改动 -->
+		<checkstyle.skip>true</checkstyle.skip>
+		<spotless.apply.skip>true</spotless.apply.skip>
+		<spring-javaformat.skip>true</spring-javaformat.skip>
+		<maven.sorter.skip>true</maven.sorter.skip>
 		<!-- 下面五个都不在 Boot 的依赖管理清单里，必须自己写版本号（钉住哪个版本的理由见 docs 技术基线） -->
 		<tika.version>3.3.2</tika.version>
 		<lucene.version>10.5.1</lucene.version>
@@ -49,6 +70,14 @@
 		<dependency>
 			<groupId>org.springframework.ai</groupId>
 			<artifactId>spring-ai-starter-model-openai</artifactId>
+		</dependency>
+
+		<!-- 模型接入：阿里云百炼（DashScope）的 Chat / Embedding / 图像等模型，由它自动装配 DashScopeChatModel 等 Bean，
+		     配置前缀 spring.ai.dashscope.*。
+		     不写版本号：parent 的依赖管理里 import 了 spring-ai-alibaba-extensions-bom，这个 artifactId 归它管 -->
+		<dependency>
+			<groupId>com.alibaba.cloud.ai</groupId>
+			<artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
 		</dependency>
 
 		<!-- Bean Validation（JSR-380）：结构化输出的字段校验与错误回灌，模型侧不保证字段齐、类型对 -->
@@ -127,19 +156,15 @@
 			<groupId>org.springframework.ai</groupId>
 			<artifactId>spring-ai-starter-mcp-server-webmvc</artifactId>
 		</dependency>
+
+		<!-- 向量库：Milvus 的 VectorStore 实现（MilvusVectorStore）与其自动装配，
+		     配置前缀 spring.ai.vectorstore.milvus.*。
+		     不写版本号：spring-ai-starter-* 都归 parent 里 import 的 spring-ai-bom 管 -->
+		<dependency>
+			<groupId>org.springframework.ai</groupId>
+			<artifactId>spring-ai-starter-vector-store-milvus</artifactId>
+		</dependency>
 	</dependencies>
-	<dependencyManagement>
-		<dependencies>
-			<!-- Spring AI 全家桶（含 MCP）的版本由它统一决定，所以上面两个 spring-ai 依赖都不写版本号 -->
-			<dependency>
-				<groupId>org.springframework.ai</groupId>
-				<artifactId>spring-ai-bom</artifactId>
-				<version>${spring-ai.version}</version>
-				<type>pom</type>
-				<scope>import</scope>
-			</dependency>
-		</dependencies>
-	</dependencyManagement>
 
 	<build>
 		<plugins>
