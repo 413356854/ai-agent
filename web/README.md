@@ -5,8 +5,8 @@
 
 | 区 | 里面是什么 |
 |---|---|
-| **AI Agent 对话台** | 八个模式：SSE 流式对话 / 结构化输出 / 线程与预算（诊断取证）/ RAG 分块评测（离线链路）/ Agent 工具调用（含**人工确认 HITL**）/ 成本看板 / Prompt 版本 / 告警与灰度 |
-| **AI Agent 应用管理** | 五项：**用户管理**（**已接线**：账号 / 口令 / 启用状态，见「第九区」）、**权限管理**（**已接线**：角色 / 角色能调哪些工具 / 能在哪些目录下干活 / 角色成员，见「第十区」）、**agent任务**（**已接线**：派活 / 确认 / 执行 / 验收的卡片看板，见「第十一区」）、**skill管理**（**已接线**：技能记录的新建 / 修改 / 删除，归属判据是"这一条是不是我的"，见「第十二区」）与 **定时任务**（**已接线**：到点按规则生成 agent 任务记录，界面把"执行频率"配成一句 6 段正则，见「第十三区」） |
+| **AI Agent 对话台** | 九个模式：SSE 流式对话 / 结构化输出 / 线程与预算（诊断取证）/ RAG 分块评测（离线链路）/ Agent 工具调用（含**人工确认 HITL**）/ **Graph 演示（StateGraph 状态 / 条件路由 / 评审回环 / 检查点回放）** / 成本看板 / Prompt 版本 / 告警与灰度 |
+| **AI Agent 应用管理** | 六项：**用户管理**（**已接线**：账号 / 口令 / 启用状态，见「第九区」）、**权限管理**（**已接线**：角色 / 角色能调哪些工具 / 能在哪些目录下干活 / 角色成员，见「第十区」）、**agent任务**（**已接线**：派活 / 确认 / 执行 / 验收的卡片看板，见「第十一区」）、**skill管理**（**已接线**：技能记录的新建 / 修改 / 删除，归属判据是"这一条是不是我的"，见「第十二区」）、**定时任务**（**已接线**：到点按规则生成 agent 任务记录，界面把"执行频率"配成一句 6 段正则，见「第十三区」）与 **知识库**（**已接线**：上传 → 解析 → 分块 → 向量化 → 检索，见「第十四区」） |
 
 技术栈：**React 19 + Vite 8 + TypeScript + Ant Design 6**。
 
@@ -18,7 +18,7 @@
 │ ▾对话台       ├────────────────────────────────────────────┤
 │  SSE 流式     │                                            │
 │  结构化输出    │            当前视图（只有这一块滚动）           │
-│  …八个模式     │                                            │
+│  …九个模式     │                                            │
 │ ▾应用管理      │                                            │
 │  用户管理      │                                            │
 │  权限管理      │                                            │
@@ -71,7 +71,7 @@
 
 ## 主题：浅色 / 深色（开关在页头右上角）
 
-开关对所有十三个视图都在：它换的是整页的底色，属于"看这一页的方式"，
+开关对所有视图都在：它换的是整页的底色，属于"看这一页的方式"，
 不跟着某个视图出现或消失。按钮上画的是**切过去会变成什么**（深色下画太阳），
 `aria-label` 也是动作（"切换到深色模式"）—— 读一个静图标去推"点它会怎样"是白费力气。
 
@@ -205,7 +205,7 @@ pnpm install
 pnpm dev            # http://127.0.0.1:5173
 ```
 
-不想配 API Key / 不想烧 token 时，用假后端验证渲染（**八个模式的端点都支持**）：
+不想配 API Key / 不想烧 token 时，用假后端验证渲染（**九个模式的端点都支持**）：
 
 ```bash
 pnpm mock           # 终端 A：假后端 → http://127.0.0.1:8081
@@ -248,6 +248,7 @@ src/
 │   ├── rag.ts               # /api/diag/rag/*（7 个端点）：多两个超时（120s 对照 / 180s 对齐）
 │   ├── agent.ts             # /api/agent/*（8 个端点）：运行 + 限额 + **人工确认（HITL）4 个**
 │   ├── cost.ts              # /api/cost/*（2 个端点）：看板快照 + 价格表
+│   ├── graph.ts             # /api/graph-demo/*（3 个端点）：元信息 / 同步运行 / 检查点回放；run/replay 超时 300s（真实模型最多 7 次调用）
 │   ├── prompt.ts            # /api/prompts/*（6 个端点）：版本读/写 + **400/409 两种失败分开建模**
 │   ├── alerts.ts            # /api/alerts/* 与 /api/canary/*（7 个端点）：**告警三态 + 灰度配置与实测**
 │   ├── permissions.ts       # /api/permissions/*（10 个端点）：快照 / 核对 / 工具清单 / **用户搜索**（/users/search，agent任务那两格选人与页头模拟登录都用它）+ **账号与角色的增改删**（响应里没有口令那一列）
@@ -260,6 +261,7 @@ src/
 │   ├── useRagDiag.ts        # RAG 状态机：6 个 Remote 态（对照评测单独一把锁）
 │   ├── useAgent.ts          # Agent 状态机：5 个 Remote 态 + **待办轮询（带不重叠守卫）**
 │   ├── useCost.ts           # 成本看板状态机：2 个 Remote 态（**不轮询**：那是"回头看"的数据）
+│   ├── useGraphDemo.ts      # Graph 演示状态机：meta / run / replay 三个 Remote 态；run/replay 用 busyRef 防连点，replay 失败保留上一次结果
 │   ├── usePrompt.ts         # Prompt 版本状态机：清单 / 版本 / 差异三个态 + 草稿与校验反馈
 │   ├── useAlerts.ts         # 告警与灰度状态机：4 个 Remote 态 + **评估要点按钮**（它会写库）
 │   ├── usePermissions.ts    # 权限状态机：快照 / 核对两个态 + 9 个写操作（**每个写完之后重拉全量**，见那个 hook 的注释）
@@ -276,6 +278,7 @@ src/
 │   ├── RagPanel.tsx             # RAG 面板：语料解析 / 分块预览 / 分词 / 召回 / 策略对照 / 评测集
 │   ├── AgentPanel.tsx           # Agent 面板：**待我确认（HITL）** / 跑任务 / 历史 / 详情 / **五层 trace** / 四层保护
 │   ├── CostPanel.tsx            # 成本看板：头部合计 + 八张卡（价格表 / 按天 / **按租户** / 按业务归因 / 按模型 / 按工具 / 口径对账 / 结论边界）+ 金额格（null 的唯一渲染入口）
+│   ├── GraphDemoPanel.tsx       # Graph 演示：输入 / SVG 拓扑 / 节点轨迹 / 最终状态 / 检查点历史与回放；拓扑布局是前端常量，节点清单以 /meta 为准（不一致时页面告警）
 │   ├── PromptPanel.tsx          # Prompt 版本：生效版本 / 版本历史 / 编辑器 / 逐行差异 / 校验判据
 │   ├── AlertPanel.tsx           # 告警与灰度：在响的告警 / 规则目录 / **配置与实测同屏** / 开停灰度
 │   ├── UserPanel.tsx            # 用户管理：账号表 / **角色列只读** + 3 个弹窗（建号 / 编辑 / 改口令）
@@ -287,10 +290,10 @@ src/
 │   ├── UserPicker.tsx           # 「从账号表里选一个人」（服务端搜索 /users/search，选中项留在候选里）：agent任务那两格选人 + 页头模拟登录**共用**
 │   ├── MockLoginBar.tsx         # 页头右上角的模拟登录：入口按钮 / 选人弹窗（含"将记下的 id"回显）/ 显示名 + 退出
 │   └── Composer.tsx         # 输入区（两种对话模式共用）
-├── nav.ts                   # 导航的单一事实来源：Mode 类型（13 个成员）+ 两段目录 + 每段的标题与标签
+├── nav.ts                   # 导航的单一事实来源：Mode 类型（15 个成员）+ 两段目录 + 每段的标题与标签
 ├── cron.ts                  # 定时正则的浏览器侧构造：buildCron（选择 → 6 段表达式）+ describeDraft（选择 → 一句中文）+ draftOf（表达式 → 表单初值）；**判断对错与算下一次都在后端**
 ├── types.ts                 # 与后端 DTO 一一对应的类型 + 通用的 Remote<T> 异步状态
-└── App.tsx                  # 外壳（目录 / 页头 / 内容）+ 十三套视图
+└── App.tsx                  # 外壳（目录 / 页头 / 内容）+ 十五套视图
 ```
 
 ## 两种模式的差别（这就是要对照的东西）
@@ -1097,6 +1100,83 @@ Prompt 改坏**能回滚**」。在成本看板（第六种模式）之后，第
 （`kind` 用 `system-agent-tools`，不是枚举名 `agent-loop`）——
 两边各写一遍的话，真后端 400 而假后端一切正常
 （这正是「默认参数里的字符串两边各写一份」那个形状）。
+
+---
+
+## 第九种模式：Graph 演示（StateGraph 状态 / 条件路由 / 评审回环 / 检查点回放）
+
+这一页是 Spring AI Alibaba Graph 的组件熟悉页：用一张 9 个节点的 RepoOps 生命周期图，
+把 `StateGraph` 的状态、条件边、评审回环与 `MemorySaver` 检查点摆出来。
+它**不是** agent 任务的执行器，也不写 `agent_task` / `agent_task_confirm`。
+
+### 拓扑
+
+```text
+START
+  → triage（模型：分诊，第一行要求 route_candidate: bug|feature|question）
+  → route_issue（确定性：模型路由优先，用户选的类型是回退）
+      ├─ bug     → bug_diagnoser（模型）
+      ├─ feature → feature_planner（模型）
+      └─ question → question_responder（模型；写入跳过实现/评审的证据）→ auditor
+  bug/feature → implementer（模型）→ reviewer（模型）→ review_gate（确定性）
+      ├─ PASS → auditor（模型）→ END
+      └─ FAIL → implementer（回环，最多 2 轮；第 2 轮仍 FAIL 时按 pass 结束并标 degraded）
+```
+
+### 真实模型的边界
+
+页面显示当前模型名（来自 `spring.ai.openai.chat.options.model`）。一次运行串行调用模型：
+
+| 分支 | 模型调用次数 |
+|---|---|
+| question | 3（triage / question_responder / auditor） |
+| bug / feature | 5（triage / 分支节点 / implementer / reviewer / auditor） |
+| bug / feature + 强制首轮 FAIL | 7（多一轮 implementer / reviewer） |
+
+运行是**同步**的：后端一次 `graph.invoke` 跑到 `END`，页面等结果；没有节点级 SSE。
+run/replay 的前端超时是 300 秒。服务端用 `Semaphore(1)` 限制同时只跑一条；
+第二次请求返回 409。
+
+### 状态与检查点
+
+- 业务键用 `ReplaceStrategy`（`route`、`work_plan`、`review_decision` 等）；
+  `node_trace` / `route_history` / `evidence_bundle` 用 `AppendStrategy` —— 轨迹写成 Replace 会让页面只剩最后一条。
+- 每个节点由一层 trace 包装器统一写 `current_node`、`node_trace` 与 `evidence_bundle`；
+  节点动作只返回自己产出的键。
+- 检查点用 `MemorySaver`，`threadId` 由服务端生成（`graph-<uuid>`）。
+  `run` 返回 `history`（start + 每个节点一条）；`replay` 从所选检查点之后重新执行节点，
+  并把新检查点追加到同一个 thread。
+- **不跨重启**：后端重启后 `MemorySaver` 清空，旧 thread 的 `replay` 返回 400。
+
+### 页面五块
+
+| 块 | 内容 |
+|---|---|
+| 输入 | 标题 / 初始类型（模型路由优先）/ 描述 / 强制首轮评审 FAIL / 运行按钮 |
+| 图拓扑 | 固定布局的 SVG；`is-visited` 标本次执行、`is-replayed` 标本次重放、`is-failed` 标评审 FAIL；`/meta` 与前端布局常量的节点集合不一致时显示告警 |
+| 节点轨迹 | 每个节点的类型、输入/输出 keys、耗时、摘要；FAIL 门禁行红底，重放行带左边框 |
+| 最终状态 | 路由、模型建议、门禁结果、复审轮数、模型、thread/run id，以及分诊/计划/实现/评审/审计正文 |
+| 检查点历史 | checkpoint id、kind、node、next、selected；回放按钮在 END 检查点上禁用；确认框说明会再次调用模型 |
+
+### 假后端（`mock/graph-routes.mjs`）
+
+`GET /api/graph-demo/meta`、`POST /run`、`POST /replay` 三个端点，形状与真后端一致。
+输出是确定性契约样本（模型名显示为假后端），不调用模型；检查点存在进程内 `Map` 里，
+重启即清空。run/replay 故意延迟 500–700ms，让页面的 loading 状态可见。
+
+### 这一页不证明什么
+
+- 不是任务引擎：没有业务表、看板、按人筛选、确认项并发答复或取消/重发。
+- 不是跨重启恢复：`MemorySaver` 只活在进程内。
+- **不进入成本看板**：节点直接调 `ChatModel`，不经过 `AgentLoop` / `PersistingListener`，
+  所以这次运行的 token 不落 `agent_run`，也不出现在成本看板。
+- 真实模型输出不稳定：验证只断言路由、门禁与检查点，不断言模型文本。
+  当前后端没有自动化测试，页面也没有 UI 自动化守卫。
+
+代码：[GraphDemoPanel.tsx](../web/src/components/GraphDemoPanel.tsx) /
+[useGraphDemo.ts](../web/src/hooks/useGraphDemo.ts) / [graph.ts](../web/src/api/graph.ts) /
+`ai-agent/src/main/java/ai/agent/graph/GraphDemoGraphFactory.java` /
+`ai-agent/src/main/java/ai/agent/service/graph/GraphDemoService.java`。
 
 ---
 

@@ -6,6 +6,7 @@ import { AlertPanel } from './components/AlertPanel'
 import { AppSidebar } from './components/AppSidebar'
 import { Composer } from './components/Composer'
 import { CostPanel } from './components/CostPanel'
+import { GraphDemoPanel } from './components/GraphDemoPanel'
 import { MessageBubble } from './components/MessageBubble'
 import { MockLoginBar } from './components/MockLoginBar'
 import { NavToggle } from './components/NavToggle'
@@ -23,6 +24,7 @@ import { useAgent } from './hooks/useAgent'
 import { useAlerts } from './hooks/useAlerts'
 import { useChatStream } from './hooks/useChatStream'
 import { useCost } from './hooks/useCost'
+import { useGraphDemo } from './hooks/useGraphDemo'
 import { mockLoginLabel, useMockLogin } from './hooks/useMockLogin'
 import { usePermissions } from './hooks/usePermissions'
 import { usePrompt } from './hooks/usePrompt'
@@ -150,6 +152,8 @@ export default function App(
   // 那句"下一次触发"要等列表回来才有，所以这一页进来时必须拉一次
   const schedules = useSchedules(mode === 'schedules', mockLogin.user?.id ?? null)
   const knowledge = useKnowledgeBase(mode === 'knowledge')
+  // Graph 演示：进面板只拉一次 meta；run/replay 必须点按钮 —— 它会真的调用模型
+  const graph = useGraphDemo(mode === 'graph')
 
   const listRef = useRef<HTMLElement>(null)
 
@@ -159,6 +163,7 @@ export default function App(
   const isDiagnostic = mode === 'threads' || mode === 'rag' || mode === 'agent' || mode === 'cost'
     || mode === 'prompt' || mode === 'alerts' || mode === 'users' || mode === 'permissions'
     || mode === 'tasks' || mode === 'skill' || mode === 'schedules' || mode === 'knowledge'
+    || mode === 'graph'
   const activeCount = mode === 'stream' ? stream.messages.length : structured.turns.length
   const busy = mode === 'stream' ? stream.streaming : structured.loading
   const conversationId = mode === 'structured' ? structured.conversationId : stream.conversationId
@@ -229,7 +234,7 @@ export default function App(
             {/* 模拟登录在**所有十二个视图**上都在（与主题开关同理）：它说的是
                 "现在以谁的身份在用这一页"，后续按人区分的业务认的是它记下的那个 id */}
             <MockLoginBar login={mockLogin} />
-            {/* 主题开关在**所有十二个视图**上都在：它换的是整页的底色，
+            {/* 主题开关在**所有视图**上都在：它换的是整页的底色，
                 属于"看这一页的方式"，不跟着某个视图出现或消失 */}
             <ThemeToggle mode={themeMode} onToggle={onToggleTheme} />
           </Flex>
@@ -263,6 +268,8 @@ export default function App(
           <RagPanel diag={rag} />
         ) : mode === 'agent' ? (
           <AgentPanel agent={agent} loginUser={mockLogin.user} />
+        ) : mode === 'graph' ? (
+          <GraphDemoPanel graph={graph} />
         ) : mode === 'cost' ? (
           <CostPanel cost={cost} />
         ) : mode === 'prompt' ? (

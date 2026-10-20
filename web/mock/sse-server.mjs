@@ -28,6 +28,7 @@ import { createServer } from 'node:http'
 import { handleAgentRoutes } from './agent-routes.mjs'
 import { handleAlertsRoutes } from './alert-routes.mjs'
 import { handleCostRoutes } from './cost-routes.mjs'
+import { handleGraphRoutes } from './graph-routes.mjs'
 import { handlePermissionRoutes } from './permission-routes.mjs'
 import { handlePromptRoutes } from './prompt-routes.mjs'
 import { handleRagRoutes } from './rag-routes.mjs'
@@ -403,6 +404,16 @@ const server = createServer((req, res) => {
   }
 
   // ---------------------------------------------------------------
+  //  Graph 演示（对话台第 9 个模式）
+  //
+  //  形状与真后端 /api/graph-demo/{meta,run,replay} 一致；输出是确定性契约样本，
+  //  不调用模型。run/replay 的检查点存在进程内 Map 里，假后端重启即清空。
+  // ---------------------------------------------------------------
+  if (url.pathname.startsWith('/api/graph-demo') && handleGraphRoutes(req, res, url, json)) {
+    return
+  }
+
+  // ---------------------------------------------------------------
   //  skill 端点（应用管理 · skill管理）
   //
   //  ⚠️ 与 permissions / agent-tasks 同一类：**有写端点，所以状态是进程内可变的**。
@@ -429,7 +440,7 @@ const server = createServer((req, res) => {
   res.end(
     JSON.stringify({
       message:
-        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async、POST /api/agent/ask、GET /api/agent/*、GET /api/cost/*、GET|POST /api/prompts/*、GET|POST /api/alerts/*、GET|POST /api/canary/*、GET|POST|PUT|DELETE /api/permissions/*、GET|POST /api/agent-tasks/*、GET|POST|PUT|DELETE /api/skills/*、GET|POST|PUT|DELETE /api/knowledge-bases/*（含 /{id}/documents、/retrieve、/consistency）',
+        'mock server: 支持 POST /api/chat/stream、POST /api/chat/structured、GET /api/chat/ping、GET /api/diag/threads*、GET /api/diag/rag*、GET /api/chat/async、POST /api/agent/ask、GET /api/agent/*、GET /api/cost/*、GET|POST /api/graph-demo/*、GET|POST /api/prompts/*、GET|POST /api/alerts/*、GET|POST /api/canary/*、GET|POST|PUT|DELETE /api/permissions/*、GET|POST /api/agent-tasks/*、GET|POST|PUT|DELETE /api/skills/*、GET|POST|PUT|DELETE /api/knowledge-bases/*（含 /{id}/documents、/retrieve、/consistency）',
     }),
   )
 })

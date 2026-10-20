@@ -40,6 +40,10 @@
 		<java.version>21</java.version>
 		<spring-boot.version>4.1.1</spring-boot.version>
 		<spring-ai.version>2.0.0</spring-ai.version>
+		<!-- Graph 演示：graph-core 的版本与 parent 同一套；该 artifactId 不在 parent 导入的
+		     BOM 里，所以这里必须显式写版本。制品不在公共仓库，需先从 SAA 源码 checkout
+		     安装到本机仓库（见 docs/项目功能点与代码索引.md 5.11） -->
+		<spring-ai-alibaba.version>2.0.0.0-RC1</spring-ai-alibaba.version>
 		<!-- parent 的 build 里默认绑了四个会失败或会改写文件的插件，逐个关掉：
 		     checkstyle 的 configLocation 是相对它自己 reactor 根的 tools/src/checkstyle/checkstyle.xml，
 		     本项目没有那个路径；spotless:apply 绑在 process-sources，javaformat 会改写源码；
@@ -78,6 +82,15 @@
 		<dependency>
 			<groupId>com.alibaba.cloud.ai</groupId>
 			<artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
+		</dependency>
+
+		<!-- Graph 演示：StateGraph、条件路由、MemorySaver 检查点。
+		     parent 的 extensions BOM 不管这个 artifactId，版本必须显式写；
+		     制品不在公共仓库，需先从 SAA 源码 checkout 安装到本机仓库。 -->
+		<dependency>
+			<groupId>com.alibaba.cloud.ai</groupId>
+			<artifactId>spring-ai-alibaba-graph-core</artifactId>
+			<version>${spring-ai-alibaba.version}</version>
 		</dependency>
 
 		<!-- Bean Validation（JSR-380）：结构化输出的字段校验与错误回灌，模型侧不保证字段齐、类型对 -->

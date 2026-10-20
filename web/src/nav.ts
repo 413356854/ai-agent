@@ -7,12 +7,12 @@
  */
 
 /**
- * 导航项标识 = 视图标识。前八个是对话台的模式，对应后端的八条链路
+ * 导航项标识 = 视图标识。前九个是对话台的模式，对应后端的九条链路
  * （逐条见 docs/项目功能点与代码索引.md 第 6 节）；
- * `users` / `permissions` / `tasks` / `skill` / `schedules` 是应用管理区的五项。
+ * `users` / `permissions` / `tasks` / `skill` / `schedules` / `knowledge` 是应用管理区的六项。
  */
 export type Mode =
-  | 'stream' | 'structured' | 'threads' | 'rag' | 'agent' | 'cost' | 'prompt' | 'alerts'
+  | 'stream' | 'structured' | 'threads' | 'rag' | 'agent' | 'graph' | 'cost' | 'prompt' | 'alerts'
   | 'users' | 'permissions' | 'tasks' | 'skill' | 'schedules' | 'knowledge'
 
 /** 导航分组 = 一级目录。它不是视觉分组：每个分组是一个独立的功能区，顶栏标题跟着它走 */
@@ -43,13 +43,14 @@ export const NAV_SECTIONS: NavGroup[] = [
     key: 'console',
     label: 'AI Agent 对话台',
     title: 'AI Agent 对话台',
-    tag: { color: 'blue', text: '八个模式 · 各自的契约摆在一起才比得出来' },
+    tag: { color: 'blue', text: '九个模式 · 各自的契约摆在一起才比得出来' },
     items: [
       { mode: 'stream', label: 'SSE 流式' },
       { mode: 'structured', label: '结构化输出' },
       { mode: 'threads', label: '线程与预算' },
       { mode: 'rag', label: 'RAG 分块评测' },
       { mode: 'agent', label: 'Agent 工具调用' },
+      { mode: 'graph', label: 'Graph 演示' },
       { mode: 'cost', label: '成本看板' },
       { mode: 'prompt', label: 'Prompt 版本' },
       { mode: 'alerts', label: '告警与灰度' },

@@ -2839,3 +2839,192 @@ body {
   background: var(--bg-elevated);
   min-width: 0;
 }
+
+/* ------------------------------------------------------------------
+   Graph 演示（对话台第 9 个模式）
+   拓扑是固定布局的 SVG；这里只给节点/边/表格行上色，颜色一律从变量取。
+   ------------------------------------------------------------------ */
+
+.graph-input-title {
+  flex: 1 1 320px;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.graph-map {
+  padding: 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  background: var(--bg-subtle);
+  overflow-x: auto;
+}
+
+.graph-map svg {
+  width: 100%;
+  min-width: 760px;
+  height: auto;
+  display: block;
+}
+
+.graph-node rect {
+  fill: var(--bg-surface);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+
+.graph-node text {
+  fill: var(--text);
+  font-size: 12px;
+  text-anchor: middle;
+}
+
+.graph-node .graph-node-sub {
+  fill: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.graph-node.is-model rect {
+  fill: var(--violet-bg);
+  stroke: var(--violet-border);
+}
+
+.graph-node.is-deterministic rect {
+  fill: var(--bg-soft);
+  stroke: var(--border-strong);
+}
+
+.graph-node.is-visited rect {
+  fill: var(--brand-bg);
+  stroke: var(--brand);
+  stroke-width: 2;
+}
+
+.graph-node.is-replayed rect {
+  stroke: var(--brand);
+  stroke-dasharray: 5 3;
+}
+
+.graph-node.is-failed rect {
+  fill: var(--danger-bg);
+  stroke: var(--danger-border);
+}
+
+.graph-node.is-failed text {
+  fill: var(--danger-ink);
+}
+
+.graph-edge {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.4;
+}
+
+.graph-edge.is-active {
+  stroke: var(--brand);
+  stroke-width: 2;
+}
+
+.graph-edge.is-loop {
+  stroke: var(--warn);
+  stroke-dasharray: 5 3;
+}
+
+.graph-edge-label {
+  fill: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.graph-arrow-head {
+  fill: var(--text-muted);
+}
+
+.graph-legend {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.graph-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.graph-legend-box {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--bg-surface);
+}
+
+.graph-legend-box.is-model {
+  background: var(--violet-bg);
+  border-color: var(--violet-border);
+}
+
+.graph-legend-box.is-deterministic {
+  background: var(--bg-soft);
+}
+
+.graph-legend-box.is-visited {
+  background: var(--brand-bg);
+  border-color: var(--brand);
+}
+
+.graph-legend-box.is-replayed {
+  background: var(--brand-bg);
+  border-color: var(--brand);
+  border-style: dashed;
+}
+
+.graph-legend-box.is-failed {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+.graph-warning-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.graph-trace-summary {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.graph-state-text {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.graph-checkpoint-id {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.graph-row-model > td {
+  background: var(--bg-subtle) !important;
+}
+
+.graph-row-gate-fail > td {
+  background: var(--danger-bg) !important;
+}
+
+.graph-row-replayed > td:first-child {
+  box-shadow: inset 3px 0 0 var(--brand);
+}
